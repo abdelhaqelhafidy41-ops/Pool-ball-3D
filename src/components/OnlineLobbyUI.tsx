@@ -95,7 +95,7 @@ export function OnlineLobbyUI() {
     }
   };
 
-  const isConnected = onlineConnectionStatus === 'connected';
+  const isConnected = onlineConnectionStatus === 'connected' && Boolean(onlineSessionId);
   const calledShotsEnabled = ruleProfileId === 'wpa';
 
   const localRoomPlayer =
@@ -218,14 +218,28 @@ export function OnlineLobbyUI() {
         {/* Error Alert */}
         {onlineError && (
           <div className="mt-3 flex items-center justify-between gap-2 rounded-xl border border-rose-500/40 bg-rose-500/10 px-3 py-2 text-xs text-rose-200">
-            <span>{onlineError.message}</span>
-            <button
-              type="button"
-              onClick={() => setOnlineError(null)}
-              className="text-rose-300 hover:text-white cursor-pointer"
-            >
-              <X className="h-3.5 w-3.5" />
-            </button>
+            <span className="min-w-0 break-words">{onlineError.message}</span>
+            <div className="flex items-center gap-1.5 shrink-0">
+              {!isConnected && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    soundEngine.playUiClick();
+                    multiplayerManager.retryConnection();
+                  }}
+                  className="rounded-lg border border-rose-400/40 bg-rose-500/20 px-2 py-1 text-[11px] font-bold text-rose-100 hover:bg-rose-500/30 cursor-pointer"
+                >
+                  Retry
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => setOnlineError(null)}
+                className="text-rose-300 hover:text-white cursor-pointer"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            </div>
           </div>
         )}
 
@@ -543,10 +557,19 @@ export function OnlineLobbyUI() {
                     commitProfile(nameInput);
                     multiplayerManager.createPrivateRoom(ruleProfileId, calledShotsEnabled);
                   }}
-                  className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-amber-500 px-5 py-2.5 text-xs font-extrabold uppercase tracking-wider text-slate-950 hover:bg-amber-400 disabled:opacity-45 transition-colors cursor-pointer"
+                  className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-amber-500 px-5 py-2.5 text-xs font-extrabold uppercase tracking-wider text-slate-950 hover:bg-amber-400 disabled:opacity-45 disabled:cursor-not-allowed transition-colors cursor-pointer"
                 >
-                  <PlusCircle className="h-4 w-4" />
-                  Create Private Room
+                  {isConnected ? (
+                    <>
+                      <PlusCircle className="h-4 w-4" />
+                      Create Private Room
+                    </>
+                  ) : (
+                    <>
+                      <WifiOff className="h-4 w-4" />
+                      Connecting to Server...
+                    </>
+                  )}
                 </button>
               </div>
             )}
@@ -577,10 +600,19 @@ export function OnlineLobbyUI() {
                 <button
                   type="submit"
                   disabled={!isConnected || joinCodeInput.trim().length < 4}
-                  className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-amber-500 px-5 py-2.5 text-xs font-extrabold uppercase tracking-wider text-slate-950 hover:bg-amber-400 disabled:opacity-45 transition-colors cursor-pointer"
+                  className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-amber-500 px-5 py-2.5 text-xs font-extrabold uppercase tracking-wider text-slate-950 hover:bg-amber-400 disabled:opacity-45 disabled:cursor-not-allowed transition-colors cursor-pointer"
                 >
-                  <KeyRound className="h-4 w-4" />
-                  Join Private Room
+                  {isConnected ? (
+                    <>
+                      <KeyRound className="h-4 w-4" />
+                      Join Private Room
+                    </>
+                  ) : (
+                    <>
+                      <WifiOff className="h-4 w-4" />
+                      Connecting to Server...
+                    </>
+                  )}
                 </button>
               </form>
             )}

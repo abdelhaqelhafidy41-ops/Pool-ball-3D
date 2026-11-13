@@ -7,11 +7,13 @@ import type {
 
 const SESSION_ID_KEY = 'ultimate_pool_ws_session_id';
 const RECONNECT_TOKEN_KEY = 'ultimate_pool_ws_reconnect_token';
+const CONNECT_TIMEOUT_MS = 10000;
 
 export interface NetworkManagerListeners {
   onConnectionChange: (state: ConnectionState) => void;
   onMessage: (msg: ServerToClientMessage) => void;
   onLatencyUpdate: (latencyMs: number) => void;
+  onConnectionError?: (message: string) => void;
 }
 
 function isLocalHostname(hostname: string): boolean {
@@ -92,6 +94,7 @@ export class NetworkManager {
   private intentionallyClosed = false;
   private reconnectAttempts = 0;
   private reconnectTimer: number | null = null;
+  private connectTimeoutTimer: number | null = null;
   private pingTimer: number | null = null;
   private listeners: NetworkManagerListeners;
 
@@ -128,6 +131,10 @@ export class NetworkManager {
     return this.activeRoomId;
   }
 
+  public getCurrentWebSocketUrl(): string {
+    return this.buildWebSocketUrl(this.activeRoomId);
+  }
+
   public getSessionCredentials(): { sessionId: string | null; reconnectToken: string | null } {
     return { sessionId: this.sessionId, reconnectToken: this.reconnectToken };
   }
@@ -155,6 +162,7 @@ export class NetworkManager {
       this.pendingMessages = [];
     }
     this.clearReconnectTimer();
+    this.clearConnectTimeout();
     this.stopPingLoop();
 
     if (this.ws) {
@@ -172,6 +180,24 @@ export class NetworkManager {
     }
   }
 
+  public retryConnect(): void {
+    this.intentionallyClosed = false;
+    this.reconnectAttempts = 0;
+    this.clearReconnectTimer();
+    this.clearConnectTimeout();
+    this.stopPingLoop();
+    if (this.ws) {
+      const old = this.ws;
+      this.ws = null;
+      try {
+        old.close(1000, 'Manual retry');
+      } catch {
+        // Ignore
+      }
+    }
+    this.connect();
+  }
+
   public connect(): void {
     if (
       this.ws &&
@@ -183,11 +209,35 @@ export class NetworkManager {
     this.intentionallyClosed = false;
     this.handshakeReady = false;
     this.clearReconnectTimer();
+    this.clearConnectTimeout();
     this.setConnectionState(this.reconnectAttempts > 0 ? 'reconnecting' : 'connecting');
 
     const url = this.buildWebSocketUrl(this.activeRoomId);
-    const socket = new WebSocket(url);
+    let socket: WebSocket;
+    try {
+      socket = new WebSocket(url);
+    } catch {
+      this.listeners.onConnectionError?.(
+        `Invalid WebSocket server URL (${url}). Verify VITE_WS_URL configuration.`,
+      );
+      this.scheduleReconnect();
+      return;
+    }
     this.ws = socket;
+
+    if (typeof window !== 'undefined') {
+      this.connectTimeoutTimer = window.setTimeout(() => {
+        if (this.ws !== socket || this.handshakeReady) return;
+        this.listeners.onConnectionError?.(
+          `Connection to multiplayer server timed out (${url}). Retrying...`,
+        );
+        try {
+          socket.close(4000, 'Connection timeout');
+        } catch {
+          // Ignore
+        }
+      }, CONNECT_TIMEOUT_MS);
+    }
 
     socket.onopen = () => {
       if (this.ws !== socket) return;
@@ -210,9 +260,6 @@ export class NetworkManager {
           latencyMs: this.lastLatencyMs,
         });
       }
-
-      this.setConnectionState('connected');
-      this.startPingLoop();
     };
 
     socket.onmessage = (evt) => {
@@ -226,9 +273,14 @@ export class NetworkManager {
           return;
         }
         if (msg.type === 'session:ready') {
+          this.clearConnectTimeout();
           this.saveSessionCredentials(msg.sessionId, msg.reconnectToken);
           this.handshakeReady = true;
+          this.listeners.onMessage(msg);
+          this.setConnectionState('connected');
           this.flushPendingMessages();
+          this.startPingLoop();
+          return;
         }
         this.listeners.onMessage(msg);
       } catch {
@@ -236,20 +288,32 @@ export class NetworkManager {
       }
     };
 
-    socket.onclose = () => {
+    socket.onclose = (evt) => {
       if (this.ws !== socket) return;
+      const failedBeforeHandshake = !this.handshakeReady;
       this.ws = null;
       this.handshakeReady = false;
+      this.clearConnectTimeout();
       this.stopPingLoop();
       if (this.intentionallyClosed) {
         this.setConnectionState('disconnected');
         return;
       }
+      if (failedBeforeHandshake && evt.code !== 1000 && evt.code !== 4000) {
+        this.listeners.onConnectionError?.(
+          `Unable to connect to multiplayer server (${url}). Verify the server is running and VITE_WS_URL is reachable.`,
+        );
+      }
       this.scheduleReconnect();
     };
 
     socket.onerror = () => {
-      // onclose handles state transition and reconnect backoff
+      if (this.ws !== socket) return;
+      if (!this.handshakeReady) {
+        this.listeners.onConnectionError?.(
+          `WebSocket connection failed (${url}). Retrying connection...`,
+        );
+      }
     };
   }
 
@@ -259,6 +323,7 @@ export class NetworkManager {
     this.activeRoomId = null;
     this.pendingMessages = [];
     this.clearReconnectTimer();
+    this.clearConnectTimeout();
     this.stopPingLoop();
     if (this.ws) {
       const target = this.ws;
@@ -371,6 +436,13 @@ export class NetworkManager {
     if (this.reconnectTimer !== null) {
       window.clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
+    }
+  }
+
+  private clearConnectTimeout(): void {
+    if (this.connectTimeoutTimer !== null) {
+      window.clearTimeout(this.connectTimeoutTimer);
+      this.connectTimeoutTimer = null;
     }
   }
 }

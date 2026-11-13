@@ -46,8 +46,11 @@ export default {
       return new Response(null, { status: 204, headers: cors });
     }
 
-    if (url.pathname === '/ws') {
-      if (request.headers.get('Upgrade')?.toLowerCase() !== 'websocket') {
+    const isWebSocketUpgrade = request.headers.get('Upgrade')?.toLowerCase() === 'websocket';
+    const isWsPath = url.pathname === '/ws' || url.pathname === '/ws/';
+
+    if (isWsPath || (url.pathname === '/' && isWebSocketUpgrade)) {
+      if (!isWebSocketUpgrade) {
         return new Response('Expected WebSocket upgrade', { status: 426, headers: cors });
       }
 

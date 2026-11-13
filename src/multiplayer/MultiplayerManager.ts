@@ -45,6 +45,12 @@ class MultiplayerManagerImpl {
         onLatencyUpdate: (latencyMs) => {
           useGameStore.getState().setOnlineLatencyMs(latencyMs);
         },
+        onConnectionError: (message) => {
+          useGameStore.getState().setOnlineError({
+            code: 'CONNECTION_FAILED',
+            message,
+          });
+        },
         onMessage: (msg) => this.handleServerMessage(msg),
       },
       () => useGameStore.getState().onlineProfile,
@@ -57,6 +63,11 @@ class MultiplayerManagerImpl {
 
   public ensureConnected(): void {
     this.network.connect();
+  }
+
+  public retryConnection(): void {
+    useGameStore.getState().setOnlineError(null);
+    this.network.retryConnect();
   }
 
   public disconnect(): void {
@@ -255,6 +266,20 @@ class MultiplayerManagerImpl {
       }
 
       case 'error': {
+        if (
+          this.network.getActiveRoomId() &&
+          (msg.code === 'ROOM_EXPIRED' || msg.code === 'INVALID_ROOM' || msg.code === 'UNAUTHORIZED')
+        ) {
+          const wasPlaying = store.screen === 'playing' && store.matchConfig.opponentType === 'online';
+          this.network.bindRoomSocket(null);
+          this.synchronizer.reset();
+          store.clearOnlineMatchSession();
+          if (wasPlaying) {
+            store.setScreen('menu');
+            store.openOnlineLobby('create');
+          }
+          this.sceneBridge?.onOnlineMatchExited();
+        }
         store.setOnlineError({ code: msg.code, message: msg.message });
         if (msg.code === 'ALREADY_IN_MATCH' || msg.code === 'MATCHMAKING_TIMEOUT') {
           store.setOnlineMatchmaking({ active: false });

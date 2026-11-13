@@ -50,7 +50,7 @@ jobs:
       - name: Build frontend bundle
         env:
           VITE_BASE_PATH: ${{ steps.pages_base.outputs.base_path }}
-          VITE_WS_URL: ${{ vars.VITE_WS_URL }}
+          VITE_WS_URL: ${{ vars.VITE_WS_URL || 'wss://pool-ball-3d.abdelhaq-elhafidy-41.workers.dev/ws' }}
         run: npm run build:frontend
 
       - name: Setup Pages

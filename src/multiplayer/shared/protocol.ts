@@ -134,6 +134,7 @@ export interface OnlineServerStats {
 }
 
 export type MultiplayerErrorCode =
+  | 'CONNECTION_FAILED'
   | 'INVALID_ROOM'
   | 'ROOM_FULL'
   | 'ROOM_EXPIRED'
