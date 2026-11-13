@@ -1,0 +1,8 @@
+{
+  "name": "Remix ULTIMATE POOL 3D",
+  "description": "A realistic 3D American pool billiards game built with Three.js, Rapier3D physics, and React.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

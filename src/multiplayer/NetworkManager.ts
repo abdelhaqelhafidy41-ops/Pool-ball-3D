@@ -1,0 +1,301 @@
+import type {
+  ClientToServerMessage,
+  ConnectionState,
+  OnlineAvatarId,
+  ServerToClientMessage,
+} from './shared/protocol';
+
+const SESSION_ID_KEY = 'ultimate_pool_ws_session_id';
+const RECONNECT_TOKEN_KEY = 'ultimate_pool_ws_reconnect_token';
+
+export interface NetworkManagerListeners {
+  onConnectionChange: (state: ConnectionState) => void;
+  onMessage: (msg: ServerToClientMessage) => void;
+  onLatencyUpdate: (latencyMs: number) => void;
+}
+
+function isLocalHostname(hostname: string): boolean {
+  return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '[::1]';
+}
+
+export function resolveWebSocketUrl(
+  envWsUrl?: string,
+  loc?: { protocol: string; host: string },
+): string {
+  const configured = (envWsUrl ?? '').trim();
+  if (configured) {
+    let candidate = configured;
+    if (!/^[a-zA-Z][a-zA-Z\d+\-.]*:\/\//.test(candidate)) {
+      const hostPart = candidate.split('/')[0]?.split(':')[0] ?? '';
+      const defaultScheme = isLocalHostname(hostPart) ? 'ws://' : 'wss://';
+      candidate = `${defaultScheme}${candidate.replace(/^\/+/, '')}`;
+    }
+
+    try {
+      const parsed = new URL(candidate);
+      if (parsed.protocol === 'https:') {
+        parsed.protocol = 'wss:';
+      } else if (parsed.protocol === 'http:') {
+        parsed.protocol = 'ws:';
+      }
+
+      const pageIsHttps = loc?.protocol === 'https:';
+      if (
+        (pageIsHttps || !isLocalHostname(parsed.hostname)) &&
+        parsed.protocol === 'ws:' &&
+        !isLocalHostname(parsed.hostname)
+      ) {
+        parsed.protocol = 'wss:';
+      }
+
+      if (!parsed.pathname || parsed.pathname === '/') {
+        parsed.pathname = '/ws';
+      }
+      return parsed.toString();
+    } catch {
+      return candidate;
+    }
+  }
+
+  if (loc && loc.host) {
+    const proto = loc.protocol === 'https:' ? 'wss:' : 'ws:';
+    return `${proto}//${loc.host}/ws`;
+  }
+
+  return 'ws://127.0.0.1:3000/ws';
+}
+
+export function resolveHttpBaseUrl(
+  envWsUrl?: string,
+  loc?: { protocol: string; host: string },
+): string {
+  const configured = (envWsUrl ?? '').trim();
+  if (!configured) return '';
+
+  const wsUrl = resolveWebSocketUrl(configured, loc);
+  try {
+    const parsed = new URL(wsUrl);
+    if (parsed.protocol === 'wss:') {
+      parsed.protocol = 'https:';
+    } else if (parsed.protocol === 'ws:') {
+      parsed.protocol = 'http:';
+    }
+    return parsed.origin;
+  } catch {
+    return '';
+  }
+}
+
+export class NetworkManager {
+  private ws: WebSocket | null = null;
+  private connectionState: ConnectionState = 'disconnected';
+  private intentionallyClosed = false;
+  private reconnectAttempts = 0;
+  private reconnectTimer: number | null = null;
+  private pingTimer: number | null = null;
+  private listeners: NetworkManagerListeners;
+
+  private sessionId: string | null = null;
+  private reconnectToken: string | null = null;
+  private profileProvider: () => { displayName: string; avatarId: OnlineAvatarId };
+  private lastLatencyMs = 35;
+
+  constructor(
+    listeners: NetworkManagerListeners,
+    profileProvider: () => { displayName: string; avatarId: OnlineAvatarId },
+  ) {
+    this.listeners = listeners;
+    this.profileProvider = profileProvider;
+
+    try {
+      if (typeof window !== 'undefined' && window.sessionStorage) {
+        this.sessionId = window.sessionStorage.getItem(SESSION_ID_KEY);
+        this.reconnectToken = window.sessionStorage.getItem(RECONNECT_TOKEN_KEY);
+      }
+    } catch {
+      // Ignore storage access errors
+    }
+  }
+
+  public getConnectionState(): ConnectionState {
+    return this.connectionState;
+  }
+
+  public getSessionCredentials(): { sessionId: string | null; reconnectToken: string | null } {
+    return { sessionId: this.sessionId, reconnectToken: this.reconnectToken };
+  }
+
+  public saveSessionCredentials(sessionId: string, reconnectToken: string): void {
+    this.sessionId = sessionId;
+    this.reconnectToken = reconnectToken;
+    try {
+      if (typeof window !== 'undefined' && window.sessionStorage) {
+        window.sessionStorage.setItem(SESSION_ID_KEY, sessionId);
+        window.sessionStorage.setItem(RECONNECT_TOKEN_KEY, reconnectToken);
+      }
+    } catch {
+      // Ignore storage restriction
+    }
+  }
+
+  public connect(): void {
+    if (
+      this.ws &&
+      (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)
+    ) {
+      return;
+    }
+
+    this.intentionallyClosed = false;
+    this.clearReconnectTimer();
+    this.setConnectionState(this.reconnectAttempts > 0 ? 'reconnecting' : 'connecting');
+
+    const url = this.buildWebSocketUrl();
+    const socket = new WebSocket(url);
+    this.ws = socket;
+
+    socket.onopen = () => {
+      if (this.ws !== socket) return;
+      this.reconnectAttempts = 0;
+      const profile = this.profileProvider();
+
+      if (this.sessionId && this.reconnectToken) {
+        this.send({
+          type: 'session:resume',
+          sessionId: this.sessionId,
+          reconnectToken: this.reconnectToken,
+          displayName: profile.displayName,
+          avatarId: profile.avatarId,
+        });
+      } else {
+        this.send({
+          type: 'session:init',
+          displayName: profile.displayName,
+          avatarId: profile.avatarId,
+          latencyMs: this.lastLatencyMs,
+        });
+      }
+
+      this.setConnectionState('connected');
+      this.startPingLoop();
+    };
+
+    socket.onmessage = (evt) => {
+      if (this.ws !== socket) return;
+      try {
+        const msg = JSON.parse(String(evt.data)) as ServerToClientMessage;
+        if (msg.type === 'pong') {
+          const rtt = Math.max(1, Math.round(Date.now() - msg.clientTimeMs));
+          this.lastLatencyMs = rtt;
+          this.listeners.onLatencyUpdate(rtt);
+          return;
+        }
+        if (msg.type === 'session:ready') {
+          this.saveSessionCredentials(msg.sessionId, msg.reconnectToken);
+        }
+        this.listeners.onMessage(msg);
+      } catch {
+        // Ignore malformed frames
+      }
+    };
+
+    socket.onclose = () => {
+      if (this.ws !== socket) return;
+      this.ws = null;
+      this.stopPingLoop();
+      if (this.intentionallyClosed) {
+        this.setConnectionState('disconnected');
+        return;
+      }
+      this.scheduleReconnect();
+    };
+
+    socket.onerror = () => {
+      // onclose handles state transition and reconnect backoff
+    };
+  }
+
+  public disconnect(): void {
+    this.intentionallyClosed = true;
+    this.clearReconnectTimer();
+    this.stopPingLoop();
+    if (this.ws) {
+      const target = this.ws;
+      this.ws = null;
+      try {
+        target.close(1000, 'Client disconnect');
+      } catch {
+        // Ignore
+      }
+    }
+    this.setConnectionState('disconnected');
+  }
+
+  public send(msg: ClientToServerMessage): boolean {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      return false;
+    }
+    this.ws.send(JSON.stringify(msg));
+    return true;
+  }
+
+  public simulateConnectionDropForDebug(): void {
+    if (this.ws) {
+      this.ws.close(4500, 'Simulated drop');
+    }
+  }
+
+  private buildWebSocketUrl(): string {
+    const loc = typeof window !== 'undefined' ? window.location : undefined;
+    return resolveWebSocketUrl(import.meta.env.VITE_WS_URL, loc);
+  }
+
+  private setConnectionState(next: ConnectionState): void {
+    if (this.connectionState === next) return;
+    this.connectionState = next;
+    this.listeners.onConnectionChange(next);
+  }
+
+  private startPingLoop(): void {
+    this.stopPingLoop();
+    this.send({
+      type: 'ping',
+      clientTimeMs: Date.now(),
+      latencyMs: this.lastLatencyMs,
+    });
+    this.pingTimer = window.setInterval(() => {
+      this.send({
+        type: 'ping',
+        clientTimeMs: Date.now(),
+        latencyMs: this.lastLatencyMs,
+      });
+    }, 5000);
+  }
+
+  private stopPingLoop(): void {
+    if (this.pingTimer !== null) {
+      window.clearInterval(this.pingTimer);
+      this.pingTimer = null;
+    }
+  }
+
+  private scheduleReconnect(): void {
+    this.clearReconnectTimer();
+    this.setConnectionState('reconnecting');
+    const delayMs = Math.min(8000, 600 * Math.pow(1.6, this.reconnectAttempts));
+    this.reconnectAttempts++;
+    this.reconnectTimer = window.setTimeout(() => {
+      this.reconnectTimer = null;
+      if (!this.intentionallyClosed) {
+        this.connect();
+      }
+    }, delayMs);
+  }
+
+  private clearReconnectTimer(): void {
+    if (this.reconnectTimer !== null) {
+      window.clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+  }
+}
