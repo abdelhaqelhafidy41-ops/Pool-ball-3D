@@ -129,6 +129,7 @@ class MultiplayerManagerImpl {
   public leaveMatchOrRoom(): void {
     const store = useGameStore.getState();
     this.network.send({ type: 'room:leave' });
+    this.network.bindRoomSocket(null);
     this.synchronizer.reset();
     store.clearOnlineMatchSession();
     if (store.screen === 'playing') {
@@ -234,11 +235,15 @@ class MultiplayerManagerImpl {
         store.setOnlineError(null);
 
         if (msg.resumedRoom) {
+          this.network.bindRoomSocket(msg.resumedRoom.roomId);
           const role =
             msg.resumedRoom.players.find((p) => p.sessionId === msg.sessionId)?.role ?? null;
           store.setOnlineRoom(msg.resumedRoom);
 
           if (msg.resumedMatch && msg.balls) {
+            if (store.onlineMatchId !== msg.resumedMatch.matchId) {
+              store.resetMatchStats();
+            }
             this.synchronizer.applySettledState(msg.balls);
             store.syncFromOnlineMatchSnapshot(msg.resumedMatch, role);
             store.closeOnlineLobby();
@@ -259,6 +264,7 @@ class MultiplayerManagerImpl {
 
       case 'room:created':
       case 'room:updated': {
+        this.network.bindRoomSocket(msg.room.roomId);
         store.setOnlineRoom(msg.room);
         store.setOnlineError(null);
         break;
@@ -266,6 +272,7 @@ class MultiplayerManagerImpl {
 
       case 'room:closed': {
         const wasPlaying = store.screen === 'playing' && store.matchConfig.opponentType === 'online';
+        this.network.bindRoomSocket(null);
         this.synchronizer.reset();
         store.clearOnlineMatchSession();
         store.setOnlineError({ code: 'ROOM_EXPIRED', message: msg.reason });
@@ -289,6 +296,7 @@ class MultiplayerManagerImpl {
       }
 
       case 'matchmaking:matched': {
+        this.network.bindRoomSocket(msg.room.roomId);
         store.setOnlineMatchmaking({
           active: false,
           timedOutMessage: null,

@@ -97,6 +97,9 @@ export class NetworkManager {
 
   private sessionId: string | null = null;
   private reconnectToken: string | null = null;
+  private activeRoomId: string | null = null;
+  private handshakeReady = false;
+  private pendingMessages: ClientToServerMessage[] = [];
   private profileProvider: () => { displayName: string; avatarId: OnlineAvatarId };
   private lastLatencyMs = 35;
 
@@ -121,6 +124,10 @@ export class NetworkManager {
     return this.connectionState;
   }
 
+  public getActiveRoomId(): string | null {
+    return this.activeRoomId;
+  }
+
   public getSessionCredentials(): { sessionId: string | null; reconnectToken: string | null } {
     return { sessionId: this.sessionId, reconnectToken: this.reconnectToken };
   }
@@ -138,6 +145,33 @@ export class NetworkManager {
     }
   }
 
+  public bindRoomSocket(roomId: string | null): void {
+    const normalized = roomId?.trim() || null;
+    if (this.activeRoomId === normalized) return;
+
+    this.activeRoomId = normalized;
+    this.handshakeReady = false;
+    if (!normalized) {
+      this.pendingMessages = [];
+    }
+    this.clearReconnectTimer();
+    this.stopPingLoop();
+
+    if (this.ws) {
+      const old = this.ws;
+      this.ws = null;
+      try {
+        old.close(1000, 'Switching WebSocket scope');
+      } catch {
+        // Ignore
+      }
+    }
+
+    if (!this.intentionallyClosed) {
+      this.connect();
+    }
+  }
+
   public connect(): void {
     if (
       this.ws &&
@@ -147,10 +181,11 @@ export class NetworkManager {
     }
 
     this.intentionallyClosed = false;
+    this.handshakeReady = false;
     this.clearReconnectTimer();
     this.setConnectionState(this.reconnectAttempts > 0 ? 'reconnecting' : 'connecting');
 
-    const url = this.buildWebSocketUrl();
+    const url = this.buildWebSocketUrl(this.activeRoomId);
     const socket = new WebSocket(url);
     this.ws = socket;
 
@@ -160,7 +195,7 @@ export class NetworkManager {
       const profile = this.profileProvider();
 
       if (this.sessionId && this.reconnectToken) {
-        this.send({
+        this.sendRaw(socket, {
           type: 'session:resume',
           sessionId: this.sessionId,
           reconnectToken: this.reconnectToken,
@@ -168,7 +203,7 @@ export class NetworkManager {
           avatarId: profile.avatarId,
         });
       } else {
-        this.send({
+        this.sendRaw(socket, {
           type: 'session:init',
           displayName: profile.displayName,
           avatarId: profile.avatarId,
@@ -192,6 +227,8 @@ export class NetworkManager {
         }
         if (msg.type === 'session:ready') {
           this.saveSessionCredentials(msg.sessionId, msg.reconnectToken);
+          this.handshakeReady = true;
+          this.flushPendingMessages();
         }
         this.listeners.onMessage(msg);
       } catch {
@@ -202,6 +239,7 @@ export class NetworkManager {
     socket.onclose = () => {
       if (this.ws !== socket) return;
       this.ws = null;
+      this.handshakeReady = false;
       this.stopPingLoop();
       if (this.intentionallyClosed) {
         this.setConnectionState('disconnected');
@@ -217,6 +255,9 @@ export class NetworkManager {
 
   public disconnect(): void {
     this.intentionallyClosed = true;
+    this.handshakeReady = false;
+    this.activeRoomId = null;
+    this.pendingMessages = [];
     this.clearReconnectTimer();
     this.stopPingLoop();
     if (this.ws) {
@@ -232,11 +273,36 @@ export class NetworkManager {
   }
 
   public send(msg: ClientToServerMessage): boolean {
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN || !this.handshakeReady) {
+      if (
+        !this.intentionallyClosed &&
+        msg.type !== 'ping' &&
+        msg.type !== 'session:init' &&
+        msg.type !== 'session:resume'
+      ) {
+        if (this.pendingMessages.length >= 25) {
+          this.pendingMessages.shift();
+        }
+        this.pendingMessages.push(msg);
+      }
       return false;
     }
     this.ws.send(JSON.stringify(msg));
     return true;
+  }
+
+  private sendRaw(socket: WebSocket, msg: ClientToServerMessage): void {
+    if (socket.readyState === WebSocket.OPEN) {
+      socket.send(JSON.stringify(msg));
+    }
+  }
+
+  private flushPendingMessages(): void {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN || !this.handshakeReady) return;
+    const queued = this.pendingMessages.splice(0, this.pendingMessages.length);
+    for (const msg of queued) {
+      this.ws.send(JSON.stringify(msg));
+    }
   }
 
   public simulateConnectionDropForDebug(): void {
@@ -245,9 +311,18 @@ export class NetworkManager {
     }
   }
 
-  private buildWebSocketUrl(): string {
+  private buildWebSocketUrl(roomId: string | null = null): string {
     const loc = typeof window !== 'undefined' ? window.location : undefined;
-    return resolveWebSocketUrl(import.meta.env.VITE_WS_URL, loc);
+    const base = resolveWebSocketUrl(import.meta.env.VITE_WS_URL, loc);
+    if (!roomId) return base;
+    try {
+      const parsed = new URL(base);
+      parsed.searchParams.set('roomId', roomId);
+      return parsed.toString();
+    } catch {
+      const sep = base.includes('?') ? '&' : '?';
+      return `${base}${sep}roomId=${encodeURIComponent(roomId)}`;
+    }
   }
 
   private setConnectionState(next: ConnectionState): void {
