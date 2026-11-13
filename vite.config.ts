@@ -22,13 +22,13 @@ function resolveBasePath(): string {
   return '/';
 }
 
-export default defineConfig(() => {
+export default defineConfig(({command}) => {
   return {
-    base: resolveBasePath(),
+    base: command === 'build' ? resolveBasePath() : '/',
     plugins: [react(), tailwindcss()],
     resolve: {
       alias: {
-        '@': path.resolve(__dirname, '.'),
+        '@': path.resolve(import.meta.dirname, '.'),
       },
     },
     server: {

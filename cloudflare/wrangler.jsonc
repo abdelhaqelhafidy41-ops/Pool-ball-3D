@@ -1,6 +1,6 @@
 {
   "$schema": "../node_modules/wrangler/config-schema.json",
-  "name": "ultimate-pool-3d-multiplayer",
+  "name": "pool-ball-3d",
   "main": "./dist/worker.js",
   "compatibility_date": "2025-04-01",
   "build": {
@@ -35,7 +35,7 @@
     }
   ],
   "vars": {
-    "CORS_ORIGIN": "*",
+    "CORS_ORIGIN": "https://abdelhaqelhafidy41-ops.github.io",
     "WS_HEARTBEAT_MS": "15000",
     "RECONNECT_GRACE_MS": "30000",
     "MATCHMAKING_TIMEOUT_MS": "45000",

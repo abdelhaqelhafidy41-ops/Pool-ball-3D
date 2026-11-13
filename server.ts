@@ -12,8 +12,20 @@ import {
 } from './server/config';
 import { SocketController } from './server/SocketController';
 
+function resolveListenPort(fallbackPort: number): number {
+  const idx = process.argv.indexOf('--port');
+  if (idx !== -1 && process.argv[idx + 1]) {
+    const parsed = Number.parseInt(process.argv[idx + 1], 10);
+    if (Number.isFinite(parsed) && parsed > 0) {
+      return parsed;
+    }
+  }
+  return fallbackPort;
+}
+
 async function startServer() {
   const config = loadServerConfig();
+  const listenPort = resolveListenPort(config.port);
   await ensureServerRapierInitialized();
 
   const app = express();
@@ -88,6 +100,7 @@ async function startServer() {
     });
   });
 
+  let viteServer: { close: () => Promise<void> } | null = null;
   if (!isProd) {
     const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
@@ -97,6 +110,7 @@ async function startServer() {
       },
       appType: 'spa',
     });
+    viteServer = vite;
     app.use(vite.middlewares);
   } else {
     const distDir = path.resolve(process.cwd(), 'dist');
@@ -118,13 +132,26 @@ async function startServer() {
     }
   }
 
-  httpServer.listen(config.port, '0.0.0.0', () => {
-    console.log(`ULTIMATE POOL 3D server listening on http://0.0.0.0:${config.port} (WS: /ws)`);
+  httpServer.on('error', (err) => {
+    console.error('HTTP server error:', err);
   });
 
+  httpServer.listen(listenPort, '0.0.0.0', () => {
+    console.log(`ULTIMATE POOL 3D server listening on http://0.0.0.0:${listenPort} (WS: /ws)`);
+  });
+
+  let shuttingDown = false;
   const shutdown = () => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    const forceTimer = setTimeout(() => process.exit(0), 500);
+    forceTimer.unref();
+
     socketController.dispose();
+    void viteServer?.close().catch(() => {});
+    httpServer.closeAllConnections?.();
     httpServer.close(() => {
+      clearTimeout(forceTimer);
       process.exit(0);
     });
   };

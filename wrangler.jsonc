@@ -1,0 +1,47 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "pool-ball-3d",
+  "main": "./cloudflare/dist/worker.js",
+  "compatibility_date": "2025-04-01",
+  "build": {
+    "command": "node cloudflare/build-worker.mjs"
+  },
+  "rules": [
+    {
+      "type": "CompiledWasm",
+      "globs": ["**/*.wasm"],
+      "fallthrough": true
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "MATCHMAKER",
+        "class_name": "MatchmakerDurableObject"
+      },
+      {
+        "name": "POOL_ROOM",
+        "class_name": "PoolRoomDurableObject"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": [
+        "MatchmakerDurableObject",
+        "PoolRoomDurableObject"
+      ]
+    }
+  ],
+  "vars": {
+    "CORS_ORIGIN": "https://abdelhaqelhafidy41-ops.github.io",
+    "WS_HEARTBEAT_MS": "15000",
+    "RECONNECT_GRACE_MS": "30000",
+    "MATCHMAKING_TIMEOUT_MS": "45000",
+    "ROOM_TTL_MS": "900000",
+    "RATE_LIMIT_MAX_MSG_PER_SEC": "45",
+    "PHYSICS_BROADCAST_HZ": "35",
+    "MAX_LATENCY_SPREAD_MS": "250"
+  }
+}
