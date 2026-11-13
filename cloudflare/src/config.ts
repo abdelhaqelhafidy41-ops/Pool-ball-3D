@@ -5,6 +5,7 @@ import type { PoolRoomDurableObject } from './PoolRoomDurableObject';
 export interface Env {
   MATCHMAKER: DurableObjectNamespace<MatchmakerDurableObject>;
   POOL_ROOM: DurableObjectNamespace<PoolRoomDurableObject>;
+  DB?: D1Database;
   CORS_ORIGIN?: string;
   WS_HEARTBEAT_MS?: string;
   RECONNECT_GRACE_MS?: string;

@@ -18,6 +18,7 @@ import {
   type Env,
   type WorkerRuntimeConfig,
 } from './config';
+import { D1ProgressionService } from './D1ProgressionService';
 
 const ROOM_CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 
@@ -27,6 +28,7 @@ interface LobbySocketAttachment {
 
 interface SessionRow {
   session_id: string;
+  player_id: string | null;
   reconnect_token: string;
   display_name: string;
   avatar_id: string;
@@ -63,6 +65,7 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
     this.ctx.storage.sql.exec(`
       CREATE TABLE IF NOT EXISTS sessions (
         session_id TEXT PRIMARY KEY,
+        player_id TEXT,
         reconnect_token TEXT NOT NULL,
         display_name TEXT NOT NULL,
         avatar_id TEXT NOT NULL,
@@ -94,15 +97,32 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
       CREATE TABLE IF NOT EXISTS match_history (
         match_id TEXT PRIMARY KEY,
         room_id TEXT NOT NULL,
+        player1_id TEXT,
+        player2_id TEXT,
         player1_name TEXT NOT NULL,
         player2_name TEXT NOT NULL,
         winner_name TEXT NOT NULL,
         winner_role TEXT NOT NULL,
         reason TEXT NOT NULL,
         total_shots INTEGER NOT NULL,
-        ended_at_ms INTEGER NOT NULL
+        ended_at_ms INTEGER NOT NULL,
+        payload_json TEXT
       );
     `);
+    // Safe column migrations for pre-existing Durable Object SQLite tables
+    const alterStatements = [
+      'ALTER TABLE sessions ADD COLUMN player_id TEXT',
+      'ALTER TABLE match_history ADD COLUMN player1_id TEXT',
+      'ALTER TABLE match_history ADD COLUMN player2_id TEXT',
+      'ALTER TABLE match_history ADD COLUMN payload_json TEXT',
+    ];
+    for (const stmt of alterStatements) {
+      try {
+        this.ctx.storage.sql.exec(stmt);
+      } catch {
+        // Column already exists
+      }
+    }
     this.schemaReady = true;
   }
 
@@ -171,12 +191,25 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
     }
 
     if (msg.type === 'session:init') {
-      const sess = this.createSession(msg.displayName, msg.avatarId, msg.latencyMs);
+      const identity = await this.resolvePersistentPlayerIdentity({
+        playerId: msg.playerId,
+        playerToken: msg.playerToken,
+        displayName: msg.displayName,
+        avatarId: msg.avatarId,
+      });
+      const sess = this.createSession(
+        identity.displayName,
+        identity.avatarId,
+        msg.latencyMs,
+        identity.playerId,
+      );
       this.bindSocketToSession(ws, sess.session_id);
       this.sendSocket(ws, {
         type: 'session:ready',
         sessionId: sess.session_id,
         reconnectToken: sess.reconnect_token,
+        playerId: identity.playerId,
+        playerToken: identity.playerToken,
         displayName: sess.display_name,
         avatarId: sanitizeAvatarId(sess.avatar_id),
         resumedRoom: null,
@@ -190,12 +223,25 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
     if (msg.type === 'session:resume') {
       const verified = this.verifyReconnect(msg.sessionId, msg.reconnectToken);
       if (!verified) {
-        const fresh = this.createSession(msg.displayName, msg.avatarId);
+        const identity = await this.resolvePersistentPlayerIdentity({
+          playerId: msg.playerId,
+          playerToken: msg.playerToken,
+          displayName: msg.displayName,
+          avatarId: msg.avatarId,
+        });
+        const fresh = this.createSession(
+          identity.displayName,
+          identity.avatarId,
+          35,
+          identity.playerId,
+        );
         this.bindSocketToSession(ws, fresh.session_id);
         this.sendSocket(ws, {
           type: 'session:ready',
           sessionId: fresh.session_id,
           reconnectToken: fresh.reconnect_token,
+          playerId: identity.playerId,
+          playerToken: identity.playerToken,
           displayName: fresh.display_name,
           avatarId: sanitizeAvatarId(fresh.avatar_id),
           resumedRoom: null,
@@ -206,19 +252,26 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
         return;
       }
 
-      if (msg.displayName || msg.avatarId) {
-        const nextName = sanitizeDisplayName(msg.displayName ?? verified.display_name);
-        const nextAvatar = sanitizeAvatarId(msg.avatarId ?? verified.avatar_id);
-        this.ctx.storage.sql.exec(
-          'UPDATE sessions SET display_name = ?, avatar_id = ?, last_seen_at_ms = ? WHERE session_id = ?',
-          nextName,
-          nextAvatar,
-          Date.now(),
-          verified.session_id,
-        );
-        verified.display_name = nextName;
-        verified.avatar_id = nextAvatar;
-      }
+      const identity = await this.resolvePersistentPlayerIdentity({
+        playerId: msg.playerId ?? verified.player_id,
+        playerToken: msg.playerToken,
+        displayName: msg.displayName ?? verified.display_name,
+        avatarId: sanitizeAvatarId(msg.avatarId ?? verified.avatar_id),
+      });
+
+      const nextName = sanitizeDisplayName(msg.displayName ?? identity.displayName ?? verified.display_name);
+      const nextAvatar = sanitizeAvatarId(msg.avatarId ?? identity.avatarId ?? verified.avatar_id);
+      this.ctx.storage.sql.exec(
+        'UPDATE sessions SET player_id = ?, display_name = ?, avatar_id = ?, last_seen_at_ms = ? WHERE session_id = ?',
+        verified.player_id ?? identity.playerId,
+        nextName,
+        nextAvatar,
+        Date.now(),
+        verified.session_id,
+      );
+      verified.display_name = nextName;
+      verified.avatar_id = nextAvatar;
+      verified.player_id = verified.player_id ?? identity.playerId;
 
       this.bindSocketToSession(ws, verified.session_id);
 
@@ -246,6 +299,8 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
         type: 'session:ready',
         sessionId: verified.session_id,
         reconnectToken: verified.reconnect_token,
+        playerId: verified.player_id ?? undefined,
+        playerToken: identity.playerToken,
         displayName: verified.display_name,
         avatarId: sanitizeAvatarId(verified.avatar_id),
         resumedRoom,
@@ -278,6 +333,17 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
           Date.now(),
           session.session_id,
         );
+        if (session.player_id && this.env.DB) {
+          try {
+            await this.env.DB.prepare(
+              'UPDATE players SET display_name = ?, avatar_id = ?, updated_at_ms = ? WHERE player_id = ?',
+            )
+              .bind(name, avatar, Date.now(), session.player_id)
+              .run();
+          } catch {
+            // Non-blocking D1 sync error
+          }
+        }
         if (session.active_room_id) {
           const roomStub = this.env.POOL_ROOM.get(
             this.env.POOL_ROOM.idFromName(session.active_room_id),
@@ -335,6 +401,7 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
           expiresAtMs,
           host: {
             sessionId: session.session_id,
+            playerId: session.player_id ?? session.session_id,
             reconnectToken: session.reconnect_token,
             displayName: session.display_name,
             avatarId: sanitizeAvatarId(session.avatar_id),
@@ -389,6 +456,7 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
         const roomStub = this.env.POOL_ROOM.get(this.env.POOL_ROOM.idFromName(roomRow.room_id));
         const joinRes = await roomStub.joinRoom({
           sessionId: session.session_id,
+          playerId: session.player_id ?? session.session_id,
           reconnectToken: session.reconnect_token,
           displayName: session.display_name,
           avatarId: sanitizeAvatarId(session.avatar_id),
@@ -554,11 +622,13 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
     this.ensureSchema();
     this.ctx.storage.sql.exec(
       `INSERT OR IGNORE INTO match_history (
-        match_id, room_id, player1_name, player2_name, winner_name,
-        winner_role, reason, total_shots, ended_at_ms
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        match_id, room_id, player1_id, player2_id, player1_name, player2_name, winner_name,
+        winner_role, reason, total_shots, ended_at_ms, payload_json
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       record.matchId,
       record.roomId,
+      record.player1Id ?? null,
+      record.player2Id ?? null,
       record.player1Name,
       record.player2Name,
       record.winnerName,
@@ -566,6 +636,7 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
       record.reason,
       record.totalShots,
       record.endedAtMs,
+      JSON.stringify(record),
     );
     this.ctx.storage.sql.exec(`
       DELETE FROM match_history
@@ -615,17 +686,28 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
       )
       .toArray();
 
-    return rows.map((r) => ({
-      matchId: String(r.match_id),
-      roomId: String(r.room_id),
-      player1Name: String(r.player1_name),
-      player2Name: String(r.player2_name),
-      winnerName: String(r.winner_name),
-      winnerRole: r.winner_role === 'player2' ? 'player2' : 'player1',
-      reason: String(r.reason),
-      totalShots: Number(r.total_shots),
-      endedAtMs: Number(r.ended_at_ms),
-    }));
+    return rows.map((r) => {
+      if (typeof r.payload_json === 'string' && r.payload_json.length > 0) {
+        try {
+          return JSON.parse(r.payload_json) as MatchHistoryRecord;
+        } catch {
+          // Fall back to columns
+        }
+      }
+      return {
+        matchId: String(r.match_id),
+        roomId: String(r.room_id),
+        player1Id: r.player1_id ? String(r.player1_id) : undefined,
+        player2Id: r.player2_id ? String(r.player2_id) : undefined,
+        player1Name: String(r.player1_name),
+        player2Name: String(r.player2_name),
+        winnerName: String(r.winner_name),
+        winnerRole: r.winner_role === 'player2' ? 'player2' : 'player1',
+        reason: String(r.reason),
+        totalShots: Number(r.total_shots),
+        endedAtMs: Number(r.ended_at_ms),
+      };
+    });
   }
 
   private async handleSocketDisconnected(ws: WebSocket): Promise<void> {
@@ -642,14 +724,60 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
     await this.scheduleNextAlarm();
   }
 
+  private async resolvePersistentPlayerIdentity(input: {
+    playerId?: string | null;
+    playerToken?: string | null;
+    displayName?: string | null;
+    avatarId?: OnlineAvatarId | null;
+  }): Promise<{
+    playerId: string;
+    playerToken?: string;
+    displayName: string;
+    avatarId: OnlineAvatarId;
+  }> {
+    const fallbackName = sanitizeDisplayName(input.displayName);
+    const fallbackAvatar = sanitizeAvatarId(input.avatarId);
+
+    if (this.env.DB) {
+      try {
+        const svc = new D1ProgressionService(this.env.DB);
+        const res = await svc.authenticateOrCreatePlayer({
+          playerId: input.playerId,
+          playerToken: input.playerToken,
+          displayName: input.displayName,
+          avatarId: input.avatarId,
+        });
+        if (res.ok) {
+          return {
+            playerId: res.playerId,
+            playerToken: res.playerToken,
+            displayName: res.profile.displayName,
+            avatarId: sanitizeAvatarId(res.profile.avatarId),
+          };
+        }
+      } catch {
+        // Fallback cleanly if D1 is temporarily unavailable
+      }
+    }
+
+    return {
+      playerId: `ply_${crypto.randomUUID().replace(/-/g, '').slice(0, 16)}`,
+      displayName: fallbackName,
+      avatarId: fallbackAvatar,
+    };
+  }
+
   private createSession(
     displayName?: string,
     avatarId?: OnlineAvatarId,
     latencyMs = 35,
+    playerId?: string,
   ): SessionRow {
     const now = Date.now();
+    const sessionId = `ply_${crypto.randomUUID().replace(/-/g, '').slice(0, 16)}`;
     const row: SessionRow = {
-      session_id: `ply_${crypto.randomUUID().replace(/-/g, '').slice(0, 16)}`,
+      session_id: sessionId,
+      player_id: playerId ?? sessionId,
       reconnect_token: randomHexToken(24),
       display_name: sanitizeDisplayName(displayName),
       avatar_id: sanitizeAvatarId(avatarId),
@@ -662,10 +790,11 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
 
     this.ctx.storage.sql.exec(
       `INSERT INTO sessions (
-        session_id, reconnect_token, display_name, avatar_id, latency_ms,
+        session_id, player_id, reconnect_token, display_name, avatar_id, latency_ms,
         active_room_id, in_matchmaking, created_at_ms, last_seen_at_ms
-      ) VALUES (?, ?, ?, ?, ?, NULL, 0, ?, ?)`,
+      ) VALUES (?, ?, ?, ?, ?, ?, NULL, 0, ?, ?)`,
       row.session_id,
+      row.player_id,
       row.reconnect_token,
       row.display_name,
       row.avatar_id,
@@ -685,6 +814,7 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
     const r = rows[0];
     return {
       session_id: String(r.session_id),
+      player_id: r.player_id ? String(r.player_id) : String(r.session_id),
       reconnect_token: String(r.reconnect_token),
       display_name: String(r.display_name),
       avatar_id: String(r.avatar_id),
@@ -895,6 +1025,7 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
           expiresAtMs,
           player1: {
             sessionId: sessA.session_id,
+            playerId: sessA.player_id ?? sessA.session_id,
             reconnectToken: sessA.reconnect_token,
             displayName: sessA.display_name,
             avatarId: sanitizeAvatarId(sessA.avatar_id),
@@ -902,6 +1033,7 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
           },
           player2: {
             sessionId: sessB.session_id,
+            playerId: sessB.player_id ?? sessB.session_id,
             reconnectToken: sessB.reconnect_token,
             displayName: sessB.display_name,
             avatarId: sanitizeAvatarId(sessB.avatar_id),

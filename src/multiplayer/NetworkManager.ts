@@ -4,6 +4,10 @@ import type {
   OnlineAvatarId,
   ServerToClientMessage,
 } from './shared/protocol';
+import {
+  getStoredPlayerIdentity,
+  saveStoredPlayerIdentity,
+} from './ProgressionClient';
 
 const SESSION_ID_KEY = 'ultimate_pool_ws_session_id';
 const RECONNECT_TOKEN_KEY = 'ultimate_pool_ws_reconnect_token';
@@ -152,6 +156,19 @@ export class NetworkManager {
     }
   }
 
+  public clearSessionCredentials(): void {
+    this.sessionId = null;
+    this.reconnectToken = null;
+    try {
+      if (typeof window !== 'undefined' && window.sessionStorage) {
+        window.sessionStorage.removeItem(SESSION_ID_KEY);
+        window.sessionStorage.removeItem(RECONNECT_TOKEN_KEY);
+      }
+    } catch {
+      // Ignore
+    }
+  }
+
   public bindRoomSocket(roomId: string | null): void {
     const normalized = roomId?.trim() || null;
     if (this.activeRoomId === normalized) return;
@@ -243,6 +260,7 @@ export class NetworkManager {
       if (this.ws !== socket) return;
       this.reconnectAttempts = 0;
       const profile = this.profileProvider();
+      const storedIdentity = getStoredPlayerIdentity();
 
       if (this.sessionId && this.reconnectToken) {
         this.sendRaw(socket, {
@@ -251,6 +269,8 @@ export class NetworkManager {
           reconnectToken: this.reconnectToken,
           displayName: profile.displayName,
           avatarId: profile.avatarId,
+          playerId: storedIdentity?.playerId,
+          playerToken: storedIdentity?.playerToken,
         });
       } else {
         this.sendRaw(socket, {
@@ -258,6 +278,8 @@ export class NetworkManager {
           displayName: profile.displayName,
           avatarId: profile.avatarId,
           latencyMs: this.lastLatencyMs,
+          playerId: storedIdentity?.playerId,
+          playerToken: storedIdentity?.playerToken,
         });
       }
     };
@@ -275,6 +297,12 @@ export class NetworkManager {
         if (msg.type === 'session:ready') {
           this.clearConnectTimeout();
           this.saveSessionCredentials(msg.sessionId, msg.reconnectToken);
+          if (msg.playerId && msg.playerToken) {
+            saveStoredPlayerIdentity({
+              playerId: msg.playerId,
+              playerToken: msg.playerToken,
+            });
+          }
           this.handshakeReady = true;
           this.listeners.onMessage(msg);
           this.setConnectionState('connected');

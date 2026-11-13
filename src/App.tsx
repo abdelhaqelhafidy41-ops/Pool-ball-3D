@@ -5,6 +5,7 @@ import { GameHUD } from './components/GameHUD';
 import { MainMenu } from './components/MainMenu';
 import { MatchEndModal } from './components/MatchEndModal';
 import { OnlineLobbyUI } from './components/OnlineLobbyUI';
+import { ProgressionModal } from './components/ProgressionModal';
 import { SettingsModal } from './components/SettingsModal';
 import type { PocketId } from './game/rules/types';
 import { soundEngine } from './game/utils/SoundEngine';
@@ -103,6 +104,7 @@ export default function App() {
           onResetAllStats={handleResetAllStats}
         />
         <OnlineLobbyUI />
+        <ProgressionModal />
       </main>
     </ErrorBoundary>
   );

@@ -1,6 +1,9 @@
 import {
+  Award,
+  BarChart3,
   Cpu,
   Globe,
+  History,
   KeyRound,
   Maximize2,
   Minimize2,
@@ -9,17 +12,20 @@ import {
   Search,
   Settings,
   Trophy,
+  User,
   UserPlus,
   Users,
   Volume2,
   VolumeX,
 } from 'lucide-react';
+import { useEffect } from 'react';
 import { AI_DIFFICULTY_PROFILES } from '../game/ai/AIDifficultyConfig';
 import { computeAverageBallsPerTurn } from '../game/rules/MatchStatistics';
 import type { AiDifficulty } from '../game/rules/types';
 import { soundEngine } from '../game/utils/SoundEngine';
 import { multiplayerManager } from '../multiplayer/MultiplayerManager';
-import type { OnlineModeIntent } from '../multiplayer/shared/protocol';
+import { progressionClient } from '../multiplayer/ProgressionClient';
+import { ONLINE_AVATARS, type OnlineModeIntent } from '../multiplayer/shared/protocol';
 import { useGameStore } from '../store/useGameStore';
 import { FpsCounter } from './FpsCounter';
 
@@ -39,6 +45,15 @@ export function MainMenu({ onStartMatch, onToggleFullscreen }: MainMenuProps) {
   const updateMatchConfig = useGameStore((s) => s.updateMatchConfig);
   const matchStats = useGameStore((s) => s.matchStats);
   const openOnlineLobby = useGameStore((s) => s.openOnlineLobby);
+  const ownProfile = useGameStore((s) => s.ownProfile);
+  const onlineProfile = useGameStore((s) => s.onlineProfile);
+  const openProgressionModal = useGameStore((s) => s.openProgressionModal);
+
+  useEffect(() => {
+    if (screen === 'menu' && !ownProfile) {
+      void progressionClient.ensurePlayerSession();
+    }
+  }, [screen, ownProfile]);
 
   if (screen !== 'menu') return null;
 
@@ -364,6 +379,90 @@ export function MainMenu({ onStartMatch, onToggleFullscreen }: MainMenuProps) {
                 Play with a Friend
               </button>
             </div>
+
+            {/* Competitive Identity & Progression Strip */}
+            {(() => {
+              const activeAvatarId = ownProfile?.avatarId ?? onlineProfile.avatarId;
+              const av = ONLINE_AVATARS.find((a) => a.id === activeAvatarId) ?? ONLINE_AVATARS[0];
+              const displayName = ownProfile?.displayName ?? onlineProfile.displayName;
+              const elo = ownProfile?.elo ?? 1200;
+              const level = ownProfile?.level ?? 1;
+              const xpRatio = ownProfile ? Math.round(ownProfile.levelProgress.progressRatio * 100) : 0;
+
+              return (
+                <div className="mt-2.5 rounded-xl border border-white/10 bg-black/35 p-2.5">
+                  <div className="flex items-center justify-between gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        soundEngine.unlock();
+                        soundEngine.playUiClick();
+                        openProgressionModal('profile');
+                      }}
+                      className="flex items-center gap-2 min-w-0 text-left hover:opacity-90 cursor-pointer"
+                    >
+                      <span
+                        className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-white/15 text-xs font-bold"
+                        style={{ backgroundColor: `${av.accent}22`, color: av.accent }}
+                      >
+                        {av.glyph}
+                      </span>
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-1.5">
+                          <span className="truncate text-xs font-extrabold text-white">
+                            {displayName}
+                          </span>
+                          <span className="rounded border border-amber-400/35 bg-amber-500/12 px-1 py-0.2 text-[9px] font-mono font-bold text-amber-300">
+                            Lv {level}
+                          </span>
+                        </div>
+                        <div className="mt-1 h-1 w-24 overflow-hidden rounded bg-white/10">
+                          <div
+                            className="h-full bg-amber-500 transition-all"
+                            style={{ width: `${xpRatio}%` }}
+                          />
+                        </div>
+                      </div>
+                    </button>
+
+                    <div className="text-right font-mono tabular-nums shrink-0">
+                      <div className="text-xs font-black text-amber-300">{elo} ELO</div>
+                      <div className="text-[10px] text-slate-400">
+                        {ownProfile?.rank ? `Rank #${ownProfile.rank}` : 'Unranked'}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="mt-2 grid grid-cols-4 gap-1">
+                    {(
+                      [
+                        { id: 'profile', label: 'Profile', icon: User },
+                        { id: 'leaderboard', label: 'Ranks', icon: BarChart3 },
+                        { id: 'achievements', label: 'Trophies', icon: Award },
+                        { id: 'history', label: 'History', icon: History },
+                      ] as const
+                    ).map((btn) => {
+                      const Icon = btn.icon;
+                      return (
+                        <button
+                          key={btn.id}
+                          type="button"
+                          onClick={() => {
+                            soundEngine.unlock();
+                            soundEngine.playUiClick();
+                            openProgressionModal(btn.id);
+                          }}
+                          className="inline-flex items-center justify-center gap-1 rounded-lg border border-white/10 bg-white/5 px-1.5 py-1 text-[10px] font-bold text-slate-200 hover:bg-white/12 cursor-pointer whitespace-nowrap"
+                        >
+                          <Icon className="h-3 w-3 text-amber-400 shrink-0" />
+                          {btn.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            })()}
           </div>
         </div>
 

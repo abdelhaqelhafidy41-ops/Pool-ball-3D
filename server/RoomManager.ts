@@ -9,6 +9,8 @@ import type {
   OnlineRoomInfo,
   OnlineRoomStatus,
 } from '../src/multiplayer/shared/protocol';
+import type { MatchProgressionRewardSummary } from '../src/multiplayer/shared/progression';
+import type { LocalProgressionStore } from './LocalProgressionStore';
 import type { PlayerSession, PlayerSessionManager } from './PlayerSessionManager';
 import { ServerMatchManager } from './ServerMatchManager';
 
@@ -41,6 +43,7 @@ export class RoomManager {
   private totalMatchesCompleted = 0;
 
   private sessionManager: PlayerSessionManager;
+  private progressionStore?: LocalProgressionStore;
   private roomTtlMs: number;
   private physicsBroadcastHz: number;
   private callbacks: RoomBroadcastCallbacks;
@@ -48,11 +51,13 @@ export class RoomManager {
 
   constructor(options: {
     sessionManager: PlayerSessionManager;
+    progressionStore?: LocalProgressionStore;
     roomTtlMs: number;
     physicsBroadcastHz: number;
     callbacks: RoomBroadcastCallbacks;
   }) {
     this.sessionManager = options.sessionManager;
+    this.progressionStore = options.progressionStore;
     this.roomTtlMs = options.roomTtlMs;
     this.physicsBroadcastHz = options.physicsBroadcastHz;
     this.callbacks = options.callbacks;
@@ -136,6 +141,7 @@ export class RoomManager {
       players: [
         {
           sessionId: host.sessionId,
+          playerId: host.playerId,
           displayName: host.displayName,
           avatarId: host.avatarId,
           role: 'player1',
@@ -181,6 +187,7 @@ export class RoomManager {
       players: [
         {
           sessionId: p1.sessionId,
+          playerId: p1.playerId,
           displayName: p1.displayName,
           avatarId: p1.avatarId,
           role: 'player1',
@@ -193,6 +200,7 @@ export class RoomManager {
         },
         {
           sessionId: p2.sessionId,
+          playerId: p2.playerId,
           displayName: p2.displayName,
           avatarId: p2.avatarId,
           role: 'player2',
@@ -281,6 +289,7 @@ export class RoomManager {
 
     room.players.push({
       sessionId: player.sessionId,
+      playerId: player.playerId,
       displayName: player.displayName,
       avatarId: player.avatarId,
       role: 'player2',
@@ -591,16 +600,77 @@ export class RoomManager {
             balls,
           });
         },
-        onGameOver: (snapshot, balls, historyRecord) => {
+        onGameOver: (snapshot, balls, historyRecord, telemetrySummary) => {
           room.status = 'finished';
-          this.recordHistoryOnce(historyRecord);
-          this.broadcastToRoom(room, {
-            type: 'match:over',
-            room: this.toRoomInfo(room),
-            match: snapshot,
-            balls,
-            historyRecord,
-          });
+          // Capture player snapshots synchronously before leave/disconnect filters room.players
+          const p1Snap = room.players.find((p) => p.role === 'player1') ?? p1;
+          const p2Snap = room.players.find((p) => p.role === 'player2') ?? p2;
+          const roomSnapshot = this.toRoomInfo(room);
+          const recipientSessionIds = room.players
+            .filter((p) => p.connected)
+            .map((p) => p.sessionId);
+
+          const p1Id = p1Snap.playerId ?? p1Snap.sessionId;
+          const p2Id = p2Snap.playerId ?? p2Snap.sessionId;
+          const matchType = room.isPrivate ? 'private' : 'quick';
+
+          void (async () => {
+            let progression: MatchProgressionRewardSummary | undefined;
+            const enrichedRecord: MatchHistoryRecord = {
+              ...historyRecord,
+              player1Id: p1Id,
+              player2Id: p2Id,
+              player1Avatar: p1Snap.avatarId,
+              player2Avatar: p2Snap.avatarId,
+              winnerId: historyRecord.winnerRole === 'player1' ? p1Id : p2Id,
+              matchType,
+            };
+
+            if (this.progressionStore) {
+              try {
+                const res = await this.progressionStore.recordCompletedMatch({
+                  matchId: snapshot.matchId,
+                  roomId: room.roomId,
+                  roomCode: room.roomCode,
+                  ruleProfileId: room.ruleProfileId,
+                  matchType,
+                  winnerRole: historyRecord.winnerRole,
+                  reason: historyRecord.reason,
+                  totalShots: historyRecord.totalShots,
+                  endedAtMs: historyRecord.endedAtMs,
+                  player1: {
+                    playerId: p1Id,
+                    displayName: p1Snap.displayName,
+                    avatarId: p1Snap.avatarId,
+                  },
+                  player2: {
+                    playerId: p2Id,
+                    displayName: p2Snap.displayName,
+                    avatarId: p2Snap.avatarId,
+                  },
+                  telemetry: telemetrySummary,
+                });
+                progression = res.summary;
+                enrichedRecord.rankedApplied = res.summary.rankedApplied;
+                enrichedRecord.p1EloDelta = res.summary.players.player1.eloDelta;
+                enrichedRecord.p2EloDelta = res.summary.players.player2.eloDelta;
+              } catch (err) {
+                console.error('[RoomManager] Failed to record local progression:', err);
+              }
+            }
+
+            this.recordHistoryOnce(enrichedRecord);
+            for (const sid of recipientSessionIds) {
+              this.callbacks.sendToSession(sid, {
+                type: 'match:over',
+                room: roomSnapshot,
+                match: snapshot,
+                balls,
+                historyRecord: enrichedRecord,
+                progression,
+              });
+            }
+          })();
         },
       },
     });

@@ -16,6 +16,10 @@ import type {
 } from '../game/rules/types';
 import { TABLE_DIMENSIONS } from '../game/utils/constants';
 import type {
+  MatchProgressionRewardSummary,
+  PublicPlayerProfile,
+} from '../multiplayer/shared/progression';
+import type {
   ConnectionState,
   MatchHistoryRecord,
   OnlineAvatarId,
@@ -82,6 +86,7 @@ const DEFAULT_AI_NAMES = new Set([
 export type GameScreen = 'menu' | 'playing';
 export type CameraPreset = 'threeQuarter' | 'topDown' | 'cueAim' | 'sideView';
 export type FeltTheme = 'tournamentGreen' | 'championshipBlue' | 'burgundyClub';
+export type ProgressionTab = 'profile' | 'leaderboard' | 'achievements' | 'history';
 
 export type CanvasInteractionMode = 'smart' | 'aim';
 
@@ -176,6 +181,13 @@ export interface GameState {
   onlineHistory: MatchHistoryRecord[];
   onlineRecordedMatchIds: string[];
 
+  // Competitive Progression State (Phase 5)
+  ownProfile: PublicPlayerProfile | null;
+  lastOnlineMatchProgression: MatchProgressionRewardSummary | null;
+  progressionModalOpen: boolean;
+  progressionTab: ProgressionTab;
+  inspectedPlayerId: string | null;
+
   // Actions
   setScreen: (screen: GameScreen) => void;
   setSettingsOpen: (open: boolean) => void;
@@ -239,8 +251,17 @@ export interface GameState {
     snapshot: OnlineMatchSnapshot,
     localRole: PlayerId | null,
     historyRecord?: MatchHistoryRecord,
+    progression?: MatchProgressionRewardSummary,
   ) => void;
   clearOnlineMatchSession: () => void;
+
+  // Progression Actions (Phase 5)
+  setOwnProfile: (profile: PublicPlayerProfile | null) => void;
+  setLastOnlineMatchProgression: (summary: MatchProgressionRewardSummary | null) => void;
+  openProgressionModal: (tab?: ProgressionTab, inspectedPlayerId?: string | null) => void;
+  closeProgressionModal: () => void;
+  setProgressionTab: (tab: ProgressionTab) => void;
+  setInspectedPlayerId: (playerId: string | null) => void;
 }
 
 export function canLocalPlayerAct(state: GameState): boolean {
@@ -353,6 +374,12 @@ export const useGameStore = create<GameState>((set) => ({
   onlineHistory: [],
   onlineRecordedMatchIds: [],
 
+  ownProfile: null,
+  lastOnlineMatchProgression: null,
+  progressionModalOpen: false,
+  progressionTab: 'profile',
+  inspectedPlayerId: null,
+
   setScreen: (screen) => set({ screen }),
   setSettingsOpen: (settingsOpen) => set({ settingsOpen }),
   setLoading: (isLoading) => set({ isLoading }),
@@ -404,6 +431,7 @@ export const useGameStore = create<GameState>((set) => ({
       dragPower: 0,
       isDraggingCue: false,
       isShotAnimating: false,
+      lastOnlineMatchProgression: null,
     }),
   updateSettings: (partial) =>
     set((state) => ({
@@ -530,7 +558,7 @@ export const useGameStore = create<GameState>((set) => ({
 
   setOnlineHistory: (onlineHistory) => set({ onlineHistory }),
 
-  syncFromOnlineMatchSnapshot: (snapshot, localRole, historyRecord) =>
+  syncFromOnlineMatchSnapshot: (snapshot, localRole, historyRecord, progression) =>
     set((state) => {
       const effectiveRole = localRole ?? state.onlineLocalRole;
       let nextStats = state.matchStats;
@@ -592,6 +620,10 @@ export const useGameStore = create<GameState>((set) => ({
         matchStats: nextStats,
         onlineRecordedMatchIds: nextRecordedIds,
         onlineHistory: nextHistory,
+        lastOnlineMatchProgression:
+          snapshot.phase === 'GAME_OVER'
+            ? (progression ?? state.lastOnlineMatchProgression)
+            : null,
       };
     }),
 
@@ -601,6 +633,7 @@ export const useGameStore = create<GameState>((set) => ({
       onlineMatchId: null,
       onlineLocalRole: null,
       onlineRematchVotes: [],
+      lastOnlineMatchProgression: null,
       onlineOpponentStatus: {
         state: 'connected',
         displayName: null,
@@ -618,4 +651,25 @@ export const useGameStore = create<GameState>((set) => ({
           ? { ...state.matchConfig, opponentType: 'pvp', player2Name: 'Player 2' }
           : state.matchConfig,
     })),
+
+  setOwnProfile: (ownProfile) => set({ ownProfile }),
+  setLastOnlineMatchProgression: (lastOnlineMatchProgression) =>
+    set({ lastOnlineMatchProgression }),
+  openProgressionModal: (tab, inspectedPlayerId = null) =>
+    set((state) => ({
+      progressionModalOpen: true,
+      progressionTab: tab ?? state.progressionTab,
+      inspectedPlayerId,
+    })),
+  closeProgressionModal: () =>
+    set({
+      progressionModalOpen: false,
+      inspectedPlayerId: null,
+    }),
+  setProgressionTab: (progressionTab) =>
+    set({
+      progressionTab,
+      inspectedPlayerId: null,
+    }),
+  setInspectedPlayerId: (inspectedPlayerId) => set({ inspectedPlayerId }),
 }));

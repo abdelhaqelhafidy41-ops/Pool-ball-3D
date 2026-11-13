@@ -4,6 +4,7 @@ import type { OnlineAvatarId } from '../src/multiplayer/shared/protocol';
 
 export interface PlayerSession {
   sessionId: string;
+  playerId: string;
   reconnectToken: string;
   displayName: string;
   avatarId: OnlineAvatarId;
@@ -38,10 +39,13 @@ export class PlayerSessionManager {
     displayName?: string,
     avatarId?: OnlineAvatarId,
     latencyMs = 35,
+    playerId?: string,
   ): PlayerSession {
     const now = Date.now();
+    const sessionId = `ply_${randomUUID().replace(/-/g, '').slice(0, 16)}`;
     const session: PlayerSession = {
-      sessionId: `ply_${randomUUID().replace(/-/g, '').slice(0, 16)}`,
+      sessionId,
+      playerId: playerId && playerId.trim().length >= 6 ? playerId.trim() : sessionId,
       reconnectToken: randomBytes(24).toString('hex'),
       displayName: this.sanitizeDisplayName(displayName),
       avatarId: this.sanitizeAvatarId(avatarId),
@@ -54,6 +58,20 @@ export class PlayerSessionManager {
     };
     this.sessions.set(session.sessionId, session);
     return session;
+  }
+
+  public setPlayerIdentity(
+    sessionId: string,
+    playerId: string,
+    displayName?: string,
+    avatarId?: OnlineAvatarId,
+  ): void {
+    const session = this.sessions.get(sessionId);
+    if (!session) return;
+    session.playerId = playerId;
+    if (displayName) session.displayName = this.sanitizeDisplayName(displayName);
+    if (avatarId) session.avatarId = this.sanitizeAvatarId(avatarId);
+    session.lastSeenAtMs = Date.now();
   }
 
   public getSession(sessionId: string): PlayerSession | undefined {

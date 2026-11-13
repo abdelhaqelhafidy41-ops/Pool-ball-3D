@@ -2,6 +2,7 @@ import type { PlayerId, PocketId, RuleProfileId } from '../game/rules/types';
 import { soundEngine } from '../game/utils/SoundEngine';
 import { useGameStore } from '../store/useGameStore';
 import { NetworkManager, resolveHttpBaseUrl } from './NetworkManager';
+import { progressionClient } from './ProgressionClient';
 import { StateSynchronizer } from './StateSynchronizer';
 import type {
   MatchHistoryRecord,
@@ -74,6 +75,14 @@ class MultiplayerManagerImpl {
     this.network.disconnect();
   }
 
+  public reauthenticateSocketIdentity(): void {
+    this.network.clearSessionCredentials();
+    const state = this.network.getConnectionState();
+    if (state === 'connected' || state === 'connecting' || state === 'reconnecting') {
+      this.network.retryConnect();
+    }
+  }
+
   public updateProfile(displayName: string, avatarId: ReturnType<typeof useGameStore.getState>['onlineProfile']['avatarId']): void {
     const store = useGameStore.getState();
     store.setOnlineProfile({ displayName, avatarId });
@@ -82,6 +91,7 @@ class MultiplayerManagerImpl {
       displayName,
       avatarId,
     });
+    void progressionClient.updateProfile(displayName, avatarId);
   }
 
   public createPrivateRoom(ruleProfileId: RuleProfileId, calledShotsEnabled: boolean): void {
@@ -244,6 +254,7 @@ class MultiplayerManagerImpl {
       case 'session:ready': {
         store.setOnlineSessionId(msg.sessionId);
         store.setOnlineError(null);
+        void progressionClient.refreshOwnProfile();
 
         if (msg.resumedRoom) {
           this.network.bindRoomSocket(msg.resumedRoom.roomId);
@@ -412,8 +423,9 @@ class MultiplayerManagerImpl {
         const role = this.resolveLocalRole(msg.room);
         this.synchronizer.applySettledState(msg.balls);
         store.setOnlineRoom(msg.room);
-        store.syncFromOnlineMatchSnapshot(msg.match, role, msg.historyRecord);
+        store.syncFromOnlineMatchSnapshot(msg.match, role, msg.historyRecord, msg.progression);
         this.sceneBridge?.onApplyAuthoritativeBalls(msg.balls);
+        void progressionClient.refreshOwnProfile();
         break;
       }
 

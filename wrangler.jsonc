@@ -34,6 +34,14 @@
       ]
     }
   ],
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "pool-ball-3d-db",
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "migrations_dir": "./cloudflare/migrations"
+    }
+  ],
   "vars": {
     "CORS_ORIGIN": "https://abdelhaqelhafidy41-ops.github.io",
     "WS_HEARTBEAT_MS": "15000",

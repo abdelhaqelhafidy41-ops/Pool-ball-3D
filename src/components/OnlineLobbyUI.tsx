@@ -7,6 +7,8 @@ import {
   Play,
   PlusCircle,
   Search,
+  Trophy,
+  User,
   UserCheck,
   Users,
   Wifi,
@@ -40,6 +42,8 @@ export function OnlineLobbyUI() {
   const onlineError = useGameStore((s) => s.onlineError);
   const setOnlineError = useGameStore((s) => s.setOnlineError);
   const onlineHistory = useGameStore((s) => s.onlineHistory);
+  const ownProfile = useGameStore((s) => s.ownProfile);
+  const openProgressionModal = useGameStore((s) => s.openProgressionModal);
 
   const [activeTab, setActiveTab] = useState<LobbyTab>(onlineModeIntent);
   const [nameInput, setNameInput] = useState(onlineProfile.displayName);
@@ -152,17 +156,44 @@ export function OnlineLobbyUI() {
             </div>
           </div>
 
-          <button
-            type="button"
-            onClick={() => {
-              soundEngine.playUiClick();
-              closeOnlineLobby();
-            }}
-            aria-label="Close online lobby"
-            className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-white/10 bg-white/5 text-slate-300 hover:bg-white/12 hover:text-white cursor-pointer"
-          >
-            <X className="h-4 w-4" />
-          </button>
+          <div className="flex items-center gap-1.5">
+            {ownProfile && (
+              <button
+                type="button"
+                onClick={() => {
+                  soundEngine.playUiClick();
+                  openProgressionModal('profile');
+                }}
+                className="hidden sm:inline-flex items-center gap-1.5 rounded-lg border border-amber-400/35 bg-amber-500/10 px-2.5 py-1 text-[11px] font-bold text-amber-200 hover:bg-amber-500/20 cursor-pointer whitespace-nowrap"
+              >
+                <User className="h-3.5 w-3.5 text-amber-400" />
+                <span>Lv {ownProfile.level}</span>
+                <span className="font-mono">{ownProfile.elo} ELO</span>
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => {
+                soundEngine.playUiClick();
+                openProgressionModal('leaderboard');
+              }}
+              className="inline-flex items-center gap-1 rounded-lg border border-white/12 bg-white/5 px-2.5 py-1 text-[11px] font-bold text-slate-200 hover:bg-white/10 cursor-pointer whitespace-nowrap"
+            >
+              <Trophy className="h-3.5 w-3.5 text-amber-400" />
+              <span className="hidden sm:inline">Leaderboard</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                soundEngine.playUiClick();
+                closeOnlineLobby();
+              }}
+              aria-label="Close online lobby"
+              className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-white/10 bg-white/5 text-slate-300 hover:bg-white/12 hover:text-white cursor-pointer"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
         </div>
 
         {/* Player Identity Strip */}
@@ -329,12 +360,23 @@ export function OnlineLobbyUI() {
                           {av.glyph}
                         </span>
                         <div className="min-w-0">
-                          <div className="truncate text-xs font-bold text-white">
+                          <button
+                            type="button"
+                            disabled={!p.playerId}
+                            onClick={() => {
+                              if (p.playerId) {
+                                soundEngine.playUiClick();
+                                openProgressionModal('profile', p.playerId);
+                              }
+                            }}
+                            className="truncate text-left text-xs font-bold text-white hover:underline disabled:no-underline cursor-pointer disabled:cursor-default"
+                          >
                             {p.displayName} {isYou ? '(You)' : ''}
-                          </div>
+                          </button>
                           <div className="text-[10px] text-slate-400">
                             {p.sessionId === onlineRoom.hostSessionId ? 'Host' : 'Challenger'} ·{' '}
                             {p.connected ? `${p.latencyMs}ms` : 'Offline'}
+                            {p.playerId ? ' · View Stats' : ''}
                           </div>
                         </div>
                       </div>

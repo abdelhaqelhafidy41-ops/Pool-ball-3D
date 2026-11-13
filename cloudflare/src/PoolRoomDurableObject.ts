@@ -21,10 +21,15 @@ import {
   type Env,
   type WorkerRuntimeConfig,
 } from './config';
+import { D1ProgressionService } from './D1ProgressionService';
 import {
   WorkerMatchManager,
   type PersistedMatchState,
 } from './WorkerMatchManager';
+import type {
+  MatchProgressionRewardSummary,
+  MatchTelemetrySummaryForProgression,
+} from '../../src/multiplayer/shared/progression';
 
 interface RoomSocketAttachment {
   sessionId: string | null;
@@ -50,6 +55,7 @@ interface StoredRoomState {
 
 export interface InitRoomPlayerInput {
   sessionId: string;
+  playerId?: string;
   reconnectToken: string;
   displayName: string;
   avatarId: OnlineAvatarId;
@@ -63,6 +69,7 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
   private room: StoredRoomState | null = null;
   private match: WorkerMatchManager | null = null;
   private rateMap = new Map<WebSocket, number[]>();
+  private pendingGameOverPromise: Promise<void> | null = null;
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -88,6 +95,7 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
       );
       CREATE TABLE IF NOT EXISTS room_players (
         session_id TEXT PRIMARY KEY,
+        player_id TEXT,
         reconnect_token TEXT NOT NULL,
         display_name TEXT NOT NULL,
         avatar_id TEXT NOT NULL,
@@ -108,6 +116,11 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
         created_at_ms INTEGER NOT NULL
       );
     `);
+    try {
+      sql.exec('ALTER TABLE room_players ADD COLUMN player_id TEXT');
+    } catch {
+      // Already present
+    }
     this.schemaReady = true;
   }
 
@@ -138,6 +151,7 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
         expiresAtMs: Number(m.expires_at_ms),
         players: playerRows.map((p) => ({
           sessionId: String(p.session_id),
+          playerId: p.player_id ? String(p.player_id) : String(p.session_id),
           reconnectToken: String(p.reconnect_token),
           displayName: String(p.display_name),
           avatarId: sanitizeAvatarId(p.avatar_id),
@@ -203,10 +217,11 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
     for (const p of this.room.players) {
       sql.exec(
         `INSERT INTO room_players (
-          session_id, reconnect_token, display_name, avatar_id, role,
+          session_id, player_id, reconnect_token, display_name, avatar_id, role,
           connected, ready, latency_ms, disconnected_at_ms, reconnect_deadline_ms, rematch_requested
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         p.sessionId,
+        p.playerId ?? p.sessionId,
         p.reconnectToken,
         p.displayName,
         p.avatarId,
@@ -283,6 +298,7 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
       players: [
         {
           sessionId: params.host.sessionId,
+          playerId: params.host.playerId ?? params.host.sessionId,
           reconnectToken: params.host.reconnectToken,
           displayName: sanitizeDisplayName(params.host.displayName),
           avatarId: sanitizeAvatarId(params.host.avatarId),
@@ -328,6 +344,7 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
       players: [
         {
           sessionId: params.player1.sessionId,
+          playerId: params.player1.playerId ?? params.player1.sessionId,
           reconnectToken: params.player1.reconnectToken,
           displayName: sanitizeDisplayName(params.player1.displayName),
           avatarId: sanitizeAvatarId(params.player1.avatarId),
@@ -341,6 +358,7 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
         },
         {
           sessionId: params.player2.sessionId,
+          playerId: params.player2.playerId ?? params.player2.sessionId,
           reconnectToken: params.player2.reconnectToken,
           displayName: sanitizeDisplayName(params.player2.displayName),
           avatarId: sanitizeAvatarId(params.player2.avatarId),
@@ -404,6 +422,7 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
 
     this.room.players.push({
       sessionId: player.sessionId,
+      playerId: player.playerId ?? player.sessionId,
       reconnectToken: player.reconnectToken,
       displayName: sanitizeDisplayName(player.displayName),
       avatarId: sanitizeAvatarId(player.avatarId),
@@ -739,6 +758,9 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
           player.role,
           `${player.displayName} disconnected and did not reconnect in time.`,
         );
+        if (this.pendingGameOverPromise) {
+          await this.pendingGameOverPromise;
+        }
         this.room.status = 'finished';
         this.room.players = this.room.players.filter((p) => p.sessionId !== player.sessionId);
         await this.notifyMatchmakerPlayerLeft(player.sessionId);
@@ -831,6 +853,7 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
       type: 'session:ready',
       sessionId: player.sessionId,
       reconnectToken: player.reconnectToken,
+      playerId: player.playerId ?? player.sessionId,
       displayName: player.displayName,
       avatarId: player.avatarId,
       resumedRoom: this.toRoomInfo(this.room),
@@ -893,6 +916,9 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
 
     if (this.room.status === 'playing' && this.match && this.match.getPhase() !== 'GAME_OVER') {
       this.match.forfeit(leaving.role, `${leaving.displayName} left the match.`);
+      if (this.pendingGameOverPromise) {
+        await this.pendingGameOverPromise;
+      }
       this.room.status = 'finished';
     }
 
@@ -945,6 +971,9 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
 
     if (msg.type === 'game:forfeit') {
       match.forfeit(role, `${player.displayName} forfeited the match.`);
+      if (this.pendingGameOverPromise) {
+        await this.pendingGameOverPromise;
+      }
       this.room.status = 'finished';
       this.persistRoomState();
       this.persistMatchState();
@@ -1088,26 +1117,128 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
             balls,
           });
         },
-        onGameOver: (snapshot, balls, historyRecord) => {
-          if (!this.room) return;
-          this.room.status = 'finished';
-          this.persistRoomState();
-          this.persistMatchState();
-          this.ctx.waitUntil(
-            Promise.all([
-              this.notifyMatchmakerRoomStatus('finished'),
-              this.notifyMatchmakerHistory(historyRecord),
-            ]),
-          );
-          this.broadcastToRoom({
-            type: 'match:over',
-            room: this.toRoomInfo(this.room),
-            match: snapshot,
+        onGameOver: (snapshot, balls, historyRecord, telemetrySummary) => {
+          const roomSnapshot = this.room;
+          if (!roomSnapshot) return;
+          const p1Rec = roomSnapshot.players.find((p) => p.role === 'player1') ?? roomSnapshot.players[0];
+          const p2Rec = roomSnapshot.players.find((p) => p.role === 'player2') ?? roomSnapshot.players[1];
+
+          const job = this.finalizeMatchGameOver({
+            roomSnapshot: {
+              ...roomSnapshot,
+              players: roomSnapshot.players.map((pl) => ({ ...pl })),
+            },
+            p1: p1Rec
+              ? {
+                  playerId: p1Rec.playerId ?? p1Rec.sessionId,
+                  displayName: p1Rec.displayName,
+                  avatarId: p1Rec.avatarId,
+                }
+              : {
+                  playerId: `guest_${snapshot.matchId}_p1`,
+                  displayName: snapshot.player1Name,
+                  avatarId: 'cue_gold' as OnlineAvatarId,
+                },
+            p2: p2Rec
+              ? {
+                  playerId: p2Rec.playerId ?? p2Rec.sessionId,
+                  displayName: p2Rec.displayName,
+                  avatarId: p2Rec.avatarId,
+                }
+              : {
+                  playerId: `guest_${snapshot.matchId}_p2`,
+                  displayName: snapshot.player2Name,
+                  avatarId: 'eight_obsidian' as OnlineAvatarId,
+                },
+            snapshot,
             balls,
             historyRecord,
+            telemetrySummary,
           });
+          this.pendingGameOverPromise = job;
+          this.ctx.waitUntil(
+            job.finally(() => {
+              if (this.pendingGameOverPromise === job) {
+                this.pendingGameOverPromise = null;
+              }
+            }),
+          );
+          return job;
         },
       },
+    });
+  }
+
+  private async finalizeMatchGameOver(params: {
+    roomSnapshot: StoredRoomState;
+    p1: { playerId: string; displayName: string; avatarId: OnlineAvatarId };
+    p2: { playerId: string; displayName: string; avatarId: OnlineAvatarId };
+    snapshot: OnlineMatchSnapshot;
+    balls: OnlineBallFrame[];
+    historyRecord: MatchHistoryRecord;
+    telemetrySummary: MatchTelemetrySummaryForProgression;
+  }): Promise<void> {
+    if (this.room) {
+      this.room.status = 'finished';
+      this.persistRoomState();
+      this.persistMatchState();
+    }
+
+    const enrichedRecord: MatchHistoryRecord = {
+      ...params.historyRecord,
+      player1Id: params.p1.playerId,
+      player2Id: params.p2.playerId,
+      player1Avatar: params.p1.avatarId,
+      player2Avatar: params.p2.avatarId,
+      winnerId:
+        params.historyRecord.winnerRole === 'player1'
+          ? params.p1.playerId
+          : params.p2.playerId,
+      matchType: params.roomSnapshot.isPrivate ? 'private' : 'quick',
+      ruleProfileId: params.roomSnapshot.ruleProfileId,
+    };
+
+    let progression: MatchProgressionRewardSummary | undefined;
+    if (this.env.DB) {
+      try {
+        const svc = new D1ProgressionService(this.env.DB);
+        const recRes = await svc.recordCompletedMatch({
+          matchId: enrichedRecord.matchId,
+          roomId: params.roomSnapshot.roomId,
+          roomCode: params.roomSnapshot.roomCode,
+          ruleProfileId: params.roomSnapshot.ruleProfileId,
+          matchType: params.roomSnapshot.isPrivate ? 'private' : 'quick',
+          winnerRole: enrichedRecord.winnerRole,
+          reason: enrichedRecord.reason,
+          totalShots: enrichedRecord.totalShots,
+          endedAtMs: enrichedRecord.endedAtMs,
+          player1: params.p1,
+          player2: params.p2,
+          telemetry: params.telemetrySummary,
+        });
+        progression = recRes.summary;
+        enrichedRecord.rankedApplied = recRes.summary.rankedApplied;
+        enrichedRecord.p1EloDelta = recRes.summary.players.player1.eloDelta;
+        enrichedRecord.p2EloDelta = recRes.summary.players.player2.eloDelta;
+      } catch {
+        // Non-blocking fallback if D1 fails
+      }
+    }
+
+    await Promise.all([
+      this.notifyMatchmakerRoomStatus('finished'),
+      this.notifyMatchmakerHistory(enrichedRecord),
+    ]);
+
+    const currentRoom = this.room ?? params.roomSnapshot;
+    currentRoom.status = 'finished';
+    this.broadcastToRoom({
+      type: 'match:over',
+      room: this.toRoomInfo(currentRoom),
+      match: params.snapshot,
+      balls: params.balls,
+      historyRecord: enrichedRecord,
+      progression,
     });
   }
 
@@ -1186,6 +1317,7 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
       status: room.status,
       players: room.players.map((p) => ({
         sessionId: p.sessionId,
+        playerId: p.playerId ?? p.sessionId,
         displayName: p.displayName,
         avatarId: p.avatarId,
         role: p.role,

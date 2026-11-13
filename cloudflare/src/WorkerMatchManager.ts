@@ -19,6 +19,10 @@ import type {
 } from '../../src/game/rules/types';
 import { CLOTH_PHYSICS, TABLE_DIMENSIONS } from '../../src/game/utils/constants';
 import type {
+  MatchCompletionType,
+  MatchTelemetrySummaryForProgression,
+} from '../../src/multiplayer/shared/progression';
+import type {
   MatchHistoryRecord,
   MultiplayerErrorCode,
   OnlineBallFrame,
@@ -29,8 +33,33 @@ import {
   WorkerPhysicsManager,
 } from './WorkerPhysicsManager';
 
+export interface PerPlayerTelemetryCounters {
+  shotsTaken: number;
+  successfulShots: number;
+  ballsPocketed: number;
+  fouls: number;
+  breaksAttempted: number;
+  breaksSuccessful: number;
+  legalEightBallWin: boolean;
+  maxBallsBehind: number;
+}
+
+function createEmptyPlayerCounters(): PerPlayerTelemetryCounters {
+  return {
+    shotsTaken: 0,
+    successfulShots: 0,
+    ballsPocketed: 0,
+    fouls: 0,
+    breaksAttempted: 0,
+    breaksSuccessful: 0,
+    legalEightBallWin: false,
+    maxBallsBehind: 0,
+  };
+}
+
 export interface PersistedMatchState {
   matchId: string;
+  matchStartedAtMs?: number;
   phase: MatchStatePhase;
   activePlayer: PlayerId;
   isBreakShot: boolean;
@@ -52,6 +81,8 @@ export interface PersistedMatchState {
   shotSeq: number;
   resultRecorded: boolean;
   rematchVotes: PlayerId[];
+  playerCounters?: Record<PlayerId, PerPlayerTelemetryCounters>;
+  completionType?: MatchCompletionType | null;
 }
 
 export interface WorkerMatchCallbacks {
@@ -70,7 +101,8 @@ export interface WorkerMatchCallbacks {
     snapshot: OnlineMatchSnapshot,
     balls: OnlineBallFrame[],
     historyRecord: MatchHistoryRecord,
-  ) => void;
+    telemetrySummary: MatchTelemetrySummaryForProgression,
+  ) => void | Promise<void>;
 }
 
 export class WorkerMatchManager {
@@ -102,6 +134,12 @@ export class WorkerMatchManager {
   private bannerSeq = 1;
   private totalMatchShots = 0;
   private shotSeq = 0;
+  private matchStartedAtMs = Date.now();
+  private playerCounters: Record<PlayerId, PerPlayerTelemetryCounters> = {
+    player1: createEmptyPlayerCounters(),
+    player2: createEmptyPlayerCounters(),
+  };
+  private completionType: MatchCompletionType | null = null;
 
   private playerNames: Record<PlayerId, string>;
   private resultRecorded = false;
@@ -157,6 +195,17 @@ export class WorkerMatchManager {
     this.bannerSeq = state.bannerSeq;
     this.totalMatchShots = state.totalMatchShots;
     this.shotSeq = state.shotSeq;
+    this.matchStartedAtMs = state.matchStartedAtMs ?? Date.now();
+    this.playerCounters = state.playerCounters
+      ? {
+          player1: { ...createEmptyPlayerCounters(), ...state.playerCounters.player1 },
+          player2: { ...createEmptyPlayerCounters(), ...state.playerCounters.player2 },
+        }
+      : {
+          player1: createEmptyPlayerCounters(),
+          player2: createEmptyPlayerCounters(),
+        };
+    this.completionType = state.completionType ?? null;
     this.resultRecorded = state.resultRecorded;
     this.rematchVotes = new Set<PlayerId>(state.rematchVotes);
     await this.physics.restoreFromBallFrames(state.balls);
@@ -165,6 +214,7 @@ export class WorkerMatchManager {
   public exportPersistedState(): PersistedMatchState {
     return {
       matchId: this.matchId,
+      matchStartedAtMs: this.matchStartedAtMs,
       phase: this.phase,
       activePlayer: this.turnManager.getActivePlayer(),
       isBreakShot: this.isBreakShot,
@@ -186,11 +236,17 @@ export class WorkerMatchManager {
       shotSeq: this.shotSeq,
       resultRecorded: this.resultRecorded,
       rematchVotes: Array.from(this.rematchVotes),
+      playerCounters: {
+        player1: { ...this.playerCounters.player1 },
+        player2: { ...this.playerCounters.player2 },
+      },
+      completionType: this.completionType,
     };
   }
 
   public resetForNewMatch(): void {
     this.matchId = `m_${crypto.randomUUID().replace(/-/g, '').slice(0, 14)}`;
+    this.matchStartedAtMs = Date.now();
     this.turnManager.reset('player1');
     this.phase = 'BREAK';
     this.isBreakShot = true;
@@ -208,6 +264,11 @@ export class WorkerMatchManager {
     this.banner = null;
     this.totalMatchShots = 0;
     this.shotSeq = 0;
+    this.playerCounters = {
+      player1: createEmptyPlayerCounters(),
+      player2: createEmptyPlayerCounters(),
+    };
+    this.completionType = null;
     this.resultRecorded = false;
     this.rematchVotes.clear();
     this.physics.resetRack();
@@ -478,6 +539,28 @@ export class WorkerMatchManager {
       this.playerGroups = { ...evaluation.assignedGroupsNow };
     }
 
+    // Record authoritative per-player shot telemetry
+    const shooterCounters = this.playerCounters[telemetry.shooter];
+    shooterCounters.shotsTaken += 1;
+    if (!evaluation.isLegal) {
+      shooterCounters.fouls += 1;
+    }
+    const pocketedObjectBalls = telemetry.pocketEvents.filter(
+      (evt) => evt.ballNumber !== 0 && !(evaluation.respotEightBall && evt.ballNumber === 8),
+    );
+    if (telemetry.isBreakShot) {
+      shooterCounters.breaksAttempted += 1;
+      if (evaluation.isLegal && pocketedObjectBalls.length > 0) {
+        shooterCounters.breaksSuccessful += 1;
+      }
+    }
+    if (evaluation.isLegal && pocketedObjectBalls.length > 0) {
+      shooterCounters.successfulShots += 1;
+      shooterCounters.ballsPocketed += pocketedObjectBalls.length;
+    }
+
+    this.updateComebackDeficit();
+
     this.isBreakShot = false;
     this.calledShot = { targetBall: null, targetPocket: null };
 
@@ -488,13 +571,29 @@ export class WorkerMatchManager {
       this.gameOverReason = evaluation.gameOverReason;
       this.statusHeadline = 'Victory';
       this.lastFoulMessage = evaluation.foulMessage;
+
+      const eightBallPocketed = telemetry.pocketEvents.some((e) => e.ballNumber === 8);
+      if (evaluation.isLegal && evaluation.winner === telemetry.shooter && eightBallPocketed) {
+        this.completionType = 'legal_8ball';
+        this.playerCounters[evaluation.winner].legalEightBallWin = true;
+      } else if (eightBallPocketed) {
+        this.completionType = 'opponent_early_8ball';
+      } else {
+        this.completionType = 'opponent_8ball_foul';
+      }
+
       const winnerName = this.playerNames[evaluation.winner];
       this.emitBanner('victory', `${winnerName} Wins!`, evaluation.gameOverReason ?? 'Match complete.');
 
       const frames = this.physics.getBallFrames();
       const historyRecord = this.buildHistoryRecordOnce();
       if (historyRecord) {
-        this.callbacks.onGameOver(this.getSnapshot(), frames, historyRecord);
+        void this.callbacks.onGameOver(
+          this.getSnapshot(),
+          frames,
+          historyRecord,
+          this.buildTelemetrySummary(this.completionType, true),
+        );
       } else {
         this.callbacks.onSettled(this.getSnapshot(), frames);
       }
@@ -570,9 +669,22 @@ export class WorkerMatchManager {
     this.statusHeadline = 'Match Forfeited';
     this.emitBanner('victory', `${this.playerNames[winner]} Wins!`, reason);
 
+    const rankedValid = this.totalMatchShots > 0;
+    const compType: MatchCompletionType = !rankedValid
+      ? 'abandoned'
+      : reason.toLowerCase().includes('disconnected')
+        ? 'disconnect_forfeit'
+        : 'forfeit';
+    this.completionType = compType;
+
     const record = this.buildHistoryRecordOnce();
     if (record) {
-      this.callbacks.onGameOver(this.getSnapshot(), this.physics.getBallFrames(), record);
+      void this.callbacks.onGameOver(
+        this.getSnapshot(),
+        this.physics.getBallFrames(),
+        record,
+        this.buildTelemetrySummary(compType, rankedValid),
+      );
     }
     return record;
   }
@@ -582,6 +694,71 @@ export class WorkerMatchManager {
     const bothReady =
       this.rematchVotes.has('player1') && this.rematchVotes.has('player2');
     return { bothReady, snapshot: this.getSnapshot() };
+  }
+
+  private updateComebackDeficit(): void {
+    if (this.tableOpen) return;
+    const p1Group = this.playerGroups.player1;
+    const p2Group = this.playerGroups.player2;
+    if (!p1Group || !p2Group) return;
+
+    const countCleared = (group: 'solids' | 'stripes') => {
+      const start = group === 'solids' ? 1 : 9;
+      let cleared = 0;
+      for (let n = start; n < start + 7; n++) {
+        if (this.pocketedSet.has(n)) cleared++;
+      }
+      return cleared;
+    };
+
+    const p1Cleared = countCleared(p1Group);
+    const p2Cleared = countCleared(p2Group);
+    if (p2Cleared > p1Cleared) {
+      this.playerCounters.player1.maxBallsBehind = Math.max(
+        this.playerCounters.player1.maxBallsBehind,
+        p2Cleared - p1Cleared,
+      );
+    }
+    if (p1Cleared > p2Cleared) {
+      this.playerCounters.player2.maxBallsBehind = Math.max(
+        this.playerCounters.player2.maxBallsBehind,
+        p1Cleared - p2Cleared,
+      );
+    }
+  }
+
+  private buildTelemetrySummary(
+    completionType: MatchCompletionType,
+    rankedValid: boolean,
+  ): MatchTelemetrySummaryForProgression {
+    const durationSec = Math.max(1, Math.round((Date.now() - this.matchStartedAtMs) / 1000));
+    const p1 = this.playerCounters.player1;
+    const p2 = this.playerCounters.player2;
+    return {
+      durationSec,
+      completionType,
+      rankedValid,
+      player1: {
+        shotsTaken: p1.shotsTaken,
+        successfulShots: p1.successfulShots,
+        ballsPocketed: p1.ballsPocketed,
+        fouls: p1.fouls,
+        breaksAttempted: p1.breaksAttempted,
+        breaksSuccessful: p1.breaksSuccessful,
+        legalEightBallWin: p1.legalEightBallWin,
+        comebackWin: this.winner === 'player1' && p1.maxBallsBehind >= 3 && rankedValid,
+      },
+      player2: {
+        shotsTaken: p2.shotsTaken,
+        successfulShots: p2.successfulShots,
+        ballsPocketed: p2.ballsPocketed,
+        fouls: p2.fouls,
+        breaksAttempted: p2.breaksAttempted,
+        breaksSuccessful: p2.breaksSuccessful,
+        legalEightBallWin: p2.legalEightBallWin,
+        comebackWin: this.winner === 'player2' && p2.maxBallsBehind >= 3 && rankedValid,
+      },
+    };
   }
 
   private emitBanner(
@@ -600,6 +777,7 @@ export class WorkerMatchManager {
   private buildHistoryRecordOnce(): MatchHistoryRecord | null {
     if (this.resultRecorded || !this.winner) return null;
     this.resultRecorded = true;
+    const durationSec = Math.max(1, Math.round((Date.now() - this.matchStartedAtMs) / 1000));
     return {
       matchId: this.matchId,
       roomId: this.roomId,
@@ -607,6 +785,10 @@ export class WorkerMatchManager {
       player2Name: this.playerNames.player2,
       winnerName: this.playerNames[this.winner],
       winnerRole: this.winner,
+      ruleProfileId: this.ruleProfileId,
+      completionType: this.completionType ?? 'forfeit',
+      rankedApplied: this.totalMatchShots > 0 || this.completionType === 'legal_8ball',
+      durationSec,
       reason: this.gameOverReason ?? 'Match complete.',
       totalShots: this.totalMatchShots,
       endedAtMs: Date.now(),

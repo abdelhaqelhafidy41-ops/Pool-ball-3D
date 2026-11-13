@@ -9,6 +9,7 @@ import {
   type ServerToClientMessage,
 } from '../src/multiplayer/shared/protocol';
 import { isOriginAllowed, type ServerConfig } from './config';
+import { LocalProgressionStore } from './LocalProgressionStore';
 import { MatchmakingManager } from './MatchmakingManager';
 import { PlayerSessionManager } from './PlayerSessionManager';
 import { ReconnectionManager } from './ReconnectionManager';
@@ -23,6 +24,7 @@ interface SocketMeta {
 
 export class SocketController {
   public readonly wss: WebSocketServer;
+  public readonly progressionStore: LocalProgressionStore;
   public readonly sessionManager: PlayerSessionManager;
   public readonly roomManager: RoomManager;
   public readonly matchmakingManager: MatchmakingManager;
@@ -44,15 +46,17 @@ export class SocketController {
       maxPayload: 32768,
     });
 
+    this.progressionStore = new LocalProgressionStore();
     this.sessionManager = new PlayerSessionManager();
     this.roomManager = new RoomManager({
       sessionManager: this.sessionManager,
+      progressionStore: this.progressionStore,
       roomTtlMs: config.roomTtlMs,
       physicsBroadcastHz: config.physicsBroadcastHz,
       callbacks: {
         sendToSession: (sessionId, payload) => this.sendToSession(sessionId, payload as ServerToClientMessage),
         onMatchHistoryRecorded: () => {
-          // History stored on RoomManager and exposed via /api/online/history
+          // History stored on RoomManager and LocalProgressionStore
         },
       },
     });
@@ -208,10 +212,17 @@ export class SocketController {
     }
 
     if (msg.type === 'session:init') {
+      const auth = await this.progressionStore.authenticateOrCreatePlayer({
+        playerId: msg.playerId,
+        playerToken: msg.playerToken,
+        displayName: msg.displayName,
+        avatarId: msg.avatarId,
+      });
       const sess = this.sessionManager.createSession(
-        msg.displayName,
-        msg.avatarId as OnlineAvatarId,
+        auth.profile.displayName,
+        auth.profile.avatarId as OnlineAvatarId,
         msg.latencyMs,
+        auth.playerId,
       );
       meta.sessionId = sess.sessionId;
       this.sessionToSocket.set(sess.sessionId, ws);
@@ -220,6 +231,8 @@ export class SocketController {
         type: 'session:ready',
         sessionId: sess.sessionId,
         reconnectToken: sess.reconnectToken,
+        playerId: auth.playerId,
+        playerToken: auth.playerToken,
         displayName: sess.displayName,
         avatarId: sess.avatarId,
         resumedRoom: null,
@@ -236,14 +249,26 @@ export class SocketController {
         msg.reconnectToken,
       );
       if (!verified) {
-        // Fallback: create a fresh session instead of bricking client
-        const fresh = this.sessionManager.createSession(msg.displayName, msg.avatarId);
+        const auth = await this.progressionStore.authenticateOrCreatePlayer({
+          playerId: msg.playerId,
+          playerToken: msg.playerToken,
+          displayName: msg.displayName,
+          avatarId: msg.avatarId,
+        });
+        const fresh = this.sessionManager.createSession(
+          auth.profile.displayName,
+          auth.profile.avatarId as OnlineAvatarId,
+          35,
+          auth.playerId,
+        );
         meta.sessionId = fresh.sessionId;
         this.sessionToSocket.set(fresh.sessionId, ws);
         this.sendSocket(ws, {
           type: 'session:ready',
           sessionId: fresh.sessionId,
           reconnectToken: fresh.reconnectToken,
+          playerId: auth.playerId,
+          playerToken: auth.playerToken,
           displayName: fresh.displayName,
           avatarId: fresh.avatarId,
           resumedRoom: null,
@@ -254,7 +279,20 @@ export class SocketController {
         return;
       }
 
-      if (msg.displayName || msg.avatarId) {
+      if (msg.playerId && msg.playerToken) {
+        const auth = await this.progressionStore.authenticateOrCreatePlayer({
+          playerId: msg.playerId,
+          playerToken: msg.playerToken,
+          displayName: msg.displayName ?? verified.displayName,
+          avatarId: msg.avatarId ?? verified.avatarId,
+        });
+        this.sessionManager.setPlayerIdentity(
+          verified.sessionId,
+          auth.playerId,
+          auth.profile.displayName,
+          auth.profile.avatarId as OnlineAvatarId,
+        );
+      } else if (msg.displayName || msg.avatarId) {
         this.sessionManager.updateProfile(
           verified.sessionId,
           msg.displayName ?? verified.displayName,
@@ -277,6 +315,7 @@ export class SocketController {
         type: 'session:ready',
         sessionId: verified.sessionId,
         reconnectToken: verified.reconnectToken,
+        playerId: verified.playerId,
         displayName: verified.displayName,
         avatarId: verified.avatarId,
         resumedRoom: room ? this.roomManager.toRoomInfo(room) : null,
@@ -301,6 +340,11 @@ export class SocketController {
     switch (msg.type) {
       case 'session:update_profile': {
         this.sessionManager.updateProfile(session.sessionId, msg.displayName, msg.avatarId);
+        void this.progressionStore.updateProfileInternal(
+          session.playerId,
+          session.displayName,
+          session.avatarId,
+        );
         this.roomManager.syncPlayerProfileInRoom(session);
         break;
       }

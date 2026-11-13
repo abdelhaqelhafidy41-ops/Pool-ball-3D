@@ -1,4 +1,4 @@
-import { Globe, Home, RotateCcw, Trophy } from 'lucide-react';
+import { Award, Globe, Home, RotateCcw, Trophy } from 'lucide-react';
 import { computeAverageBallsPerTurn } from '../game/rules/MatchStatistics';
 import { soundEngine } from '../game/utils/SoundEngine';
 import { multiplayerManager } from '../multiplayer/MultiplayerManager';
@@ -21,6 +21,8 @@ export function MatchEndModal({ onPlayAgain, onMainMenu }: MatchEndModalProps) {
   const onlineLocalRole = useGameStore((s) => s.onlineLocalRole);
   const onlineRematchVotes = useGameStore((s) => s.onlineRematchVotes);
   const openOnlineLobby = useGameStore((s) => s.openOnlineLobby);
+  const lastOnlineMatchProgression = useGameStore((s) => s.lastOnlineMatchProgression);
+  const openProgressionModal = useGameStore((s) => s.openProgressionModal);
 
   if (screen !== 'playing' || matchPhase !== 'GAME_OVER' || !winner) {
     return null;
@@ -97,6 +99,90 @@ export function MatchEndModal({ onPlayAgain, onMainMenu }: MatchEndModalProps) {
             </div>
           </div>
         </div>
+
+        {/* Online Competitive ELO / XP / Achievement Rewards */}
+        {isOnline && lastOnlineMatchProgression && onlineLocalRole && (
+          (() => {
+            const myDelta = lastOnlineMatchProgression.players[onlineLocalRole];
+            if (!myDelta) return null;
+            const leveledUp = myDelta.levelAfter > myDelta.levelBefore;
+            return (
+              <div className="mt-3.5 rounded-xl border border-amber-400/35 bg-amber-500/10 p-3 space-y-2">
+                <div className="flex items-center justify-between text-xs">
+                  <span className="font-bold uppercase tracking-wider text-amber-300">
+                    {lastOnlineMatchProgression.rankedApplied
+                      ? 'Competitive Rewards'
+                      : 'Unranked / Abandoned Match'}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      soundEngine.playUiClick();
+                      openProgressionModal('profile');
+                    }}
+                    className="text-[11px] font-bold text-amber-200 underline hover:text-white cursor-pointer"
+                  >
+                    View Career
+                  </button>
+                </div>
+
+                {lastOnlineMatchProgression.rankedApplied ? (
+                  <>
+                    <div className="grid grid-cols-3 gap-2 font-mono tabular-nums text-xs">
+                      <div className="rounded-lg border border-white/10 bg-black/30 px-2.5 py-1.5">
+                        <div className="text-[10px] text-slate-400">ELO Rating</div>
+                        <div className="font-extrabold text-white">
+                          {myDelta.eloAfter}{' '}
+                          <span
+                            className={
+                              myDelta.eloDelta >= 0 ? 'text-emerald-300' : 'text-rose-300'
+                            }
+                          >
+                            ({myDelta.eloDelta >= 0 ? `+${myDelta.eloDelta}` : myDelta.eloDelta})
+                          </span>
+                        </div>
+                      </div>
+                      <div className="rounded-lg border border-white/10 bg-black/30 px-2.5 py-1.5">
+                        <div className="text-[10px] text-slate-400">XP Earned</div>
+                        <div className="font-extrabold text-emerald-300">+{myDelta.xpGained}</div>
+                      </div>
+                      <div className="rounded-lg border border-white/10 bg-black/30 px-2.5 py-1.5">
+                        <div className="text-[10px] text-slate-400">Level</div>
+                        <div className="font-extrabold text-amber-300">
+                          Lv {myDelta.levelAfter}
+                          {leveledUp ? ' ↑' : ''}
+                        </div>
+                      </div>
+                    </div>
+
+                    {myDelta.unlockedAchievements.length > 0 && (
+                      <div className="space-y-1 pt-1">
+                        {myDelta.unlockedAchievements.map((ach) => (
+                          <div
+                            key={ach.id}
+                            className="flex items-center justify-between rounded-lg border border-amber-400/40 bg-black/35 px-2.5 py-1.5 text-[11px]"
+                          >
+                            <span className="inline-flex items-center gap-1.5 font-bold text-amber-200">
+                              <Award className="h-3.5 w-3.5 text-amber-400" />
+                              Achievement Unlocked: {ach.name}
+                            </span>
+                            <span className="font-mono font-bold text-emerald-300">
+                              +{ach.rewardXp} XP
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </>
+                ) : (
+                  <p className="text-[11px] text-slate-300">
+                    Matches ended before any shot is played do not affect ELO or competitive streaks.
+                  </p>
+                )}
+              </div>
+            );
+          })()
+        )}
 
         {isOnline ? (
           <div className="mt-6 space-y-2.5">

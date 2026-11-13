@@ -8,6 +8,11 @@ import type {
   PocketId,
   RuleProfileId,
 } from '../../game/rules/types';
+import type {
+  MatchCompletionType,
+  MatchProgressionRewardSummary,
+  OnlineMatchType,
+} from './progression';
 
 export type ConnectionState = 'disconnected' | 'connecting' | 'connected' | 'reconnecting';
 export type OpponentConnectionState = 'connected' | 'disconnected' | 'reconnected';
@@ -19,7 +24,9 @@ export type OnlineAvatarId =
   | 'crown_emerald'
   | 'shark_sky'
   | 'diamond_crimson'
-  | 'ace_violet';
+  | 'ace_violet'
+  | 'trophy_platinum'
+  | 'break_amber';
 
 export const ONLINE_AVATARS: Array<{
   id: OnlineAvatarId;
@@ -33,10 +40,13 @@ export const ONLINE_AVATARS: Array<{
   { id: 'shark_sky', label: 'Shark', accent: '#38bdf8', glyph: '◆' },
   { id: 'diamond_crimson', label: 'Ruby', accent: '#f43f5e', glyph: '♦' },
   { id: 'ace_violet', label: 'Ace', accent: '#a78bfa', glyph: '♠' },
+  { id: 'trophy_platinum', label: 'Champion', accent: '#e2e8f0', glyph: '🏆' },
+  { id: 'break_amber', label: 'Breaker', accent: '#fb923c', glyph: '⚡' },
 ];
 
 export interface OnlinePlayerProfile {
   sessionId: string;
+  playerId?: string;
   displayName: string;
   avatarId: OnlineAvatarId;
   role: PlayerId;
@@ -116,10 +126,22 @@ export interface OnlineMatchSnapshot {
 export interface MatchHistoryRecord {
   matchId: string;
   roomId: string;
+  player1Id?: string;
+  player2Id?: string;
   player1Name: string;
   player2Name: string;
+  player1Avatar?: OnlineAvatarId;
+  player2Avatar?: OnlineAvatarId;
+  winnerId?: string | null;
   winnerName: string;
   winnerRole: PlayerId;
+  ruleProfileId?: RuleProfileId;
+  matchType?: OnlineMatchType;
+  completionType?: MatchCompletionType;
+  rankedApplied?: boolean;
+  p1EloDelta?: number;
+  p2EloDelta?: number;
+  durationSec?: number;
   reason: string;
   totalShots: number;
   endedAtMs: number;
@@ -154,6 +176,8 @@ export type ClientToServerMessage =
       displayName: string;
       avatarId: OnlineAvatarId;
       latencyMs?: number;
+      playerId?: string;
+      playerToken?: string;
     }
   | {
       type: 'session:resume';
@@ -161,6 +185,8 @@ export type ClientToServerMessage =
       reconnectToken: string;
       displayName?: string;
       avatarId?: OnlineAvatarId;
+      playerId?: string;
+      playerToken?: string;
     }
   | {
       type: 'session:update_profile';
@@ -248,6 +274,8 @@ export type ServerToClientMessage =
       type: 'session:ready';
       sessionId: string;
       reconnectToken: string;
+      playerId?: string;
+      playerToken?: string;
       displayName: string;
       avatarId: OnlineAvatarId;
       resumedRoom: OnlineRoomInfo | null;
@@ -345,6 +373,7 @@ export type ServerToClientMessage =
       match: OnlineMatchSnapshot;
       balls: OnlineBallFrame[];
       historyRecord: MatchHistoryRecord;
+      progression?: MatchProgressionRewardSummary;
     }
   | {
       type: 'match:rematch_started';
