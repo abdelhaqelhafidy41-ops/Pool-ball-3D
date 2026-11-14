@@ -164,15 +164,16 @@ export function CueBallSpinControl() {
   return (
     <div
       data-testid="cue-ball-spin-selector"
-      className={`pointer-events-auto fixed z-20 left-2.5 bottom-[136px] sm:left-4 sm:bottom-[82px] lg:left-auto lg:right-4 lg:bottom-4 aspect-square w-[100px] h-[100px] sm:w-[108px] sm:h-[108px] lg:w-[116px] lg:h-[116px] rounded-2xl border bg-[#0c1219]/88 backdrop-blur-md p-2 flex flex-col items-center justify-between shadow-[0_8px_24px_rgba(0,0,0,0.58)] select-none transition-opacity ${
+      className={`pointer-events-auto fixed z-20 left-2.5 bottom-[136px] sm:left-4 sm:bottom-[82px] lg:left-auto lg:right-4 lg:bottom-4 aspect-square w-[100px] h-[100px] sm:w-[108px] sm:h-[108px] lg:w-[116px] lg:h-[116px] rounded-2xl border bg-[#0c1219]/92 p-2 flex flex-col items-center justify-between shadow-[0_8px_24px_rgba(0,0,0,0.58)] select-none touch-none transition-opacity ${
         disabled
           ? 'border-white/10 opacity-45'
           : isDragging || !isCentered
-            ? 'border-amber-400/55 opacity-100'
-            : 'border-amber-400/28 opacity-95 hover:border-amber-400/45'
+            ? 'border-amber-400/60 opacity-100'
+            : 'border-amber-400/32 opacity-95 hover:border-amber-400/50'
       }`}
       style={{ touchAction: 'none' }}
       onTouchStart={(e) => e.stopPropagation()}
+      onTouchMove={(e) => e.stopPropagation()}
     >
       {/* Compact Header: Spin Label + Optional Reset Button */}
       <div className="flex w-full items-center justify-between gap-1 px-0.5 leading-none shrink-0">
@@ -227,7 +228,7 @@ export function CueBallSpinControl() {
             activePointerIdRef.current = null;
             setIsDragging(false);
           }}
-          className={`relative h-[68px] w-[68px] sm:h-[74px] sm:w-[74px] lg:h-[80px] lg:w-[80px] rounded-full select-none focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-400 ${
+          className={`relative h-[68px] w-[68px] sm:h-[74px] sm:w-[74px] lg:h-[80px] lg:w-[80px] rounded-full select-none touch-none focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-400 ${
             disabled
               ? 'cursor-not-allowed'
               : isDragging
@@ -239,13 +240,14 @@ export function CueBallSpinControl() {
             background:
               'radial-gradient(circle at 34% 28%, #ffffff 0%, #f5f1e4 56%, #cfc6b0 88%, #9a907a 100%)',
             boxShadow: isDragging
-              ? 'inset -4px -6px 12px rgba(20, 18, 14, 0.42), 0 0 0 1.5px rgba(245, 158, 11, 0.55), 0 6px 16px rgba(0, 0, 0, 0.55)'
-              : 'inset -4px -6px 12px rgba(20, 18, 14, 0.42), 0 0 0 1px rgba(255, 255, 255, 0.16), 0 4px 12px rgba(0, 0, 0, 0.5)',
+              ? 'inset -4px -6px 12px rgba(20, 18, 14, 0.42), 0 0 0 1.5px rgba(245, 158, 11, 0.6), 0 6px 16px rgba(0, 0, 0, 0.55)'
+              : 'inset -4px -6px 12px rgba(20, 18, 14, 0.42), 0 0 0 1px rgba(255, 255, 255, 0.18), 0 4px 12px rgba(0, 0, 0, 0.5)',
           }}
         >
-          {/* Subtle Center Horizontal & Vertical Crosshair Reference Lines */}
-          <div className="pointer-events-none absolute left-1/2 top-[11%] bottom-[11%] w-px -translate-x-1/2 bg-slate-900/18" />
-          <div className="pointer-events-none absolute top-1/2 left-[11%] right-[11%] h-px -translate-y-1/2 bg-slate-900/18" />
+          {/* Subtle Center Horizontal & Vertical Dashed Reference Lines */}
+          <div className="pointer-events-none absolute left-1/2 top-[11%] bottom-[11%] w-0 -translate-x-1/2 border-l border-dashed border-slate-700/35" />
+          <div className="pointer-events-none absolute top-1/2 left-[11%] right-[11%] h-0 -translate-y-1/2 border-t border-dashed border-slate-700/35" />
+          <div className="pointer-events-none absolute left-1/2 top-1/2 h-1.5 w-1.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-slate-600/40" />
 
           {/* Valid Circular Spin Boundary Ring */}
           <div
@@ -256,15 +258,15 @@ export function CueBallSpinControl() {
           {/* Draggable Red Impact Point Dot */}
           <span
             data-testid="cue-spin-dot"
-            className={`pointer-events-none absolute h-3 w-3 sm:h-3.5 sm:w-3.5 -translate-x-1/2 -translate-y-1/2 rounded-full border-[1.5px] border-white bg-red-600 transition-transform duration-100 ${
+            className={`pointer-events-none absolute h-3.5 w-3.5 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-white bg-red-600 transition-transform duration-100 ${
               isDragging ? 'scale-125' : 'scale-100'
             }`}
             style={{
               left: `${dotLeftPct}%`,
               top: `${dotTopPct}%`,
               boxShadow: isDragging
-                ? '0 0 0 4px rgba(239, 68, 68, 0.28), 0 0 10px rgba(239, 68, 68, 0.85)'
-                : '0 1px 3px rgba(0, 0, 0, 0.55)',
+                ? '0 0 0 4px rgba(239, 68, 68, 0.32), 0 0 12px rgba(239, 68, 68, 0.9)'
+                : '0 1px 4px rgba(0, 0, 0, 0.55)',
             }}
           />
         </div>
