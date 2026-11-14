@@ -1199,30 +1199,31 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
     };
 
     let progression: MatchProgressionRewardSummary | undefined;
-    if (this.env.DB) {
-      try {
-        const svc = new D1ProgressionService(this.env.DB);
-        const recRes = await svc.recordCompletedMatch({
-          matchId: enrichedRecord.matchId,
-          roomId: params.roomSnapshot.roomId,
-          roomCode: params.roomSnapshot.roomCode,
-          ruleProfileId: params.roomSnapshot.ruleProfileId,
-          matchType: params.roomSnapshot.isPrivate ? 'private' : 'quick',
-          winnerRole: enrichedRecord.winnerRole,
-          reason: enrichedRecord.reason,
-          totalShots: enrichedRecord.totalShots,
-          endedAtMs: enrichedRecord.endedAtMs,
-          player1: params.p1,
-          player2: params.p2,
-          telemetry: params.telemetrySummary,
-        });
-        progression = recRes.summary;
-        enrichedRecord.rankedApplied = recRes.summary.rankedApplied;
-        enrichedRecord.p1EloDelta = recRes.summary.players.player1.eloDelta;
-        enrichedRecord.p2EloDelta = recRes.summary.players.player2.eloDelta;
-      } catch {
-        // Non-blocking fallback if D1 fails
-      }
+    const matchInput = {
+      matchId: enrichedRecord.matchId,
+      roomId: params.roomSnapshot.roomId,
+      roomCode: params.roomSnapshot.roomCode,
+      ruleProfileId: params.roomSnapshot.ruleProfileId,
+      matchType: (params.roomSnapshot.isPrivate ? 'private' : 'quick') as 'private' | 'quick',
+      winnerRole: enrichedRecord.winnerRole,
+      reason: enrichedRecord.reason,
+      totalShots: enrichedRecord.totalShots,
+      endedAtMs: enrichedRecord.endedAtMs,
+      player1: params.p1,
+      player2: params.p2,
+      telemetry: params.telemetrySummary,
+    };
+
+    try {
+      const recRes = this.env.DB
+        ? await new D1ProgressionService(this.env.DB).recordCompletedMatch(matchInput)
+        : await this.getMatchmakerStub().progressionRecordMatch(matchInput);
+      progression = recRes.summary;
+      enrichedRecord.rankedApplied = recRes.summary.rankedApplied;
+      enrichedRecord.p1EloDelta = recRes.summary.players.player1.eloDelta;
+      enrichedRecord.p2EloDelta = recRes.summary.players.player2.eloDelta;
+    } catch {
+      // Non-blocking fallback if progression storage fails
     }
 
     await Promise.all([

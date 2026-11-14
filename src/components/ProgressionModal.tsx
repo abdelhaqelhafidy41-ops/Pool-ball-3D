@@ -307,14 +307,26 @@ export function ProgressionModal() {
   const [historyFilterOwn, setHistoryFilterOwn] = useState(false);
   const [historyItems, setHistoryItems] = useState<MatchHistoryRecord[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
+  const [sessionLoading, setSessionLoading] = useState(false);
+  const [sessionError, setSessionError] = useState<string | null>(null);
+
+  const syncOwnSession = useCallback(async () => {
+    setSessionLoading(true);
+    setSessionError(null);
+    const prof = ownProfile
+      ? await progressionClient.refreshOwnProfile()
+      : await progressionClient.ensurePlayerSession();
+    setSessionLoading(false);
+    if (!prof) {
+      setSessionError(
+        progressionClient.getLastSessionError() ?? 'Unable to reach competitive profile service.',
+      );
+    }
+  }, [ownProfile]);
 
   useEffect(() => {
     if (!progressionModalOpen) return;
-    if (!ownProfile) {
-      void progressionClient.ensurePlayerSession();
-    } else {
-      void progressionClient.refreshOwnProfile();
-    }
+    void syncOwnSession();
   }, [progressionModalOpen]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
@@ -387,10 +399,11 @@ export function ProgressionModal() {
     const cleanName = displayNameInput.trim().slice(0, 16) || 'Player';
     setSavingProfile(true);
     setProfileFeedback(null);
-    multiplayerManager.updateProfile(cleanName, selectedAvatar);
+    multiplayerManager.updateProfile(cleanName, selectedAvatar, { syncProgression: false });
     const res = await progressionClient.updateProfile(cleanName, selectedAvatar);
     setSavingProfile(false);
     if (res.ok) {
+      setSessionError(null);
       setProfileFeedback({ type: 'ok', text: 'Profile updated.' });
     } else {
       setProfileFeedback({ type: 'err', text: res.error ?? 'Unable to save profile.' });
@@ -671,8 +684,26 @@ export function ProgressionModal() {
                           )}
                         </button>
                       </>
+                    ) : sessionError ? (
+                      <div className="flex flex-wrap items-center gap-2 text-rose-300">
+                        <span>{sessionError}</span>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            soundEngine.playUiClick();
+                            void syncOwnSession();
+                          }}
+                          className="rounded-md border border-rose-400/40 bg-rose-500/15 px-2 py-0.5 text-[10px] font-bold text-rose-200 hover:bg-rose-500/25 cursor-pointer"
+                        >
+                          Retry
+                        </button>
+                      </div>
                     ) : (
-                      <span>Connecting to competitive account service...</span>
+                      <span>
+                        {sessionLoading
+                          ? 'Connecting to competitive account service...'
+                          : 'Competitive session not initialized.'}
+                      </span>
                     )}
                   </div>
 
@@ -790,6 +821,20 @@ export function ProgressionModal() {
 
               {ownProfile ? (
                 <ProfileDetailsView profile={ownProfile} isOwn />
+              ) : sessionError ? (
+                <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 py-6 px-4 text-center text-xs text-rose-200 space-y-2">
+                  <div>{sessionError}</div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      soundEngine.playUiClick();
+                      void syncOwnSession();
+                    }}
+                    className="inline-flex items-center rounded-lg border border-rose-400/40 bg-rose-500/20 px-3 py-1 text-[11px] font-bold text-rose-100 hover:bg-rose-500/30 cursor-pointer"
+                  >
+                    Retry Connection
+                  </button>
+                </div>
               ) : (
                 <div className="rounded-xl border border-white/10 bg-black/25 py-8 text-center text-xs text-slate-400">
                   Loading player career telemetry...

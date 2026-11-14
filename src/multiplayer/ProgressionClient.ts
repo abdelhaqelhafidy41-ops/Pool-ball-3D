@@ -72,6 +72,11 @@ export interface ApiResult<T> {
 
 class ProgressionClientImpl {
   private inflightSessionPromise: Promise<PublicPlayerProfile | null> | null = null;
+  private lastSessionError: string | null = null;
+
+  public getLastSessionError(): string | null {
+    return this.lastSessionError;
+  }
 
   private async requestJson<T>(
     path: string,
@@ -108,7 +113,7 @@ class ProgressionClientImpl {
         const desiredName = options?.displayName ?? store.onlineProfile.displayName;
         const desiredAvatar = options?.avatarId ?? store.onlineProfile.avatarId;
 
-        const { ok, json } = await this.requestJson<{
+        const { ok, status, json } = await this.requestJson<{
           playerId: string;
           playerToken: string;
           profile: PublicPlayerProfile;
@@ -124,9 +129,14 @@ class ProgressionClientImpl {
         });
 
         if (!ok || !json.playerId || !json.playerToken || !json.profile) {
+          this.lastSessionError =
+            status === 404
+              ? 'Competitive profile API returned 404 — deploy the latest Cloudflare Worker.'
+              : json.message ?? `Competitive profile service error (HTTP ${status}).`;
           return null;
         }
 
+        this.lastSessionError = null;
         saveStoredPlayerIdentity({
           playerId: json.playerId,
           playerToken: json.playerToken,
@@ -138,6 +148,8 @@ class ProgressionClientImpl {
         });
         return json.profile;
       } catch {
+        this.lastSessionError =
+          'Network error reaching competitive profile service. Check your connection or Worker CORS.';
         return null;
       }
     };
@@ -164,9 +176,12 @@ class ProgressionClientImpl {
       if (!ok || !json.profile) {
         return this.ensurePlayerSession();
       }
+      this.lastSessionError = null;
       useGameStore.getState().setOwnProfile(json.profile);
       return json.profile;
     } catch {
+      this.lastSessionError =
+        'Network error reaching competitive profile service.';
       return null;
     }
   }
@@ -181,7 +196,10 @@ class ProgressionClientImpl {
       stored = getStoredPlayerIdentity();
     }
     if (!stored) {
-      return { ok: false, error: 'Unable to reach competitive profile service.' };
+      return {
+        ok: false,
+        error: this.lastSessionError ?? 'Unable to reach competitive profile service.',
+      };
     }
 
     try {
@@ -230,7 +248,10 @@ class ProgressionClientImpl {
       stored = getStoredPlayerIdentity();
     }
     if (!stored) {
-      return { ok: false, error: 'Competitive server is currently unavailable.' };
+      return {
+        ok: false,
+        error: this.lastSessionError ?? 'Competitive server is currently unavailable.',
+      };
     }
 
     try {

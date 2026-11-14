@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { execFileSync, spawn } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { createServer } from 'node:http';
 import { rmSync } from 'node:fs';
 import { join } from 'node:path';
@@ -641,23 +641,6 @@ async function runSuite4CloudflareD1Integration(): Promise<void> {
   rmSync(CF_STATE_DIR, { recursive: true, force: true });
   const wranglerBin = join(process.cwd(), 'node_modules', '.bin', 'wrangler');
 
-  // Apply D1 SQLite migrations to local persistence directory
-  execFileSync(
-    wranglerBin,
-    [
-      'd1',
-      'migrations',
-      'apply',
-      'pool-ball-3d-db',
-      '--local',
-      '--config',
-      'cloudflare/wrangler.jsonc',
-      '--persist-to',
-      CF_STATE_DIR,
-    ],
-    { stdio: 'pipe', env: { ...process.env, CI: '1' } },
-  );
-
   const baseHttp = `http://127.0.0.1:${CF_PORT}`;
   const baseWs = `ws://127.0.0.1:${CF_PORT}/ws`;
 
@@ -697,8 +680,14 @@ async function runSuite4CloudflareD1Integration(): Promise<void> {
     const originHeader = { Origin: 'https://test-user.github.io' };
     const healthRes = await fetch(`${baseHttp}/health`, { headers: originHeader });
     assert.equal(healthRes.status, 200);
-    const health = (await healthRes.json()) as { ok: boolean; d1Configured: boolean };
-    assert.equal(health.d1Configured, true);
+    const health = (await healthRes.json()) as {
+      ok: boolean;
+      d1Configured: boolean;
+      progressionBackend: string;
+      progressionReady: boolean;
+    };
+    assert.equal(health.progressionReady, true);
+    assert.equal(health.progressionBackend, 'durable-object-sqlite');
 
     // Create two players in D1
     const p1Session = await fetch(`${baseHttp}/api/players/session`, {

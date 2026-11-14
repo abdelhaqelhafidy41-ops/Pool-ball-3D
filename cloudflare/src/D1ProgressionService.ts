@@ -189,26 +189,66 @@ const SCHEMA_STATEMENTS = [
   `CREATE INDEX IF NOT EXISTS idx_rating_events_window ON rating_events (created_at_ms, player_id)`,
 ];
 
-let schemaBootstrapped = false;
+export interface ProgressionPreparedStatement {
+  bind(...values: unknown[]): ProgressionPreparedStatement;
+  run(): Promise<{ meta?: { changes?: number } }>;
+  first<T = Record<string, unknown>>(): Promise<T | null>;
+  all<T = Record<string, unknown>>(): Promise<{ results?: T[] }>;
+}
+
+export interface ProgressionSqlDb {
+  prepare(sql: string): ProgressionPreparedStatement;
+}
+
+export function createDurableObjectSqlDb(sqlStorage: SqlStorage): ProgressionSqlDb {
+  const buildStmt = (query: string, params: unknown[] = []): ProgressionPreparedStatement => ({
+    bind(...values: unknown[]) {
+      return buildStmt(query, values);
+    },
+    async run() {
+      const cursor = sqlStorage.exec(query, ...params);
+      cursor.toArray();
+      return { meta: { changes: cursor.rowsWritten } };
+    },
+    async first<T = Record<string, unknown>>() {
+      const cursor = sqlStorage.exec<Record<string, SqlStorageValue>>(query, ...params);
+      const rows = cursor.toArray();
+      return (rows[0] as T | undefined) ?? null;
+    },
+    async all<T = Record<string, unknown>>() {
+      const cursor = sqlStorage.exec<Record<string, SqlStorageValue>>(query, ...params);
+      return { results: cursor.toArray() as T[] };
+    },
+  });
+
+  return {
+    prepare(query: string) {
+      return buildStmt(query);
+    },
+  };
+}
 
 export class D1ProgressionService {
-  constructor(private readonly db: D1Database | undefined) {}
+  private static readonly bootstrappedDbs = new WeakSet<object>();
+
+  constructor(private readonly db: ProgressionSqlDb | D1Database | undefined) {}
 
   public isAvailable(): boolean {
     return Boolean(this.db);
   }
 
-  private async ensureSchema(): Promise<D1Database> {
+  private async ensureSchema(): Promise<ProgressionSqlDb> {
     if (!this.db) {
-      throw new Error('D1 database binding "DB" is not configured.');
+      throw new Error('Progression database is not configured.');
     }
-    if (!schemaBootstrapped) {
+    const db = this.db as unknown as ProgressionSqlDb;
+    if (!D1ProgressionService.bootstrappedDbs.has(this.db)) {
       for (const stmt of SCHEMA_STATEMENTS) {
-        await this.db.prepare(stmt).run();
+        await db.prepare(stmt).run();
       }
-      schemaBootstrapped = true;
+      D1ProgressionService.bootstrappedDbs.add(this.db);
     }
-    return this.db;
+    return db;
   }
 
   public async authenticateOrCreatePlayer(input: {

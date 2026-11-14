@@ -127,8 +127,10 @@ export default {
       );
     }
 
+    const getMatchmakerStub = () => env.MATCHMAKER.get(env.MATCHMAKER.idFromName('global'));
+
     if (url.pathname === '/health' || url.pathname === '/api/health') {
-      const matchmakerStub = env.MATCHMAKER.get(env.MATCHMAKER.idFromName('global'));
+      const matchmakerStub = getMatchmakerStub();
       const stats = await matchmakerStub.getHealthAndStats();
       return jsonResponse(
         {
@@ -136,6 +138,8 @@ export default {
           status: 'healthy',
           runtime: 'cloudflare-workers',
           d1Configured: Boolean(env.DB),
+          progressionBackend: env.DB ? 'd1' : 'durable-object-sqlite',
+          progressionReady: true,
           ...stats,
         },
         200,
@@ -144,56 +148,50 @@ export default {
     }
 
     if (url.pathname === '/api/online/stats') {
-      const matchmakerStub = env.MATCHMAKER.get(env.MATCHMAKER.idFromName('global'));
+      const matchmakerStub = getMatchmakerStub();
       const stats = await matchmakerStub.getHealthAndStats();
       return jsonResponse(stats, 200, cors);
     }
 
     if (url.pathname === '/api/online/history') {
-      const matchmakerStub = env.MATCHMAKER.get(env.MATCHMAKER.idFromName('global'));
+      const matchmakerStub = getMatchmakerStub();
       const doHistory = await matchmakerStub.getHistory(30);
-      if (env.DB) {
-        try {
-          const d1 = new D1ProgressionService(env.DB);
-          const d1History = await d1.getMatchHistory({ limit: 30 });
-          if (d1History.length > 0) {
-            const seen = new Set(d1History.map((m) => m.matchId));
-            const merged = [...d1History];
-            for (const rec of doHistory) {
-              if (!seen.has(rec.matchId)) merged.push(rec);
-            }
-            merged.sort((a, b) => b.endedAtMs - a.endedAtMs);
-            return jsonResponse({ history: merged.slice(0, 30) }, 200, cors);
+      try {
+        const progHistory = env.DB
+          ? await new D1ProgressionService(env.DB).getMatchHistory({ limit: 30 })
+          : await matchmakerStub.progressionHistory({ limit: 30 });
+        if (progHistory.length > 0) {
+          const seen = new Set(progHistory.map((m) => m.matchId));
+          const merged = [...progHistory];
+          for (const rec of doHistory) {
+            if (!seen.has(rec.matchId)) merged.push(rec);
           }
-        } catch {
-          // Fall back cleanly to DO history
+          merged.sort((a, b) => b.endedAtMs - a.endedAtMs);
+          return jsonResponse({ history: merged.slice(0, 30) }, 200, cors);
         }
+      } catch {
+        // Fall back cleanly to DO history
       }
       return jsonResponse({ history: doHistory }, 200, cors);
     }
 
     // Competitive Progression & Identity REST API
     if (url.pathname === '/api/players/session' && request.method === 'POST') {
-      if (!env.DB) {
-        return jsonResponse(
-          { error: 'DB_UNAVAILABLE', message: 'Player progression database is not configured.' },
-          503,
-          cors,
-        );
-      }
       const body = await readJsonBody(request);
       if (!body) {
         return jsonResponse({ error: 'INVALID_INPUT', message: 'Invalid JSON request body.' }, 400, cors);
       }
-      const d1 = new D1ProgressionService(env.DB);
       const tokenFromHeader = extractBearerToken(request, body);
-      const res = await d1.authenticateOrCreatePlayer({
+      const input = {
         playerId: typeof body.playerId === 'string' ? body.playerId : null,
         playerToken: tokenFromHeader || null,
         displayName: typeof body.displayName === 'string' ? body.displayName : null,
         avatarId: typeof body.avatarId === 'string' ? body.avatarId : null,
         forceNewGuest: Boolean(body.forceNewGuest),
-      });
+      };
+      const res = env.DB
+        ? await new D1ProgressionService(env.DB).authenticateOrCreatePlayer(input)
+        : await getMatchmakerStub().progressionAuthenticateOrCreate(input);
       if (!res.ok) {
         return jsonResponse({ error: res.code, message: res.message }, res.status, cors);
       }
@@ -201,23 +199,18 @@ export default {
     }
 
     if (url.pathname === '/api/players/profile' && request.method === 'POST') {
-      if (!env.DB) {
-        return jsonResponse(
-          { error: 'DB_UNAVAILABLE', message: 'Player progression database is not configured.' },
-          503,
-          cors,
-        );
-      }
       const body = await readJsonBody(request);
       if (!body || typeof body.playerId !== 'string') {
         return jsonResponse({ error: 'INVALID_INPUT', message: 'playerId is required.' }, 400, cors);
       }
       const token = extractBearerToken(request, body);
-      const d1 = new D1ProgressionService(env.DB);
-      const res = await d1.updatePlayerProfile(body.playerId, token, {
+      const updates = {
         displayName: body.displayName,
         avatarId: body.avatarId,
-      });
+      };
+      const res = env.DB
+        ? await new D1ProgressionService(env.DB).updatePlayerProfile(body.playerId, token, updates)
+        : await getMatchmakerStub().progressionUpdateProfile(body.playerId, token, updates);
       if (!res.ok) {
         return jsonResponse({ error: res.code, message: res.message }, res.status, cors);
       }
@@ -225,25 +218,20 @@ export default {
     }
 
     if (url.pathname === '/api/players/register' && request.method === 'POST') {
-      if (!env.DB) {
-        return jsonResponse(
-          { error: 'DB_UNAVAILABLE', message: 'Player progression database is not configured.' },
-          503,
-          cors,
-        );
-      }
       const body = await readJsonBody(request);
       if (!body || typeof body.playerId !== 'string') {
         return jsonResponse({ error: 'INVALID_INPUT', message: 'playerId is required.' }, 400, cors);
       }
       const token = extractBearerToken(request, body);
-      const d1 = new D1ProgressionService(env.DB);
-      const res = await d1.registerAccount(body.playerId, token, {
+      const input = {
         username: body.username,
         password: body.password,
         displayName: body.displayName,
         avatarId: body.avatarId,
-      });
+      };
+      const res = env.DB
+        ? await new D1ProgressionService(env.DB).registerAccount(body.playerId, token, input)
+        : await getMatchmakerStub().progressionRegister(body.playerId, token, input);
       if (!res.ok) {
         return jsonResponse({ error: res.code, message: res.message }, res.status, cors);
       }
@@ -251,22 +239,17 @@ export default {
     }
 
     if (url.pathname === '/api/players/login' && request.method === 'POST') {
-      if (!env.DB) {
-        return jsonResponse(
-          { error: 'DB_UNAVAILABLE', message: 'Player progression database is not configured.' },
-          503,
-          cors,
-        );
-      }
       const body = await readJsonBody(request);
       if (!body) {
         return jsonResponse({ error: 'INVALID_INPUT', message: 'Invalid JSON request body.' }, 400, cors);
       }
-      const d1 = new D1ProgressionService(env.DB);
-      const res = await d1.loginAccount({
+      const input = {
         username: body.username,
         password: body.password,
-      });
+      };
+      const res = env.DB
+        ? await new D1ProgressionService(env.DB).loginAccount(input)
+        : await getMatchmakerStub().progressionLogin(input);
       if (!res.ok) {
         return jsonResponse({ error: res.code, message: res.message }, res.status, cors);
       }
@@ -274,18 +257,12 @@ export default {
     }
 
     if (url.pathname.startsWith('/api/players/profile/') && request.method === 'GET') {
-      if (!env.DB) {
-        return jsonResponse(
-          { error: 'DB_UNAVAILABLE', message: 'Player progression database is not configured.' },
-          503,
-          cors,
-        );
-      }
       const targetPlayerId = decodeURIComponent(
         url.pathname.slice('/api/players/profile/'.length),
       ).trim();
-      const d1 = new D1ProgressionService(env.DB);
-      const profile = await d1.getPublicProfile(targetPlayerId);
+      const profile = env.DB
+        ? await new D1ProgressionService(env.DB).getPublicProfile(targetPlayerId)
+        : await getMatchmakerStub().progressionGetProfile(targetPlayerId);
       if (!profile) {
         return jsonResponse({ error: 'NOT_FOUND', message: 'Player profile not found.' }, 404, cors);
       }
@@ -293,32 +270,15 @@ export default {
     }
 
     if (url.pathname === '/api/players/search' && request.method === 'GET') {
-      if (!env.DB) {
-        return jsonResponse({ ok: true, players: [] }, 200, cors);
-      }
       const q = url.searchParams.get('q') ?? '';
       const limit = Number.parseInt(url.searchParams.get('limit') ?? '15', 10) || 15;
-      const d1 = new D1ProgressionService(env.DB);
-      const players = await d1.searchPlayers(q, limit);
+      const players = env.DB
+        ? await new D1ProgressionService(env.DB).searchPlayers(q, limit)
+        : await getMatchmakerStub().progressionSearch(q, limit);
       return jsonResponse({ ok: true, players }, 200, cors);
     }
 
     if (url.pathname === '/api/leaderboard' && request.method === 'GET') {
-      if (!env.DB) {
-        return jsonResponse(
-          {
-            scope: 'global',
-            page: 1,
-            limit: 20,
-            total: 0,
-            totalPages: 1,
-            items: [],
-            currentPlayer: null,
-          },
-          200,
-          cors,
-        );
-      }
       const rawScope = url.searchParams.get('scope');
       const scope: LeaderboardScope =
         rawScope === 'weekly' || rawScope === 'monthly' ? rawScope : 'global';
@@ -327,14 +287,10 @@ export default {
       const query = url.searchParams.get('q') ?? '';
       const currentPlayerId = url.searchParams.get('playerId');
 
-      const d1 = new D1ProgressionService(env.DB);
-      const leaderboard = await d1.getLeaderboard({
-        scope,
-        page,
-        limit,
-        query,
-        currentPlayerId,
-      });
+      const params = { scope, page, limit, query, currentPlayerId };
+      const leaderboard = env.DB
+        ? await new D1ProgressionService(env.DB).getLeaderboard(params)
+        : await getMatchmakerStub().progressionLeaderboard(params);
       return jsonResponse({ ok: true, ...leaderboard }, 200, cors);
     }
 
@@ -342,22 +298,18 @@ export default {
       const playerId = url.searchParams.get('playerId');
       const limit = Number.parseInt(url.searchParams.get('limit') ?? '30', 10) || 30;
 
-      if (env.DB) {
-        const d1 = new D1ProgressionService(env.DB);
-        const matches = await d1.getMatchHistory({ playerId, limit });
-        return jsonResponse({ ok: true, matches }, 200, cors);
-      }
-
-      const matchmakerStub = env.MATCHMAKER.get(env.MATCHMAKER.idFromName('global'));
-      const history = await matchmakerStub.getHistory(limit);
-      return jsonResponse({ ok: true, matches: history }, 200, cors);
+      const matches = env.DB
+        ? await new D1ProgressionService(env.DB).getMatchHistory({ playerId, limit })
+        : await getMatchmakerStub().progressionHistory({ playerId, limit });
+      return jsonResponse({ ok: true, matches }, 200, cors);
     }
 
     if (url.pathname === '/api/achievements' && request.method === 'GET') {
       const playerId = url.searchParams.get('playerId');
-      if (playerId && env.DB) {
-        const d1 = new D1ProgressionService(env.DB);
-        const profile = await d1.getPublicProfile(playerId);
+      if (playerId) {
+        const profile = env.DB
+          ? await new D1ProgressionService(env.DB).getPublicProfile(playerId)
+          : await getMatchmakerStub().progressionGetProfile(playerId);
         return jsonResponse(
           {
             ok: true,

@@ -18,7 +18,13 @@ import {
   type Env,
   type WorkerRuntimeConfig,
 } from './config';
-import { D1ProgressionService } from './D1ProgressionService';
+import { createDurableObjectSqlDb, D1ProgressionService } from './D1ProgressionService';
+import type {
+  LeaderboardScope,
+  MatchProgressionRewardSummary,
+  MatchTelemetrySummaryForProgression,
+  OnlineMatchType,
+} from '../../src/multiplayer/shared/progression';
 
 const ROOM_CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 
@@ -333,15 +339,27 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
           Date.now(),
           session.session_id,
         );
-        if (session.player_id && this.env.DB) {
+        if (session.player_id) {
           try {
-            await this.env.DB.prepare(
-              'UPDATE players SET display_name = ?, avatar_id = ?, updated_at_ms = ? WHERE player_id = ?',
-            )
-              .bind(name, avatar, Date.now(), session.player_id)
-              .run();
+            const svc = this.getProgressionService();
+            await svc.ensureRowForExternalId(session.player_id, name, avatar);
+            if (this.env.DB) {
+              await this.env.DB.prepare(
+                'UPDATE players SET display_name = ?, avatar_id = ?, updated_at_ms = ? WHERE player_id = ?',
+              )
+                .bind(name, avatar, Date.now(), session.player_id)
+                .run();
+            } else {
+              this.ctx.storage.sql.exec(
+                'UPDATE players SET display_name = ?, avatar_id = ?, updated_at_ms = ? WHERE player_id = ?',
+                name,
+                avatar,
+                Date.now(),
+                session.player_id,
+              );
+            }
           } catch {
-            // Non-blocking D1 sync error
+            // Non-blocking progression profile sync error
           }
         }
         if (session.active_room_id) {
@@ -724,6 +742,99 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
     await this.scheduleNextAlarm();
   }
 
+  private getProgressionService(): D1ProgressionService {
+    if (this.env.DB) {
+      return new D1ProgressionService(this.env.DB);
+    }
+    return new D1ProgressionService(createDurableObjectSqlDb(this.ctx.storage.sql));
+  }
+
+  public async progressionAuthenticateOrCreate(input: {
+    playerId?: string | null;
+    playerToken?: string | null;
+    displayName?: string | null;
+    avatarId?: string | null;
+    forceNewGuest?: boolean;
+  }) {
+    this.ensureSchema();
+    return this.getProgressionService().authenticateOrCreatePlayer(input);
+  }
+
+  public async progressionUpdateProfile(
+    playerId: string,
+    playerToken: string,
+    updates: { displayName?: unknown; avatarId?: unknown },
+  ) {
+    this.ensureSchema();
+    return this.getProgressionService().updatePlayerProfile(playerId, playerToken, updates);
+  }
+
+  public async progressionRegister(
+    playerId: string,
+    playerToken: string,
+    input: {
+      username: unknown;
+      password: unknown;
+      displayName?: unknown;
+      avatarId?: unknown;
+    },
+  ) {
+    this.ensureSchema();
+    return this.getProgressionService().registerAccount(playerId, playerToken, input);
+  }
+
+  public async progressionLogin(input: { username: unknown; password: unknown }) {
+    this.ensureSchema();
+    return this.getProgressionService().loginAccount(input);
+  }
+
+  public async progressionGetProfile(playerId: string) {
+    this.ensureSchema();
+    return this.getProgressionService().getPublicProfile(playerId);
+  }
+
+  public async progressionSearch(query: string, limit = 15) {
+    this.ensureSchema();
+    return this.getProgressionService().searchPlayers(query, limit);
+  }
+
+  public async progressionLeaderboard(params: {
+    scope: LeaderboardScope;
+    page?: number;
+    limit?: number;
+    query?: string;
+    currentPlayerId?: string | null;
+  }) {
+    this.ensureSchema();
+    return this.getProgressionService().getLeaderboard(params);
+  }
+
+  public async progressionHistory(params: { playerId?: string | null; limit?: number }) {
+    this.ensureSchema();
+    return this.getProgressionService().getMatchHistory(params);
+  }
+
+  public async progressionRecordMatch(input: {
+    matchId: string;
+    roomId: string;
+    roomCode: string;
+    ruleProfileId: RuleProfileId;
+    matchType: OnlineMatchType;
+    winnerRole: 'player1' | 'player2';
+    reason: string;
+    totalShots: number;
+    endedAtMs: number;
+    player1: { playerId: string; displayName: string; avatarId: OnlineAvatarId };
+    player2: { playerId: string; displayName: string; avatarId: OnlineAvatarId };
+    telemetry: MatchTelemetrySummaryForProgression;
+  }): Promise<{
+    alreadyRecorded: boolean;
+    summary: MatchProgressionRewardSummary;
+  }> {
+    this.ensureSchema();
+    return this.getProgressionService().recordCompletedMatch(input);
+  }
+
   private async resolvePersistentPlayerIdentity(input: {
     playerId?: string | null;
     playerToken?: string | null;
@@ -738,26 +849,24 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
     const fallbackName = sanitizeDisplayName(input.displayName);
     const fallbackAvatar = sanitizeAvatarId(input.avatarId);
 
-    if (this.env.DB) {
-      try {
-        const svc = new D1ProgressionService(this.env.DB);
-        const res = await svc.authenticateOrCreatePlayer({
-          playerId: input.playerId,
-          playerToken: input.playerToken,
-          displayName: input.displayName,
-          avatarId: input.avatarId,
-        });
-        if (res.ok) {
-          return {
-            playerId: res.playerId,
-            playerToken: res.playerToken,
-            displayName: res.profile.displayName,
-            avatarId: sanitizeAvatarId(res.profile.avatarId),
-          };
-        }
-      } catch {
-        // Fallback cleanly if D1 is temporarily unavailable
+    try {
+      const svc = this.getProgressionService();
+      const res = await svc.authenticateOrCreatePlayer({
+        playerId: input.playerId,
+        playerToken: input.playerToken,
+        displayName: input.displayName,
+        avatarId: input.avatarId,
+      });
+      if (res.ok) {
+        return {
+          playerId: res.playerId,
+          playerToken: res.playerToken,
+          displayName: res.profile.displayName,
+          avatarId: sanitizeAvatarId(res.profile.avatarId),
+        };
       }
+    } catch {
+      // Fallback cleanly if progression storage is temporarily busy
     }
 
     return {

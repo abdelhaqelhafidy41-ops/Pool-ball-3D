@@ -83,7 +83,11 @@ class MultiplayerManagerImpl {
     }
   }
 
-  public updateProfile(displayName: string, avatarId: ReturnType<typeof useGameStore.getState>['onlineProfile']['avatarId']): void {
+  public updateProfile(
+    displayName: string,
+    avatarId: ReturnType<typeof useGameStore.getState>['onlineProfile']['avatarId'],
+    options?: { syncProgression?: boolean },
+  ): void {
     const store = useGameStore.getState();
     store.setOnlineProfile({ displayName, avatarId });
     this.network.send({
@@ -91,7 +95,9 @@ class MultiplayerManagerImpl {
       displayName,
       avatarId,
     });
-    void progressionClient.updateProfile(displayName, avatarId);
+    if (options?.syncProgression !== false) {
+      void progressionClient.updateProfile(displayName, avatarId);
+    }
   }
 
   public createPrivateRoom(ruleProfileId: RuleProfileId, calledShotsEnabled: boolean): void {
