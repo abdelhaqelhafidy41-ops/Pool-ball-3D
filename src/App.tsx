@@ -6,7 +6,9 @@ import { MainMenu } from './components/MainMenu';
 import { MatchEndModal } from './components/MatchEndModal';
 import { OnlineLobbyUI } from './components/OnlineLobbyUI';
 import { ProgressionModal } from './components/ProgressionModal';
+import { ReplayOverlay } from './components/ReplayOverlay';
 import { SettingsModal } from './components/SettingsModal';
+import type { ReplaySpeed } from './game/replay/types';
 import type { PocketId } from './game/rules/types';
 import { soundEngine } from './game/utils/SoundEngine';
 import { multiplayerManager } from './multiplayer/MultiplayerManager';
@@ -68,6 +70,46 @@ export default function App() {
     actionsRef.current?.resetAllStats();
   }, []);
 
+  const handleEnterReplay = useCallback((shotId?: string) => {
+    actionsRef.current?.enterReplay(shotId);
+  }, []);
+
+  const handleExitReplay = useCallback(() => {
+    actionsRef.current?.exitReplay();
+  }, []);
+
+  const handleSelectReplayShot = useCallback((shotId: string) => {
+    actionsRef.current?.selectReplayShot(shotId);
+  }, []);
+
+  const handleToggleReplayPlay = useCallback(() => {
+    actionsRef.current?.toggleReplayPlay();
+  }, []);
+
+  const handleRestartReplay = useCallback(() => {
+    actionsRef.current?.restartReplay();
+  }, []);
+
+  const handleSeekReplay = useCallback((timeSec: number) => {
+    actionsRef.current?.seekReplay(timeSec);
+  }, []);
+
+  const handleSetReplaySpeed = useCallback((speed: ReplaySpeed) => {
+    actionsRef.current?.setReplaySpeed(speed);
+  }, []);
+
+  const handleToggleReplayAutoSlowMo = useCallback(() => {
+    actionsRef.current?.toggleReplayAutoSlowMo();
+  }, []);
+
+  const handleToggleReplayAnalysis = useCallback(() => {
+    actionsRef.current?.toggleReplayAnalysis();
+  }, []);
+
+  const handleJumpToReplayImpact = useCallback(() => {
+    actionsRef.current?.jumpToReplayImpact();
+  }, []);
+
   const handleMainMenu = useCallback(() => {
     if (useGameStore.getState().matchConfig.opponentType === 'online') {
       multiplayerManager.leaveMatchOrRoom();
@@ -94,10 +136,23 @@ export default function App() {
           onPlaceAtHeadSpot={handlePlaceAtHeadSpot}
           onSelectCalledShot={handleSelectCalledShot}
           onToggleFullscreen={handleToggleFullscreen}
+          onEnterReplay={handleEnterReplay}
+        />
+        <ReplayOverlay
+          onExitReplay={handleExitReplay}
+          onSelectShot={handleSelectReplayShot}
+          onTogglePlay={handleToggleReplayPlay}
+          onRestart={handleRestartReplay}
+          onSeek={handleSeekReplay}
+          onSetSpeed={handleSetReplaySpeed}
+          onToggleAutoSlowMo={handleToggleReplayAutoSlowMo}
+          onToggleAnalysis={handleToggleReplayAnalysis}
+          onJumpToImpact={handleJumpToReplayImpact}
         />
         <MatchEndModal
           onPlayAgain={handleStartMatch}
           onMainMenu={handleMainMenu}
+          onWatchReplay={() => handleEnterReplay()}
         />
         <SettingsModal
           onRestartMatch={handleStartMatch}

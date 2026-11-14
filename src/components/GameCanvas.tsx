@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react';
+import type { ReplaySpeed } from '../game/replay/types';
 import type { MatchConfig, PocketId } from '../game/rules/types';
 import { PoolScene } from '../game/scene/PoolScene';
 import { useGameStore } from '../store/useGameStore';
@@ -11,6 +12,16 @@ export interface PoolSceneActions {
   placeCueAtHeadSpot: () => void;
   setCalledShot: (targetBall: number | null, targetPocket: PocketId | null) => void;
   resetAllStats: () => void;
+  enterReplay: (shotId?: string) => void;
+  exitReplay: () => void;
+  selectReplayShot: (shotId: string) => void;
+  toggleReplayPlay: () => void;
+  restartReplay: () => void;
+  seekReplay: (timeSec: number) => void;
+  setReplaySpeed: (speed: ReplaySpeed) => void;
+  toggleReplayAutoSlowMo: () => void;
+  toggleReplayAnalysis: () => void;
+  jumpToReplayImpact: () => void;
 }
 
 interface GameCanvasProps {
@@ -39,6 +50,16 @@ export function GameCanvas({ actionsRef, onToggleFullscreen }: GameCanvasProps) 
       placeCueAtHeadSpot: () => scene.placeCueAtHeadSpot(),
       setCalledShot: (ball, pocket) => scene.setCalledShot(ball, pocket),
       resetAllStats: () => scene.resetAllStats(),
+      enterReplay: (shotId) => scene.enterReplay(shotId),
+      exitReplay: () => scene.exitReplay(),
+      selectReplayShot: (shotId) => scene.selectReplayShot(shotId),
+      toggleReplayPlay: () => scene.toggleReplayPlay(),
+      restartReplay: () => scene.restartReplay(),
+      seekReplay: (timeSec) => scene.seekReplay(timeSec),
+      setReplaySpeed: (speed) => scene.setReplaySpeed(speed),
+      toggleReplayAutoSlowMo: () => scene.toggleReplayAutoSlowMo(),
+      toggleReplayAnalysis: () => scene.toggleReplayAnalysis(),
+      jumpToReplayImpact: () => scene.jumpToReplayImpact(),
     };
 
     return () => {

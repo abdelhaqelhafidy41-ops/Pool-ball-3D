@@ -11,6 +11,10 @@ import { CueStick } from '../objects/CueStick';
 import { PoolTable } from '../objects/PoolTable';
 import { PhysicsWorld, type BallPhysicsSnapshot } from '../physics/PhysicsWorld';
 import { AITurnController } from '../ai/AITurnController';
+import { ReplayAnalysisOverlay } from '../replay/ReplayAnalysisOverlay';
+import { formatCollisionLabel, ReplayController } from '../replay/ReplayController';
+import { ShotRecorder } from '../replay/ShotRecorder';
+import type { ReplayBallFrame, ReplaySpeed } from '../replay/types';
 import { MatchManager } from '../rules/MatchManager';
 import { generateOfficialEightBallRack } from '../rules/RackGenerator';
 import type { MatchConfig, PocketId } from '../rules/types';
@@ -65,6 +69,14 @@ export class PoolScene {
   private matchManager: MatchManager;
   private aiTurnController: AITurnController | null = null;
   private shotSequence = 0;
+
+  // Phase 6: Isolated Shot Recording, Replay & 3D Shot Analysis
+  private shotRecorder = new ShotRecorder();
+  private replayController = new ReplayController();
+  private replayAnalysisOverlay = new ReplayAnalysisOverlay();
+  private replayFramesScratch: ReplayBallFrame[] = [];
+  private lastReplayUiSyncAt = 0;
+  private lastOnlineShotSeqRecorded = -1;
 
   // 3D Ball-in-Hand placement visuals & Called Pocket ring
   private placementGroup = new THREE.Group();
@@ -233,6 +245,8 @@ export class PoolScene {
       this.cueStick = new CueStick(maxAnisotropy);
       this.scene.add(this.cueStick.group);
 
+      this.scene.add(this.replayAnalysisOverlay.group);
+
       this.setupMatchOverlays();
 
       // 7. Rapier3D Physics World
@@ -258,12 +272,16 @@ export class PoolScene {
         onResetRack: () => this.resetRack(),
         onConfirmCuePlacement: () => this.confirmCuePlacement(),
         onToggleFullscreen,
+        onToggleReplayPlay: () => this.toggleReplayPlay(),
+        onRestartReplay: () => this.restartReplay(),
+        onExitReplay: () => this.exitReplay(),
       });
 
       // 8b. Attach online multiplayer bridge
       multiplayerManager.attachSceneBridge({
         onApplyAuthoritativeBalls: (balls) => {
           this.physics.syncAllFromServerFrames(balls);
+          if (this.replayController.isActive()) return;
           for (const b of balls) {
             this.billiardBalls.syncFromTransform(
               b.number,
@@ -278,8 +296,16 @@ export class PoolScene {
             );
           }
         },
-        onOnlineMatchEntered: (_snapshot, balls) => {
+        onOnlineMatchEntered: (snapshot, balls) => {
           this.aiTurnController?.cancel();
+          if (this.replayController.isActive()) {
+            this.exitReplay();
+          }
+          if (snapshot.totalMatchShots === 0) {
+            this.shotRecorder.clearMatchShots();
+            this.lastOnlineShotSeqRecorded = -1;
+            useGameStore.getState().setReplayShots([]);
+          }
           this.strikeAnim.active = false;
           this.strikeAnim.impulseApplied = false;
           this.wasBallsMoving = false;
@@ -301,7 +327,34 @@ export class PoolScene {
         },
         onRemoteShotStarted: (payload) => {
           const st = useGameStore.getState();
-          if (payload.shooter !== st.onlineLocalRole && payload.shotSeq !== this.lastRemoteShotSeqAnim) {
+          if (payload.shotSeq !== this.lastOnlineShotSeqRecorded) {
+            this.lastOnlineShotSeqRecorded = payload.shotSeq;
+            const shooterName =
+              payload.shooter === 'player1'
+                ? st.matchConfig.player1Name || 'Player 1'
+                : st.matchConfig.player2Name || 'Player 2';
+            this.shotRecorder.beginShot({
+              shotNumber: st.shotCount + 1,
+              mode: 'online',
+              shooter: payload.shooter,
+              shooterName,
+              isBreakShot: st.isBreakShot,
+              cueAngle: payload.cueAngle,
+              power: payload.power,
+              spin: { x: payload.spinX, y: payload.spinY },
+              calledShot: st.calledShot,
+            });
+            const preShotBalls = multiplayerManager.synchronizer.getLatestSettledBalls();
+            if (preShotBalls && preShotBalls.length > 0) {
+              this.shotRecorder.pushOnlineSample(preShotBalls);
+            }
+          }
+
+          if (
+            !this.replayController.isActive() &&
+            payload.shooter !== st.onlineLocalRole &&
+            payload.shotSeq !== this.lastRemoteShotSeqAnim
+          ) {
             this.lastRemoteShotSeqAnim = payload.shotSeq;
             st.setCueAngle(payload.cueAngle);
             st.setCueSpin(payload.spinX, payload.spinY);
@@ -311,19 +364,58 @@ export class PoolScene {
             });
           }
         },
+        onOnlineShotFrame: (balls) => {
+          this.shotRecorder.pushOnlineSample(balls);
+        },
+        onOnlinePocketEvent: (ballNumber, pocketId) => {
+          this.shotRecorder.recordPocket(ballNumber, pocketId);
+        },
+        onOnlineShotSettled: (snapshot, balls) => {
+          if (this.shotRecorder.isRecording() && this.shotRecorder.getActiveMode() === 'online') {
+            const isFoul = Boolean(snapshot.lastFoulMessage);
+            const resultLabel = snapshot.winner
+              ? `${snapshot.winner === 'player1' ? snapshot.player1Name : snapshot.player2Name} Wins`
+              : isFoul
+                ? snapshot.lastFoulMessage ?? 'Foul'
+                : snapshot.statusHeadline || 'Shot Complete';
+            const rec = this.shotRecorder.finalizeShot({
+              resultLabel,
+              isFoul,
+              foulReason: snapshot.lastFoulMessage,
+              finalOnlineBalls: balls,
+            });
+            if (rec) {
+              useGameStore.getState().setReplayShots(this.shotRecorder.getSummariesNewestFirst());
+            }
+          }
+        },
         onRemoteAimPreview: (cueAngle) => {
           const st = useGameStore.getState();
-          if (st.matchConfig.opponentType === 'online' && !canLocalPlayerAct(st) && !this.strikeAnim.active) {
+          if (
+            !this.replayController.isActive() &&
+            st.matchConfig.opponentType === 'online' &&
+            !canLocalPlayerAct(st) &&
+            !this.strikeAnim.active
+          ) {
             st.setCueAngle(cueAngle);
           }
         },
         onRemoteSpinPreview: (x, y) => {
           const st = useGameStore.getState();
-          if (st.matchConfig.opponentType === 'online' && !canLocalPlayerAct(st)) {
+          if (
+            !this.replayController.isActive() &&
+            st.matchConfig.opponentType === 'online' &&
+            !canLocalPlayerAct(st)
+          ) {
             st.setCueSpin(x, y);
           }
         },
         onOnlineMatchExited: () => {
+          if (this.replayController.isActive()) {
+            this.exitReplay();
+          }
+          this.shotRecorder.clearMatchShots();
+          this.lastOnlineShotSeqRecorded = -1;
           this.strikeAnim.active = false;
           this.wasBallsMoving = false;
           this.physics.resetRack(generateOfficialEightBallRack());
@@ -359,6 +451,11 @@ export class PoolScene {
         if (state.screen !== this.lastScreen) {
           this.lastScreen = state.screen;
           if (state.screen === 'menu') {
+            if (this.replayController.isActive()) {
+              this.exitReplay();
+            }
+            this.physics.setShotStepObserver(null);
+            this.shotRecorder.cancelActiveRecording();
             this.aiTurnController?.cancel();
             this.matchManager.enterMenu();
           }
@@ -554,6 +651,8 @@ export class PoolScene {
     if (
       store.screen !== 'playing' ||
       store.settingsOpen ||
+      store.replayActive ||
+      this.replayController.isActive() ||
       store.ballsMoving ||
       store.isDraggingCue ||
       store.isShotAnimating ||
@@ -821,6 +920,14 @@ export class PoolScene {
     }
 
     this.aiTurnController?.cancel();
+    if (this.replayController.isActive()) {
+      this.replayController.exitReplay();
+      this.replayAnalysisOverlay.clear();
+      this.replayAnalysisOverlay.update(false, 0);
+    }
+    this.physics.setShotStepObserver(null);
+    this.shotRecorder.clearMatchShots();
+
     const mergedConfig: Partial<MatchConfig> = {
       ...store.matchConfig,
       ...overrideConfig,
@@ -923,6 +1030,8 @@ export class PoolScene {
     const store = useGameStore.getState();
     if (
       power <= 0 ||
+      store.replayActive ||
+      this.replayController.isActive() ||
       this.strikeAnim.active ||
       store.isShotAnimating ||
       store.ballsMoving ||
@@ -1015,7 +1124,245 @@ export class PoolScene {
   }
 
   private scheduleAiTurnIfNeeded() {
+    if (this.replayController.isActive()) return;
     this.aiTurnController?.scheduleTurnIfNeeded();
+  }
+
+  private captureLocalReplayFrame() {
+    this.physics.forEachBallKinematics(
+      (num, x, y, z, qx, qy, qz, qw, vx, vy, vz, pocketed) => {
+        this.shotRecorder.writeBallSample(num, x, y, z, qx, qy, qz, qw, vx, vy, vz, pocketed);
+      },
+    );
+    this.shotRecorder.commitFrame();
+  }
+
+  private captureLiveBallBackup(): ReplayBallFrame[] {
+    const out: ReplayBallFrame[] = [];
+    const store = useGameStore.getState();
+    if (store.matchConfig.opponentType === 'online') {
+      const online = multiplayerManager.synchronizer.getLatestSettledBalls();
+      if (online && online.length > 0) {
+        return online.map((b) => ({ ...b }));
+      }
+    }
+    this.physics.forEachBallKinematics(
+      (number, x, y, z, qx, qy, qz, qw, vx, vy, vz, pocketed) => {
+        out.push({ number, x, y, z, qx, qy, qz, qw, vx, vy, vz, pocketed });
+      },
+    );
+    return out;
+  }
+
+  private syncReplayUi(force = false) {
+    const now = performance.now();
+    if (!force && now - this.lastReplayUiSyncAt < 32) return;
+    this.lastReplayUiSyncAt = now;
+
+    const shot = this.replayController.getShot();
+    const activeCol = this.replayController.getActiveCollisionHighlight();
+    useGameStore.getState().setReplayUiState({
+      replayActive: this.replayController.isActive(),
+      replayShotId: shot?.id ?? null,
+      replayPlaying: this.replayController.isPlaying(),
+      replayTimeSec: this.replayController.getCurrentTimeSec(),
+      replayDurationSec: this.replayController.getDurationSec(),
+      replaySpeed: this.replayController.getSpeed(),
+      replayAutoSlowMo: this.replayController.getAutoSlowMo(),
+      replayShowAnalysis: this.replayController.getShowAnalysis(),
+      replayActiveCollisionLabel: activeCol ? formatCollisionLabel(activeCol) : null,
+    });
+  }
+
+  private renderCurrentReplayInstant() {
+    if (this.replayController.sampleInterpolatedFrames(this.replayFramesScratch)) {
+      for (let i = 0; i < this.replayFramesScratch.length; i++) {
+        const b = this.replayFramesScratch[i];
+        this.billiardBalls.syncFromTransform(
+          b.number,
+          b.x,
+          b.y,
+          b.z,
+          b.qx,
+          b.qy,
+          b.qz,
+          b.qw,
+          b.pocketed,
+        );
+      }
+    }
+    this.replayAnalysisOverlay.update(
+      this.replayController.getShowAnalysis(),
+      this.replayController.getCurrentTimeSec(),
+    );
+  }
+
+  // ==================== PHASE 6: ISOLATED REPLAY API ====================
+
+  public enterReplay(shotId?: string) {
+    const store = useGameStore.getState();
+    if (
+      store.screen !== 'playing' ||
+      store.ballsMoving ||
+      store.isShotAnimating ||
+      this.strikeAnim.active
+    ) {
+      return;
+    }
+
+    const shot = this.shotRecorder.getShotById(shotId ?? null);
+    if (!shot) return;
+
+    // Pause AI turn orchestration while player reviews replay; resumed cleanly on exitReplay()
+    this.aiTurnController?.cancel();
+    store.setIsAiThinking(false);
+
+    const backup = this.captureLiveBallBackup();
+    this.replayController.enterReplay(shot, backup);
+    this.replayAnalysisOverlay.setShot(shot);
+    this.renderCurrentReplayInstant();
+    this.syncReplayUi(true);
+  }
+
+  public exitReplay() {
+    if (!this.replayController.isActive()) return;
+    const backup = this.replayController.exitReplay();
+    this.replayAnalysisOverlay.clear();
+    this.replayAnalysisOverlay.update(false, 0);
+
+    const store = useGameStore.getState();
+    if (store.matchConfig.opponentType === 'online') {
+      const hasLive = multiplayerManager.synchronizer.sampleRenderFrames(_onlineFrames);
+      const liveBalls = hasLive
+        ? _onlineFrames
+        : multiplayerManager.synchronizer.getLatestSettledBalls();
+      if (liveBalls && liveBalls.length > 0) {
+        this.physics.syncAllFromServerFrames(liveBalls);
+        for (const b of liveBalls) {
+          this.billiardBalls.syncFromTransform(
+            b.number,
+            b.x,
+            b.y,
+            b.z,
+            b.qx,
+            b.qy,
+            b.qz,
+            b.qw,
+            b.pocketed,
+          );
+        }
+      } else {
+        for (const b of backup) {
+          this.billiardBalls.syncFromTransform(
+            b.number,
+            b.x,
+            b.y,
+            b.z,
+            b.qx,
+            b.qy,
+            b.qz,
+            b.qw,
+            b.pocketed,
+          );
+        }
+      }
+    } else {
+      this.physics.getSnapshots(_snapshots);
+      if (_snapshots.length > 0) {
+        for (const s of _snapshots) {
+          this.billiardBalls.syncFromTransform(
+            s.number,
+            s.x,
+            s.y,
+            s.z,
+            s.qx,
+            s.qy,
+            s.qz,
+            s.qw,
+            s.pocketed,
+          );
+        }
+      } else {
+        for (const b of backup) {
+          this.billiardBalls.syncFromTransform(
+            b.number,
+            b.x,
+            b.y,
+            b.z,
+            b.qx,
+            b.qy,
+            b.qz,
+            b.qw,
+            b.pocketed,
+          );
+        }
+      }
+    }
+
+    store.resetReplayUiState();
+    this.scheduleAiTurnIfNeeded();
+  }
+
+  public selectReplayShot(shotId: string) {
+    if (!this.replayController.isActive()) {
+      this.enterReplay(shotId);
+      return;
+    }
+    const shot = this.shotRecorder.getShotById(shotId);
+    if (!shot) return;
+    this.replayController.switchShot(shot);
+    this.replayAnalysisOverlay.setShot(shot);
+    this.renderCurrentReplayInstant();
+    this.syncReplayUi(true);
+  }
+
+  public toggleReplayPlay() {
+    if (!this.replayController.isActive()) return;
+    this.replayController.togglePlay();
+    this.syncReplayUi(true);
+  }
+
+  public restartReplay() {
+    if (!this.replayController.isActive()) return;
+    this.replayController.restart();
+    this.renderCurrentReplayInstant();
+    this.syncReplayUi(true);
+  }
+
+  public seekReplay(timeSec: number) {
+    if (!this.replayController.isActive()) return;
+    this.replayController.seek(timeSec);
+    this.renderCurrentReplayInstant();
+    this.syncReplayUi(true);
+  }
+
+  public setReplaySpeed(speed: ReplaySpeed) {
+    if (!this.replayController.isActive()) return;
+    this.replayController.setSpeed(speed);
+    this.syncReplayUi(true);
+  }
+
+  public toggleReplayAutoSlowMo() {
+    if (!this.replayController.isActive()) return;
+    this.replayController.setAutoSlowMo(!this.replayController.getAutoSlowMo());
+    this.syncReplayUi(true);
+  }
+
+  public toggleReplayAnalysis() {
+    if (!this.replayController.isActive()) return;
+    this.replayController.setShowAnalysis(!this.replayController.getShowAnalysis());
+    this.replayAnalysisOverlay.update(
+      this.replayController.getShowAnalysis(),
+      this.replayController.getCurrentTimeSec(),
+    );
+    this.syncReplayUi(true);
+  }
+
+  public jumpToReplayImpact() {
+    if (!this.replayController.isActive()) return;
+    this.replayController.jumpToFirstImpact();
+    this.renderCurrentReplayInstant();
+    this.syncReplayUi(true);
   }
 
   private scheduleResize() {
@@ -1136,11 +1483,37 @@ export class PoolScene {
               );
 
               soundEngine.playCueStrike(this.strikeAnim.power);
+              this.shotRecorder.beginShot({
+                shotNumber: store.shotCount + 1,
+                mode: store.matchConfig.opponentType === 'ai' ? 'ai' : 'local',
+                shooter: snap.activePlayer,
+                shooterName: this.matchManager.getPlayerName(snap.activePlayer),
+                isBreakShot: snap.isBreakShot,
+                cueAngle: this.strikeAnim.angle,
+                power: this.strikeAnim.power,
+                spin: this.strikeAnim.spin,
+                calledShot: snap.calledShot,
+              });
+              this.physics.setShotStepObserver({
+                onFixedSample: () => this.captureLocalReplayFrame(),
+                onCollision: (kind, ballA, ballB, x, z, impactSpeed) =>
+                  this.shotRecorder.recordCollision({
+                    kind,
+                    ballA,
+                    ballB,
+                    x,
+                    z,
+                    impactSpeed,
+                  }),
+                onPocket: (ballNumber, pocketId, x, z) =>
+                  this.shotRecorder.recordPocket(ballNumber, pocketId, x, z),
+              });
               this.physics.strikeCueBall(
                 this.strikeAnim.angle,
                 this.strikeAnim.power,
                 this.strikeAnim.spin,
               );
+              this.captureLocalReplayFrame();
               this.wasBallsMoving = true;
               store.setBallsMoving(true);
               store.syncFromMatchSnapshot(this.matchManager.getSnapshot());
@@ -1177,6 +1550,21 @@ export class PoolScene {
           store.setIsShotAnimating(false);
         }
       }
+    }
+
+    // 2b. Isolated Replay Mode: advance only ReplayController & visual overlay without stepping live physics
+    if (this.replayController.isActive()) {
+      const wasPlaying = this.replayController.isPlaying();
+      this.replayController.step(dt);
+      this.renderCurrentReplayInstant();
+      const finishedPlayback = wasPlaying && !this.replayController.isPlaying();
+      this.syncReplayUi(finishedPlayback);
+
+      this.placementGroup.visible = false;
+      this.calledPocketRing.visible = false;
+      this.cueStick.update(_cueBallPos, 0, 0, false, false, null, { x: 0, y: 0 }, dt, false);
+      this.cameraController.update(dt, false);
+      return;
     }
 
     const isOnlinePlaying =
@@ -1230,9 +1618,35 @@ export class PoolScene {
         this.wasBallsMoving = false;
         store.setBallsMoving(false);
 
+        if (this.shotRecorder.isRecording() && this.shotRecorder.getActiveMode() !== 'online') {
+          this.captureLocalReplayFrame();
+        }
+        this.physics.setShotStepObserver(null);
+
         if (this.matchManager.getPhase() === 'BALLS_MOVING') {
           const telemetry = this.physics.finalizeShotTelemetry();
           const { snapshot, evaluation } = this.matchManager.settleShot(telemetry);
+
+          if (this.shotRecorder.isRecording() && this.shotRecorder.getActiveMode() !== 'online') {
+            const pocketedObj = telemetry.pocketEvents.filter((p) => p.ballNumber !== 0);
+            const resultLabel = evaluation?.winner
+              ? `${this.matchManager.getPlayerName(evaluation.winner)} Wins`
+              : evaluation && !evaluation.isLegal
+                ? `Foul · ${evaluation.foulReason ?? 'Illegal Shot'}`
+                : pocketedObj.length > 0
+                  ? `Pocketed ${pocketedObj.map((p) => `#${p.ballNumber}`).join(', ')}`
+                  : snapshot.config.gameMode === 'freePlay'
+                    ? 'Free Play Shot'
+                    : 'No Ball Pocketed';
+            const rec = this.shotRecorder.finalizeShot({
+              resultLabel,
+              isFoul: Boolean(evaluation && !evaluation.isLegal),
+              foulReason: evaluation?.foulReason ?? null,
+            });
+            if (rec) {
+              store.setReplayShots(this.shotRecorder.getSummariesNewestFirst());
+            }
+          }
 
           if (evaluation?.respotEightBall) {
             this.physics.respotEightBall();
@@ -1253,6 +1667,8 @@ export class PoolScene {
           useGameStore.setState({ cueBallPocketed: false });
           store.syncFromMatchSnapshot(snapshot);
           this.scheduleAiTurnIfNeeded();
+        } else {
+          this.shotRecorder.cancelActiveRecording();
         }
       } else if (movingNow !== this.wasBallsMoving) {
         this.wasBallsMoving = movingNow;
@@ -1416,7 +1832,11 @@ export class PoolScene {
 
     this.inputManager?.dispose();
     this.cameraController?.dispose();
+    this.physics?.setShotStepObserver(null);
     this.physics?.dispose();
+    this.shotRecorder.clearMatchShots();
+    this.replayController.exitReplay();
+    this.replayAnalysisOverlay.dispose();
 
     if (this.scene) {
       disposeObject3D(this.scene);

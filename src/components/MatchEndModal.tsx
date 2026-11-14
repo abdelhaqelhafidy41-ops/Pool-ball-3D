@@ -1,4 +1,4 @@
-import { Award, Globe, Home, RotateCcw, Trophy } from 'lucide-react';
+import { Award, Film, Globe, Home, RotateCcw, Trophy } from 'lucide-react';
 import { computeAverageBallsPerTurn } from '../game/rules/MatchStatistics';
 import { soundEngine } from '../game/utils/SoundEngine';
 import { multiplayerManager } from '../multiplayer/MultiplayerManager';
@@ -7,11 +7,14 @@ import { useGameStore } from '../store/useGameStore';
 interface MatchEndModalProps {
   onPlayAgain: () => void;
   onMainMenu: () => void;
+  onWatchReplay: () => void;
 }
 
-export function MatchEndModal({ onPlayAgain, onMainMenu }: MatchEndModalProps) {
+export function MatchEndModal({ onPlayAgain, onMainMenu, onWatchReplay }: MatchEndModalProps) {
   const screen = useGameStore((s) => s.screen);
   const matchPhase = useGameStore((s) => s.matchPhase);
+  const replayActive = useGameStore((s) => s.replayActive);
+  const replayShots = useGameStore((s) => s.replayShots);
   const winner = useGameStore((s) => s.winner);
   const gameOverReason = useGameStore((s) => s.gameOverReason);
   const matchConfig = useGameStore((s) => s.matchConfig);
@@ -24,7 +27,7 @@ export function MatchEndModal({ onPlayAgain, onMainMenu }: MatchEndModalProps) {
   const lastOnlineMatchProgression = useGameStore((s) => s.lastOnlineMatchProgression);
   const openProgressionModal = useGameStore((s) => s.openProgressionModal);
 
-  if (screen !== 'playing' || matchPhase !== 'GAME_OVER' || !winner) {
+  if (screen !== 'playing' || matchPhase !== 'GAME_OVER' || !winner || replayActive) {
     return null;
   }
 
@@ -184,8 +187,22 @@ export function MatchEndModal({ onPlayAgain, onMainMenu }: MatchEndModalProps) {
           })()
         )}
 
+        {replayShots.length > 0 && (
+          <button
+            type="button"
+            onClick={() => {
+              soundEngine.playUiClick();
+              onWatchReplay();
+            }}
+            className="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-xl border border-amber-400/35 bg-amber-500/10 px-4 py-2 text-xs font-bold uppercase tracking-wider text-amber-300 hover:bg-amber-500/20 transition-colors cursor-pointer whitespace-nowrap"
+          >
+            <Film className="h-4 w-4 text-amber-400" />
+            Watch Last Shot Replay
+          </button>
+        )}
+
         {isOnline ? (
-          <div className="mt-6 space-y-2.5">
+          <div className="mt-3 space-y-2.5">
             <button
               type="button"
               disabled={hasVotedRematch}
@@ -230,7 +247,7 @@ export function MatchEndModal({ onPlayAgain, onMainMenu }: MatchEndModalProps) {
             </div>
           </div>
         ) : (
-          <div className="mt-6 flex items-center gap-2.5">
+          <div className="mt-3 flex items-center gap-2.5">
             <button
               type="button"
               onClick={() => {

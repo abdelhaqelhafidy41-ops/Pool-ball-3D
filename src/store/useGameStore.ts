@@ -14,6 +14,7 @@ import type {
   PlayerId,
   PocketId,
 } from '../game/rules/types';
+import type { ReplayShotSummary, ReplaySpeed } from '../game/replay/types';
 import { TABLE_DIMENSIONS } from '../game/utils/constants';
 import type {
   MatchProgressionRewardSummary,
@@ -188,6 +189,18 @@ export interface GameState {
   progressionTab: ProgressionTab;
   inspectedPlayerId: string | null;
 
+  // Replay & Shot Analysis State (Phase 6 - Strictly isolated from live match)
+  replayShots: ReplayShotSummary[];
+  replayActive: boolean;
+  replayShotId: string | null;
+  replayPlaying: boolean;
+  replayTimeSec: number;
+  replayDurationSec: number;
+  replaySpeed: ReplaySpeed;
+  replayAutoSlowMo: boolean;
+  replayShowAnalysis: boolean;
+  replayActiveCollisionLabel: string | null;
+
   // Actions
   setScreen: (screen: GameScreen) => void;
   setSettingsOpen: (open: boolean) => void;
@@ -262,9 +275,27 @@ export interface GameState {
   closeProgressionModal: () => void;
   setProgressionTab: (tab: ProgressionTab) => void;
   setInspectedPlayerId: (playerId: string | null) => void;
+
+  // Replay Actions (Phase 6)
+  setReplayShots: (shots: ReplayShotSummary[]) => void;
+  setReplayUiState: (
+    partial: Partial<{
+      replayActive: boolean;
+      replayShotId: string | null;
+      replayPlaying: boolean;
+      replayTimeSec: number;
+      replayDurationSec: number;
+      replaySpeed: ReplaySpeed;
+      replayAutoSlowMo: boolean;
+      replayShowAnalysis: boolean;
+      replayActiveCollisionLabel: string | null;
+    }>,
+  ) => void;
+  resetReplayUiState: () => void;
 }
 
 export function canLocalPlayerAct(state: GameState): boolean {
+  if (state.replayActive) return false;
   if (state.matchConfig.opponentType === 'online') {
     if (state.onlineConnectionStatus !== 'connected') return false;
     if (!state.onlineLocalRole) return false;
@@ -380,6 +411,17 @@ export const useGameStore = create<GameState>((set) => ({
   progressionTab: 'profile',
   inspectedPlayerId: null,
 
+  replayShots: [],
+  replayActive: false,
+  replayShotId: null,
+  replayPlaying: false,
+  replayTimeSec: 0,
+  replayDurationSec: 0,
+  replaySpeed: 1,
+  replayAutoSlowMo: false,
+  replayShowAnalysis: true,
+  replayActiveCollisionLabel: null,
+
   setScreen: (screen) => set({ screen }),
   setSettingsOpen: (settingsOpen) => set({ settingsOpen }),
   setLoading: (isLoading) => set({ isLoading }),
@@ -432,6 +474,13 @@ export const useGameStore = create<GameState>((set) => ({
       isDraggingCue: false,
       isShotAnimating: false,
       lastOnlineMatchProgression: null,
+      replayShots: [],
+      replayActive: false,
+      replayShotId: null,
+      replayPlaying: false,
+      replayTimeSec: 0,
+      replayDurationSec: 0,
+      replayActiveCollisionLabel: null,
     }),
   updateSettings: (partial) =>
     set((state) => ({
@@ -650,6 +699,13 @@ export const useGameStore = create<GameState>((set) => ({
         state.matchConfig.opponentType === 'online'
           ? { ...state.matchConfig, opponentType: 'pvp', player2Name: 'Player 2' }
           : state.matchConfig,
+      replayShots: [],
+      replayActive: false,
+      replayShotId: null,
+      replayPlaying: false,
+      replayTimeSec: 0,
+      replayDurationSec: 0,
+      replayActiveCollisionLabel: null,
     })),
 
   setOwnProfile: (ownProfile) => set({ ownProfile }),
@@ -672,4 +728,16 @@ export const useGameStore = create<GameState>((set) => ({
       inspectedPlayerId: null,
     }),
   setInspectedPlayerId: (inspectedPlayerId) => set({ inspectedPlayerId }),
+
+  setReplayShots: (replayShots) => set({ replayShots }),
+  setReplayUiState: (partial) => set(partial),
+  resetReplayUiState: () =>
+    set({
+      replayActive: false,
+      replayShotId: null,
+      replayPlaying: false,
+      replayTimeSec: 0,
+      replayDurationSec: 0,
+      replayActiveCollisionLabel: null,
+    }),
 }));

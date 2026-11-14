@@ -54,7 +54,7 @@ export function CalledShotPanel({ onSelectCalledShot }: CalledShotPanelProps) {
   const isComplete = calledShot.targetBall !== null && calledShot.targetPocket !== null;
 
   return (
-    <div className="pointer-events-auto fixed left-2.5 sm:left-4 bottom-20 sm:bottom-24 z-20 flex flex-col items-start gap-1.5">
+    <div className="pointer-events-auto fixed left-2.5 sm:left-4 bottom-[244px] sm:bottom-[198px] lg:bottom-24 z-20 flex flex-col items-start gap-1.5">
       {expanded && (
         <div className="w-[228px] rounded-xl border border-white/12 bg-[#0c1219]/95 p-2.5 shadow-2xl">
           <div className="flex items-center justify-between pb-2 border-b border-white/10">

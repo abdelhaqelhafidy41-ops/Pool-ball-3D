@@ -6,6 +6,9 @@ export interface InputActions {
   onResetRack: () => void;
   onConfirmCuePlacement: () => void;
   onToggleFullscreen: () => void;
+  onToggleReplayPlay?: () => void;
+  onRestartReplay?: () => void;
+  onExitReplay?: () => void;
 }
 
 export class InputManager {
@@ -51,6 +54,23 @@ export class InputManager {
         this.actions.onStartMatch();
       }
       return;
+    }
+
+    if (store.replayActive) {
+      switch (e.code) {
+        case 'Space':
+          e.preventDefault();
+          this.actions.onToggleReplayPlay?.();
+          return;
+        case 'KeyR':
+          e.preventDefault();
+          this.actions.onRestartReplay?.();
+          return;
+        case 'Escape':
+          e.preventDefault();
+          this.actions.onExitReplay?.();
+          return;
+      }
     }
 
     if (

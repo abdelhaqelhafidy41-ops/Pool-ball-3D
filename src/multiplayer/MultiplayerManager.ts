@@ -26,6 +26,9 @@ export interface MultiplayerSceneBridge {
   onRemoteSpinPreview: (x: number, y: number) => void;
   onOnlineMatchEntered: (snapshot: OnlineMatchSnapshot, balls: OnlineBallFrame[]) => void;
   onOnlineMatchExited: () => void;
+  onOnlineShotFrame?: (balls: OnlineBallFrame[]) => void;
+  onOnlinePocketEvent?: (ballNumber: number, pocketId: PocketId) => void;
+  onOnlineShotSettled?: (snapshot: OnlineMatchSnapshot, balls: OnlineBallFrame[]) => void;
 }
 
 class MultiplayerManagerImpl {
@@ -397,12 +400,14 @@ class MultiplayerManagerImpl {
 
       case 'physics:frame': {
         this.synchronizer.pushFrame(msg.shotSeq, msg.balls);
+        this.sceneBridge?.onOnlineShotFrame?.(msg.balls);
         break;
       }
 
       case 'physics:pocket': {
         if (this.synchronizer.markPocketEvent(msg.shotSeq, msg.ballNumber, msg.pocketId)) {
           store.addPocketedBall(msg.ballNumber);
+          this.sceneBridge?.onOnlinePocketEvent?.(msg.ballNumber, msg.pocketId);
         }
         break;
       }
@@ -413,6 +418,7 @@ class MultiplayerManagerImpl {
         store.setOnlineRoom(msg.room);
         store.syncFromOnlineMatchSnapshot(msg.match, role);
         this.sceneBridge?.onApplyAuthoritativeBalls(msg.balls);
+        this.sceneBridge?.onOnlineShotSettled?.(msg.match, msg.balls);
         break;
       }
 
@@ -431,6 +437,7 @@ class MultiplayerManagerImpl {
         store.setOnlineRoom(msg.room);
         store.syncFromOnlineMatchSnapshot(msg.match, role, msg.historyRecord, msg.progression);
         this.sceneBridge?.onApplyAuthoritativeBalls(msg.balls);
+        this.sceneBridge?.onOnlineShotSettled?.(msg.match, msg.balls);
         void progressionClient.refreshOwnProfile();
         break;
       }

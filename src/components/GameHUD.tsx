@@ -8,6 +8,7 @@ import {
   Crosshair,
   Eye,
   EyeOff,
+  Film,
   Home,
   Maximize2,
   Minimize2,
@@ -38,6 +39,7 @@ interface GameHUDProps {
   onPlaceAtHeadSpot: () => void;
   onSelectCalledShot: (targetBall: number | null, targetPocket: PocketId | null) => void;
   onToggleFullscreen: () => void;
+  onEnterReplay: (shotId?: string) => void;
 }
 
 const CAMERA_PRESETS: Array<{ id: CameraPreset; label: string }> = [
@@ -54,6 +56,7 @@ export function GameHUD({
   onPlaceAtHeadSpot,
   onSelectCalledShot,
   onToggleFullscreen,
+  onEnterReplay,
 }: GameHUDProps) {
   const screen = useGameStore((s) => s.screen);
   const setScreen = useGameStore((s) => s.setScreen);
@@ -65,6 +68,8 @@ export function GameHUD({
   const isFullscreen = useGameStore((s) => s.isFullscreen);
   const hudCollapsed = useGameStore((s) => s.hudCollapsed);
   const toggleHudCollapsed = useGameStore((s) => s.toggleHudCollapsed);
+  const replayActive = useGameStore((s) => s.replayActive);
+  const replayShots = useGameStore((s) => s.replayShots);
 
   const cueAngle = useGameStore((s) => s.cueAngle);
   const adjustCueAngle = useGameStore((s) => s.adjustCueAngle);
@@ -87,7 +92,7 @@ export function GameHUD({
     lastX: 0,
   });
 
-  if (screen !== 'playing') return null;
+  if (screen !== 'playing' || replayActive) return null;
 
   const isOnline = opponentType === 'online';
   const aimLocked =
@@ -174,6 +179,22 @@ export function GameHUD({
 
         {/* Top-Right Utility Cluster */}
         <div className="pointer-events-auto flex items-center gap-1.5">
+          {replayShots.length > 0 && !ballsMoving && !isShotAnimating && (
+            <button
+              type="button"
+              data-testid="open-replay-btn"
+              onClick={() => {
+                soundEngine.unlock();
+                soundEngine.playUiClick();
+                onEnterReplay();
+              }}
+              title="Watch Shot Replay & Analysis"
+              className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-amber-400/40 bg-[#0c1219]/92 px-2.5 text-[11px] font-bold text-amber-300 hover:bg-amber-500/15 transition-colors cursor-pointer whitespace-nowrap shrink-0"
+            >
+              <Film className="h-3.5 w-3.5 text-amber-400" />
+              <span>Replay</span>
+            </button>
+          )}
           <FpsCounter />
           <button
             type="button"
@@ -224,9 +245,11 @@ export function GameHUD({
       {/* Called Shot & Pocket Selector */}
       <CalledShotPanel onSelectCalledShot={onSelectCalledShot} />
 
-      {/* Right Perimeter Stack: Compact Spin Ball Icon + Frameless Miniature Cue Stick */}
-      <div className="pointer-events-none fixed right-2 sm:right-4 top-1/2 -translate-y-1/2 z-20 flex flex-col items-center gap-2">
-        <CueBallSpinControl />
+      {/* Compact Square Cue Ball Spin Selector */}
+      <CueBallSpinControl />
+
+      {/* Right Perimeter Control: Frameless Miniature Cue Stick */}
+      <div className="pointer-events-none fixed right-2 sm:right-4 top-1/2 -translate-y-1/2 z-20 flex flex-col items-center">
         <MiniatureCueController onShoot={onShoot} />
       </div>
 

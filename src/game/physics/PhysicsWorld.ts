@@ -44,6 +44,19 @@ export interface BallPhysicsSnapshot {
   pocketed: boolean;
 }
 
+export interface ShotStepObserver {
+  onFixedSample: () => void;
+  onCollision: (
+    kind: 'cue_ball' | 'ball_ball' | 'cushion',
+    ballA: number,
+    ballB: number | null,
+    x: number,
+    z: number,
+    impactSpeed: number,
+  ) => void;
+  onPocket: (ballNumber: number, pocketId: PocketId, x: number, z: number) => void;
+}
+
 export interface AimTrajectoryPrediction {
   cuePath: Array<{ x: number; z: number }>;
   cuePostPath: Array<{ x: number; z: number }>;
@@ -101,8 +114,10 @@ export class PhysicsWorld {
 
   private initialized = false;
   private accumulator = 0;
+  private fixedStepCounter = 0;
 
   private onBallPocketed?: (ballNumber: number, pocketId: PocketId) => void;
+  private shotObserver: ShotStepObserver | null = null;
 
   // Authoritative per-shot physics telemetry (collected strictly from Rapier simulation events)
   private pocketEventManager = new PocketEventManager();
@@ -269,6 +284,49 @@ export class PhysicsWorld {
 
     this.applyCueStrikeImpulse(cue.body, aimAngle, power, spin);
     this.worldVersion++;
+  }
+
+  public setShotStepObserver(observer: ShotStepObserver | null) {
+    this.shotObserver = observer;
+    this.fixedStepCounter = 0;
+  }
+
+  public forEachBallKinematics(
+    cb: (
+      number: number,
+      x: number,
+      y: number,
+      z: number,
+      qx: number,
+      qy: number,
+      qz: number,
+      qw: number,
+      vx: number,
+      vy: number,
+      vz: number,
+      pocketed: boolean,
+    ) => void,
+  ) {
+    if (!this.initialized) return;
+    for (const entry of this.balls.values()) {
+      const t = entry.body.translation();
+      const r = entry.body.rotation();
+      const v = entry.body.linvel();
+      cb(
+        entry.number,
+        t.x,
+        t.y,
+        t.z,
+        r.x,
+        r.y,
+        r.z,
+        r.w,
+        v.x,
+        v.y,
+        v.z,
+        entry.pocketed,
+      );
+    }
   }
 
   public beginShotTelemetry(
@@ -663,6 +721,10 @@ export class PhysicsWorld {
       }
       this.accumulator -= fixedDt;
       stepped = true;
+      this.fixedStepCounter++;
+      if (this.shotObserver && this.fixedStepCounter % 4 === 0) {
+        this.shotObserver.onFixedSample();
+      }
     }
 
     if (stepped && this.areAnyBallsMoving()) {
@@ -702,6 +764,18 @@ export class PhysicsWorld {
         if (relSpeed > 0.08) {
           soundEngine.playBallClack(relSpeed);
         }
+        if (this.shotObserver && relSpeed > 0.08) {
+          const p1 = e1.body.translation();
+          const p2 = e2.body.translation();
+          this.shotObserver.onCollision(
+            b1 === 0 || b2 === 0 ? 'cue_ball' : 'ball_ball',
+            Math.min(b1, b2),
+            Math.max(b1, b2),
+            (p1.x + p2.x) * 0.5,
+            (p1.z + p2.z) * 0.5,
+            relSpeed,
+          );
+        }
       } else {
         const ballNum = b1 !== undefined ? b1 : b2;
         const other = b1 !== undefined ? h2 : h1;
@@ -720,6 +794,17 @@ export class PhysicsWorld {
           const speed = Math.hypot(v.x, v.z);
           if (speed > 0.12) {
             soundEngine.playCushionBounce(speed);
+          }
+          if (this.shotObserver && speed > 0.12) {
+            const p = e.body.translation();
+            this.shotObserver.onCollision(
+              'cushion',
+              ballNum,
+              null,
+              p.x,
+              p.z,
+              speed,
+            );
           }
 
           const cNorm = this.cushionNormals.get(other);
@@ -846,6 +931,12 @@ export class PhysicsWorld {
             }
             this.pocketEventManager.recordPocket(entry.number, pid);
           }
+          this.shotObserver?.onPocket(
+            entry.number,
+            pid,
+            entry.dropTargetX,
+            entry.dropTargetZ,
+          );
           this.onBallPocketed?.(entry.number, pid);
           this.worldVersion++;
         } else {
