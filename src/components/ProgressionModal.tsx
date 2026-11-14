@@ -1,5 +1,6 @@
 import {
   Award,
+  Ban,
   Check,
   ChevronLeft,
   ChevronRight,
@@ -8,18 +9,22 @@ import {
   Copy,
   Crosshair,
   Crown,
+  Flag,
   Flame,
   History,
   KeyRound,
   LogIn,
   LogOut,
+  MessageSquare,
   Search,
   Shield,
   Star,
+  Swords,
   Target,
   Trophy,
   User,
   UserCheck,
+  UserMinus,
   UserPlus,
   X,
   Zap,
@@ -28,6 +33,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { soundEngine } from '../game/utils/SoundEngine';
 import { multiplayerManager } from '../multiplayer/MultiplayerManager';
 import { progressionClient } from '../multiplayer/ProgressionClient';
+import { socialClient } from '../multiplayer/SocialClient';
 import {
   ACHIEVEMENTS_CATALOG,
   type AchievementIconId,
@@ -40,6 +46,7 @@ import {
   type MatchHistoryRecord,
   type OnlineAvatarId,
 } from '../multiplayer/shared/protocol';
+import type { SocialReportReason } from '../multiplayer/shared/social';
 import { type ProgressionTab, useGameStore } from '../store/useGameStore';
 
 function formatDuration(sec: number): string {
@@ -98,6 +105,32 @@ function ProfileDetailsView({
   const avatar = ONLINE_AVATARS.find((a) => a.id === profile.avatarId) ?? ONLINE_AVATARS[0];
   const { stats, levelProgress } = profile;
 
+  const friends = useGameStore((s) => s.friends);
+  const incomingRequests = useGameStore((s) => s.incomingRequests);
+  const outgoingRequests = useGameStore((s) => s.outgoingRequests);
+  const blockedPlayers = useGameStore((s) => s.blockedPlayers);
+  const openSocialModal = useGameStore((s) => s.openSocialModal);
+  const closeProgressionModal = useGameStore((s) => s.closeProgressionModal);
+
+  const [socialBusy, setSocialBusy] = useState(false);
+  const [socialFeedback, setSocialFeedback] = useState<string | null>(null);
+  const [reportReason, setReportReason] = useState<SocialReportReason>('harassment');
+  const [reportOpen, setReportOpen] = useState(false);
+
+  const isFriend = friends.some((f) => f.playerId === profile.playerId);
+  const isBlocked = blockedPlayers.some((b) => b.playerId === profile.playerId);
+  const hasIncoming = incomingRequests.some((r) => r.playerId === profile.playerId);
+  const hasOutgoing = outgoingRequests.some((r) => r.playerId === profile.playerId);
+
+  const runSocialAction = async (fn: () => Promise<{ ok: boolean; error?: string }>, okText: string) => {
+    soundEngine.playUiClick();
+    setSocialBusy(true);
+    setSocialFeedback(null);
+    const res = await fn();
+    setSocialBusy(false);
+    setSocialFeedback(res.ok ? okText : res.error ?? 'Action failed.');
+  };
+
   return (
     <div className="space-y-4">
       {/* Header Summary */}
@@ -155,6 +188,188 @@ function ProfileDetailsView({
             </div>
           </div>
         </div>
+
+        {/* Social Actions when viewing another player */}
+        {!isOwn && (
+          <div className="mt-3 pt-3 border-t border-white/10 space-y-2">
+            <div className="flex flex-wrap items-center gap-1.5">
+              {isBlocked ? (
+                <button
+                  type="button"
+                  disabled={socialBusy}
+                  onClick={() =>
+                    runSocialAction(
+                      () => socialClient.unblockPlayer(profile.playerId),
+                      'Player unblocked.',
+                    )
+                  }
+                  className="inline-flex items-center gap-1 rounded-lg border border-rose-400/35 bg-rose-500/12 px-2.5 py-1 text-[11px] font-bold text-rose-200 hover:bg-rose-500/20 cursor-pointer"
+                >
+                  Unblock Player
+                </button>
+              ) : (
+                <>
+                  {isFriend ? (
+                    <>
+                      <button
+                        type="button"
+                        disabled={socialBusy}
+                        onClick={() =>
+                          runSocialAction(
+                            () =>
+                              socialClient.sendInvite({
+                                targetPlayerId: profile.playerId,
+                                ruleProfileId: 'casual',
+                                calledShotsEnabled: false,
+                              }),
+                            'Match invitation sent!',
+                          )
+                        }
+                        className="inline-flex items-center gap-1 rounded-lg bg-amber-500 px-2.5 py-1 text-[11px] font-extrabold text-slate-950 hover:bg-amber-400 cursor-pointer"
+                      >
+                        <Swords className="h-3 w-3" />
+                        Invite 1v1
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          soundEngine.playUiClick();
+                          closeProgressionModal();
+                          openSocialModal('messages', profile.playerId);
+                        }}
+                        className="inline-flex items-center gap-1 rounded-lg border border-white/15 bg-white/5 px-2.5 py-1 text-[11px] font-bold text-slate-200 hover:bg-white/10 cursor-pointer"
+                      >
+                        <MessageSquare className="h-3 w-3 text-amber-400" />
+                        Message
+                      </button>
+                      <button
+                        type="button"
+                        disabled={socialBusy}
+                        onClick={() =>
+                          runSocialAction(
+                            () => socialClient.removeFriend(profile.playerId),
+                            'Removed from friends.',
+                          )
+                        }
+                        className="inline-flex items-center gap-1 rounded-lg border border-white/12 bg-white/5 px-2.5 py-1 text-[11px] font-bold text-slate-300 hover:border-rose-400/40 hover:text-rose-200 cursor-pointer"
+                      >
+                        <UserMinus className="h-3 w-3" />
+                        Remove Friend
+                      </button>
+                    </>
+                  ) : hasIncoming ? (
+                    <button
+                      type="button"
+                      disabled={socialBusy}
+                      onClick={() =>
+                        runSocialAction(
+                          () => socialClient.respondFriendRequest(profile.playerId, 'accept'),
+                          'Friend request accepted!',
+                        )
+                      }
+                      className="inline-flex items-center gap-1 rounded-lg bg-emerald-500 px-2.5 py-1 text-[11px] font-extrabold text-slate-950 hover:bg-emerald-400 cursor-pointer"
+                    >
+                      <Check className="h-3 w-3" />
+                      Accept Friend Request
+                    </button>
+                  ) : hasOutgoing ? (
+                    <button
+                      type="button"
+                      disabled={socialBusy}
+                      onClick={() =>
+                        runSocialAction(
+                          () => socialClient.respondFriendRequest(profile.playerId, 'cancel'),
+                          'Friend request cancelled.',
+                        )
+                      }
+                      className="inline-flex items-center gap-1 rounded-lg border border-white/15 bg-white/5 px-2.5 py-1 text-[11px] font-bold text-slate-300 hover:bg-white/10 cursor-pointer"
+                    >
+                      Cancel Friend Request
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      disabled={socialBusy}
+                      onClick={() =>
+                        runSocialAction(
+                          () => socialClient.sendFriendRequest(profile.playerId),
+                          'Friend request sent!',
+                        )
+                      }
+                      className="inline-flex items-center gap-1 rounded-lg bg-amber-500 px-2.5 py-1 text-[11px] font-extrabold text-slate-950 hover:bg-amber-400 cursor-pointer"
+                    >
+                      <UserPlus className="h-3 w-3" />
+                      Add Friend
+                    </button>
+                  )}
+
+                  <button
+                    type="button"
+                    disabled={socialBusy}
+                    onClick={() =>
+                      runSocialAction(
+                        () => socialClient.blockPlayer(profile.playerId),
+                        'Player blocked.',
+                      )
+                    }
+                    className="inline-flex items-center gap-1 rounded-lg border border-white/12 bg-white/5 px-2.5 py-1 text-[11px] font-bold text-slate-300 hover:border-rose-400/40 hover:text-rose-200 cursor-pointer"
+                  >
+                    <Ban className="h-3 w-3" />
+                    Block
+                  </button>
+                </>
+              )}
+
+              <button
+                type="button"
+                onClick={() => setReportOpen((v) => !v)}
+                className="inline-flex items-center gap-1 rounded-lg border border-white/12 bg-white/5 px-2.5 py-1 text-[11px] font-bold text-slate-300 hover:border-rose-400/40 hover:text-rose-200 cursor-pointer"
+              >
+                <Flag className="h-3 w-3" />
+                Report
+              </button>
+            </div>
+
+            {reportOpen && (
+              <div className="flex flex-wrap items-center gap-1.5 rounded-lg border border-rose-500/30 bg-rose-950/20 p-2">
+                <select
+                  value={reportReason}
+                  onChange={(e) => setReportReason(e.target.value as SocialReportReason)}
+                  className="rounded border border-white/15 bg-[#0b1017] px-2 py-1 text-[11px] text-white"
+                >
+                  <option value="harassment">Harassment</option>
+                  <option value="spam">Spam</option>
+                  <option value="inappropriate_name">Inappropriate Name</option>
+                  <option value="cheating">Cheating</option>
+                  <option value="other">Other</option>
+                </select>
+                <button
+                  type="button"
+                  disabled={socialBusy}
+                  onClick={async () => {
+                    await runSocialAction(
+                      () =>
+                        socialClient.submitReport({
+                          reportedId: profile.playerId,
+                          contextType: 'profile',
+                          reason: reportReason,
+                        }),
+                      'Player report submitted.',
+                    );
+                    setReportOpen(false);
+                  }}
+                  className="rounded bg-rose-500 px-2.5 py-1 text-[11px] font-bold text-white hover:bg-rose-400 cursor-pointer"
+                >
+                  Submit Report
+                </button>
+              </div>
+            )}
+
+            {socialFeedback && (
+              <div className="text-[11px] font-semibold text-amber-300">{socialFeedback}</div>
+            )}
+          </div>
+        )}
 
         {/* Competitive Level & XP Progress */}
         <div className="mt-4 pt-3 border-t border-white/10">

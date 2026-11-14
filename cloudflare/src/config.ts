@@ -14,6 +14,8 @@ export interface Env {
   RATE_LIMIT_MAX_MSG_PER_SEC?: string;
   PHYSICS_BROADCAST_HZ?: string;
   MAX_LATENCY_SPREAD_MS?: string;
+  PRESENCE_TTL_MS?: string;
+  INVITE_TTL_MS?: string;
 }
 
 export interface WorkerRuntimeConfig {
@@ -25,6 +27,8 @@ export interface WorkerRuntimeConfig {
   rateLimitMaxMsgPerSec: number;
   physicsBroadcastHz: number;
   maxLatencySpreadMs: number;
+  presenceTtlMs: number;
+  inviteTtlMs: number;
 }
 
 const VALID_AVATARS = new Set<OnlineAvatarId>(ONLINE_AVATARS.map((a) => a.id));
@@ -132,6 +136,8 @@ export function loadWorkerConfig(env: Env): WorkerRuntimeConfig {
     rateLimitMaxMsgPerSec: readIntVar(env.RATE_LIMIT_MAX_MSG_PER_SEC, 45, 5),
     physicsBroadcastHz: readIntVar(env.PHYSICS_BROADCAST_HZ, 35, 10),
     maxLatencySpreadMs: readIntVar(env.MAX_LATENCY_SPREAD_MS, 250, 25),
+    presenceTtlMs: readIntVar(env.PRESENCE_TTL_MS, 45000, 500),
+    inviteTtlMs: readIntVar(env.INVITE_TTL_MS, 90000, 500),
   };
 }
 

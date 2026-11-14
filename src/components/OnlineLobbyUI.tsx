@@ -7,6 +7,7 @@ import {
   Play,
   PlusCircle,
   Search,
+  Swords,
   Trophy,
   User,
   UserCheck,
@@ -44,6 +45,11 @@ export function OnlineLobbyUI() {
   const onlineHistory = useGameStore((s) => s.onlineHistory);
   const ownProfile = useGameStore((s) => s.ownProfile);
   const openProgressionModal = useGameStore((s) => s.openProgressionModal);
+  const openSocialModal = useGameStore((s) => s.openSocialModal);
+  const friends = useGameStore((s) => s.friends);
+  const incomingRequests = useGameStore((s) => s.incomingRequests);
+  const incomingInvitations = useGameStore((s) => s.incomingInvitations);
+  const totalUnreadDmCount = useGameStore((s) => s.totalUnreadDmCount);
 
   const [activeTab, setActiveTab] = useState<LobbyTab>(onlineModeIntent);
   const [nameInput, setNameInput] = useState(onlineProfile.displayName);
@@ -171,6 +177,22 @@ export function OnlineLobbyUI() {
                 <span className="font-mono">{ownProfile.elo} ELO</span>
               </button>
             )}
+            <button
+              type="button"
+              onClick={() => {
+                soundEngine.playUiClick();
+                openSocialModal('friends');
+              }}
+              className="inline-flex items-center gap-1 rounded-lg border border-white/12 bg-white/5 px-2.5 py-1 text-[11px] font-bold text-slate-200 hover:bg-white/10 cursor-pointer whitespace-nowrap"
+            >
+              <Users className="h-3.5 w-3.5 text-amber-400" />
+              <span className="hidden sm:inline">Friends</span>
+              {incomingRequests.length + incomingInvitations.length + totalUnreadDmCount > 0 && (
+                <span className="rounded bg-amber-500 px-1 py-0.2 font-mono text-[9px] font-black text-slate-950">
+                  {incomingRequests.length + incomingInvitations.length + totalUnreadDmCount}
+                </span>
+              )}
+            </button>
             <button
               type="button"
               onClick={() => {
@@ -334,9 +356,20 @@ export function OnlineLobbyUI() {
                   return (
                     <div
                       key={slotIdx}
-                      className="flex items-center justify-center rounded-xl border border-dashed border-white/15 bg-black/25 p-4 text-xs font-medium text-slate-400"
+                      className="flex flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-white/15 bg-black/25 p-3.5 text-xs font-medium text-slate-400"
                     >
-                      Waiting for opponent to join...
+                      <span>Waiting for opponent to join...</span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          soundEngine.playUiClick();
+                          openSocialModal('friends');
+                        }}
+                        className="inline-flex items-center gap-1 rounded-lg border border-amber-400/35 bg-amber-500/12 px-2.5 py-1 text-[11px] font-bold text-amber-200 hover:bg-amber-500/20 cursor-pointer"
+                      >
+                        <Swords className="h-3 w-3" />
+                        Invite Friend ({friends.length})
+                      </button>
                     </div>
                   );
                 }
@@ -612,6 +645,17 @@ export function OnlineLobbyUI() {
                       Connecting to Server...
                     </>
                   )}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    soundEngine.playUiClick();
+                    openSocialModal('friends');
+                  }}
+                  className="inline-flex w-full items-center justify-center gap-2 rounded-xl border border-white/15 bg-white/5 px-4 py-2 text-xs font-bold text-slate-200 hover:bg-white/10 transition-colors cursor-pointer"
+                >
+                  <Swords className="h-3.5 w-3.5 text-amber-400" />
+                  Invite a Friend Directly ({friends.length})
                 </button>
               </div>
             )}

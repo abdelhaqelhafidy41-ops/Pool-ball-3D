@@ -92,21 +92,52 @@ export function resolveHttpBaseUrl(
   }
 }
 
+function isRoomScopedMessage(msg: ClientToServerMessage): boolean {
+  switch (msg.type) {
+    case 'room:ready':
+    case 'room:start':
+    case 'room:cancel':
+    case 'room:leave':
+    case 'room:rematch':
+    case 'game:aim':
+    case 'game:spin':
+    case 'game:called_shot':
+    case 'game:place_cue':
+    case 'game:shoot':
+    case 'game:forfeit':
+    case 'game:request_sync':
+    case 'chat:room_send':
+      return true;
+    default:
+      return false;
+  }
+}
+
 export class NetworkManager {
-  private ws: WebSocket | null = null;
+  private lobbyWs: WebSocket | null = null;
+  private lobbyState: ConnectionState = 'disconnected';
+  private lobbyReconnectAttempts = 0;
+  private lobbyReconnectTimer: number | null = null;
+  private lobbyConnectTimeoutTimer: number | null = null;
+  private lobbyPingTimer: number | null = null;
+  private lobbyHandshakeReady = false;
+  private lobbyPendingMessages: ClientToServerMessage[] = [];
+
+  private roomWs: WebSocket | null = null;
+  private roomReconnectAttempts = 0;
+  private roomReconnectTimer: number | null = null;
+  private roomConnectTimeoutTimer: number | null = null;
+  private roomPingTimer: number | null = null;
+  private roomHandshakeReady = false;
+  private roomPendingMessages: ClientToServerMessage[] = [];
+
   private connectionState: ConnectionState = 'disconnected';
   private intentionallyClosed = false;
-  private reconnectAttempts = 0;
-  private reconnectTimer: number | null = null;
-  private connectTimeoutTimer: number | null = null;
-  private pingTimer: number | null = null;
   private listeners: NetworkManagerListeners;
 
   private sessionId: string | null = null;
   private reconnectToken: string | null = null;
   private activeRoomId: string | null = null;
-  private handshakeReady = false;
-  private pendingMessages: ClientToServerMessage[] = [];
   private profileProvider: () => { displayName: string; avatarId: OnlineAvatarId };
   private lastLatencyMs = 35;
 
@@ -174,62 +205,116 @@ export class NetworkManager {
     if (this.activeRoomId === normalized) return;
 
     this.activeRoomId = normalized;
-    this.handshakeReady = false;
-    if (!normalized) {
-      this.pendingMessages = [];
-    }
-    this.clearReconnectTimer();
-    this.clearConnectTimeout();
-    this.stopPingLoop();
-
-    if (this.ws) {
-      const old = this.ws;
-      this.ws = null;
-      try {
-        old.close(1000, 'Switching WebSocket scope');
-      } catch {
-        // Ignore
-      }
-    }
+    this.closeRoomSocketOnly();
 
     if (!this.intentionallyClosed) {
-      this.connect();
+      this.connectLobbySocket();
+      if (normalized) {
+        this.connectRoomSocket(normalized);
+      }
     }
+    this.recomputeConnectionState();
   }
 
   public retryConnect(): void {
     this.intentionallyClosed = false;
-    this.reconnectAttempts = 0;
-    this.clearReconnectTimer();
-    this.clearConnectTimeout();
-    this.stopPingLoop();
-    if (this.ws) {
-      const old = this.ws;
-      this.ws = null;
-      try {
-        old.close(1000, 'Manual retry');
-      } catch {
-        // Ignore
-      }
-    }
+    this.lobbyReconnectAttempts = 0;
+    this.roomReconnectAttempts = 0;
+    this.closeLobbySocketOnly();
+    this.closeRoomSocketOnly();
     this.connect();
   }
 
   public connect(): void {
+    this.intentionallyClosed = false;
+    this.connectLobbySocket();
+    if (this.activeRoomId) {
+      this.connectRoomSocket(this.activeRoomId);
+    }
+    this.recomputeConnectionState();
+  }
+
+  public disconnect(): void {
+    this.intentionallyClosed = true;
+    this.activeRoomId = null;
+    this.lobbyPendingMessages = [];
+    this.roomPendingMessages = [];
+    this.closeLobbySocketOnly();
+    this.closeRoomSocketOnly();
+    this.lobbyState = 'disconnected';
+    this.setConnectionState('disconnected');
+  }
+
+  public send(msg: ClientToServerMessage): boolean {
+    if (isRoomScopedMessage(msg)) {
+      if (
+        msg.type === 'room:cancel' &&
+        (!this.roomWs || this.roomWs.readyState !== WebSocket.OPEN || !this.roomHandshakeReady) &&
+        this.lobbyWs &&
+        this.lobbyWs.readyState === WebSocket.OPEN &&
+        this.lobbyHandshakeReady
+      ) {
+        this.lobbyWs.send(JSON.stringify(msg));
+        return true;
+      }
+
+      if (!this.roomWs || this.roomWs.readyState !== WebSocket.OPEN || !this.roomHandshakeReady) {
+        if (!this.intentionallyClosed && this.activeRoomId) {
+          if (this.roomPendingMessages.length >= 25) {
+            this.roomPendingMessages.shift();
+          }
+          this.roomPendingMessages.push(msg);
+        }
+        return false;
+      }
+      this.roomWs.send(JSON.stringify(msg));
+      return true;
+    }
+
+    if (!this.lobbyWs || this.lobbyWs.readyState !== WebSocket.OPEN || !this.lobbyHandshakeReady) {
+      if (
+        !this.intentionallyClosed &&
+        msg.type !== 'ping' &&
+        msg.type !== 'session:init' &&
+        msg.type !== 'session:resume'
+      ) {
+        if (this.lobbyPendingMessages.length >= 25) {
+          this.lobbyPendingMessages.shift();
+        }
+        this.lobbyPendingMessages.push(msg);
+      }
+      return false;
+    }
+    this.lobbyWs.send(JSON.stringify(msg));
+    return true;
+  }
+
+  public simulateConnectionDropForDebug(): void {
+    if (this.roomWs) {
+      this.roomWs.close(4500, 'Simulated drop');
+    } else if (this.lobbyWs) {
+      this.lobbyWs.close(4500, 'Simulated drop');
+    }
+  }
+
+  private connectLobbySocket(): void {
     if (
-      this.ws &&
-      (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)
+      this.lobbyWs &&
+      (this.lobbyWs.readyState === WebSocket.OPEN ||
+        this.lobbyWs.readyState === WebSocket.CONNECTING)
     ) {
       return;
     }
 
-    this.intentionallyClosed = false;
-    this.handshakeReady = false;
-    this.clearReconnectTimer();
-    this.clearConnectTimeout();
-    this.setConnectionState(this.reconnectAttempts > 0 ? 'reconnecting' : 'connecting');
+    this.lobbyHandshakeReady = false;
+    this.clearTimer(this.lobbyReconnectTimer);
+    this.lobbyReconnectTimer = null;
+    this.clearTimer(this.lobbyConnectTimeoutTimer);
+    this.lobbyConnectTimeoutTimer = null;
+    this.lobbyState = this.lobbyReconnectAttempts > 0 ? 'reconnecting' : 'connecting';
+    this.recomputeConnectionState();
 
-    const url = this.buildWebSocketUrl(this.activeRoomId);
+    const url = this.buildWebSocketUrl(null);
     let socket: WebSocket;
     try {
       socket = new WebSocket(url);
@@ -237,14 +322,14 @@ export class NetworkManager {
       this.listeners.onConnectionError?.(
         `Invalid WebSocket server URL (${url}). Verify VITE_WS_URL configuration.`,
       );
-      this.scheduleReconnect();
+      this.scheduleLobbyReconnect();
       return;
     }
-    this.ws = socket;
+    this.lobbyWs = socket;
 
     if (typeof window !== 'undefined') {
-      this.connectTimeoutTimer = window.setTimeout(() => {
-        if (this.ws !== socket || this.handshakeReady) return;
+      this.lobbyConnectTimeoutTimer = window.setTimeout(() => {
+        if (this.lobbyWs !== socket || this.lobbyHandshakeReady) return;
         this.listeners.onConnectionError?.(
           `Connection to multiplayer server timed out (${url}). Retrying...`,
         );
@@ -257,35 +342,13 @@ export class NetworkManager {
     }
 
     socket.onopen = () => {
-      if (this.ws !== socket) return;
-      this.reconnectAttempts = 0;
-      const profile = this.profileProvider();
-      const storedIdentity = getStoredPlayerIdentity();
-
-      if (this.sessionId && this.reconnectToken) {
-        this.sendRaw(socket, {
-          type: 'session:resume',
-          sessionId: this.sessionId,
-          reconnectToken: this.reconnectToken,
-          displayName: profile.displayName,
-          avatarId: profile.avatarId,
-          playerId: storedIdentity?.playerId,
-          playerToken: storedIdentity?.playerToken,
-        });
-      } else {
-        this.sendRaw(socket, {
-          type: 'session:init',
-          displayName: profile.displayName,
-          avatarId: profile.avatarId,
-          latencyMs: this.lastLatencyMs,
-          playerId: storedIdentity?.playerId,
-          playerToken: storedIdentity?.playerToken,
-        });
-      }
+      if (this.lobbyWs !== socket) return;
+      this.lobbyReconnectAttempts = 0;
+      this.sendIdentityHandshake(socket);
     };
 
     socket.onmessage = (evt) => {
-      if (this.ws !== socket) return;
+      if (this.lobbyWs !== socket) return;
       try {
         const msg = JSON.parse(String(evt.data)) as ServerToClientMessage;
         if (msg.type === 'pong') {
@@ -295,7 +358,8 @@ export class NetworkManager {
           return;
         }
         if (msg.type === 'session:ready') {
-          this.clearConnectTimeout();
+          this.clearTimer(this.lobbyConnectTimeoutTimer);
+          this.lobbyConnectTimeoutTimer = null;
           this.saveSessionCredentials(msg.sessionId, msg.reconnectToken);
           if (msg.playerId && msg.playerToken) {
             saveStoredPlayerIdentity({
@@ -303,11 +367,14 @@ export class NetworkManager {
               playerToken: msg.playerToken,
             });
           }
-          this.handshakeReady = true;
-          this.listeners.onMessage(msg);
-          this.setConnectionState('connected');
-          this.flushPendingMessages();
-          this.startPingLoop();
+          this.lobbyHandshakeReady = true;
+          this.lobbyState = 'connected';
+          if (!this.activeRoomId) {
+            this.listeners.onMessage(msg);
+          }
+          this.recomputeConnectionState();
+          this.flushLobbyPendingMessages();
+          this.startLobbyPingLoop();
           return;
         }
         this.listeners.onMessage(msg);
@@ -317,27 +384,30 @@ export class NetworkManager {
     };
 
     socket.onclose = (evt) => {
-      if (this.ws !== socket) return;
-      const failedBeforeHandshake = !this.handshakeReady;
-      this.ws = null;
-      this.handshakeReady = false;
-      this.clearConnectTimeout();
-      this.stopPingLoop();
+      if (this.lobbyWs !== socket) return;
+      const failedBeforeHandshake = !this.lobbyHandshakeReady;
+      this.lobbyWs = null;
+      this.lobbyHandshakeReady = false;
+      this.clearTimer(this.lobbyConnectTimeoutTimer);
+      this.lobbyConnectTimeoutTimer = null;
+      this.stopLobbyPingLoop();
+
       if (this.intentionallyClosed) {
-        this.setConnectionState('disconnected');
+        this.lobbyState = 'disconnected';
+        this.recomputeConnectionState();
         return;
       }
-      if (failedBeforeHandshake && evt.code !== 1000 && evt.code !== 4000) {
+      if (failedBeforeHandshake && evt.code !== 1000 && evt.code !== 4000 && evt.code !== 4001) {
         this.listeners.onConnectionError?.(
           `Unable to connect to multiplayer server (${url}). Verify the server is running and VITE_WS_URL is reachable.`,
         );
       }
-      this.scheduleReconnect();
+      this.scheduleLobbyReconnect();
     };
 
     socket.onerror = () => {
-      if (this.ws !== socket) return;
-      if (!this.handshakeReady) {
+      if (this.lobbyWs !== socket) return;
+      if (!this.lobbyHandshakeReady && !this.activeRoomId) {
         this.listeners.onConnectionError?.(
           `WebSocket connection failed (${url}). Retrying connection...`,
         );
@@ -345,43 +415,170 @@ export class NetworkManager {
     };
   }
 
-  public disconnect(): void {
-    this.intentionallyClosed = true;
-    this.handshakeReady = false;
-    this.activeRoomId = null;
-    this.pendingMessages = [];
-    this.clearReconnectTimer();
-    this.clearConnectTimeout();
-    this.stopPingLoop();
-    if (this.ws) {
-      const target = this.ws;
-      this.ws = null;
+  private connectRoomSocket(roomId: string): void {
+    if (
+      this.roomWs &&
+      (this.roomWs.readyState === WebSocket.OPEN ||
+        this.roomWs.readyState === WebSocket.CONNECTING)
+    ) {
+      return;
+    }
+
+    this.roomHandshakeReady = false;
+    this.clearTimer(this.roomReconnectTimer);
+    this.roomReconnectTimer = null;
+    this.clearTimer(this.roomConnectTimeoutTimer);
+    this.roomConnectTimeoutTimer = null;
+    this.recomputeConnectionState();
+
+    const url = this.buildWebSocketUrl(roomId);
+    let socket: WebSocket;
+    try {
+      socket = new WebSocket(url);
+    } catch {
+      this.listeners.onConnectionError?.(`Invalid room WebSocket URL (${url}).`);
+      this.scheduleRoomReconnect();
+      return;
+    }
+    this.roomWs = socket;
+
+    if (typeof window !== 'undefined') {
+      this.roomConnectTimeoutTimer = window.setTimeout(() => {
+        if (this.roomWs !== socket || this.roomHandshakeReady) return;
+        this.listeners.onConnectionError?.(
+          `Connection to game room timed out (${url}). Retrying...`,
+        );
+        try {
+          socket.close(4000, 'Room timeout');
+        } catch {
+          // Ignore
+        }
+      }, CONNECT_TIMEOUT_MS);
+    }
+
+    socket.onopen = () => {
+      if (this.roomWs !== socket) return;
+      this.roomReconnectAttempts = 0;
+      this.sendIdentityHandshake(socket);
+    };
+
+    socket.onmessage = (evt) => {
+      if (this.roomWs !== socket) return;
       try {
-        target.close(1000, 'Client disconnect');
+        const msg = JSON.parse(String(evt.data)) as ServerToClientMessage;
+        if (msg.type === 'pong') {
+          const rtt = Math.max(1, Math.round(Date.now() - msg.clientTimeMs));
+          this.lastLatencyMs = rtt;
+          this.listeners.onLatencyUpdate(rtt);
+          return;
+        }
+        if (msg.type === 'session:ready') {
+          this.clearTimer(this.roomConnectTimeoutTimer);
+          this.roomConnectTimeoutTimer = null;
+          this.roomHandshakeReady = true;
+          this.listeners.onMessage(msg);
+          this.recomputeConnectionState();
+          this.flushRoomPendingMessages();
+          this.startRoomPingLoop();
+          return;
+        }
+        this.listeners.onMessage(msg);
+      } catch {
+        // Ignore malformed frames
+      }
+    };
+
+    socket.onclose = (evt) => {
+      if (this.roomWs !== socket) return;
+      const failedBeforeHandshake = !this.roomHandshakeReady;
+      this.roomWs = null;
+      this.roomHandshakeReady = false;
+      this.clearTimer(this.roomConnectTimeoutTimer);
+      this.roomConnectTimeoutTimer = null;
+      this.stopRoomPingLoop();
+
+      if (this.intentionallyClosed || !this.activeRoomId) {
+        this.recomputeConnectionState();
+        return;
+      }
+      if (failedBeforeHandshake && evt.code !== 1000 && evt.code !== 4000 && evt.code !== 4001) {
+        this.listeners.onConnectionError?.(
+          `Lost connection to match room (${url}). Reconnecting...`,
+        );
+      }
+      this.scheduleRoomReconnect();
+    };
+
+    socket.onerror = () => {
+      if (this.roomWs !== socket) return;
+      if (!this.roomHandshakeReady) {
+        this.listeners.onConnectionError?.(
+          `Room WebSocket connection failed (${url}). Retrying...`,
+        );
+      }
+    };
+  }
+
+  private sendIdentityHandshake(socket: WebSocket): void {
+    const profile = this.profileProvider();
+    const storedIdentity = getStoredPlayerIdentity();
+    if (this.sessionId && this.reconnectToken) {
+      this.sendRaw(socket, {
+        type: 'session:resume',
+        sessionId: this.sessionId,
+        reconnectToken: this.reconnectToken,
+        displayName: profile.displayName,
+        avatarId: profile.avatarId,
+        playerId: storedIdentity?.playerId,
+        playerToken: storedIdentity?.playerToken,
+      });
+    } else {
+      this.sendRaw(socket, {
+        type: 'session:init',
+        displayName: profile.displayName,
+        avatarId: profile.avatarId,
+        latencyMs: this.lastLatencyMs,
+        playerId: storedIdentity?.playerId,
+        playerToken: storedIdentity?.playerToken,
+      });
+    }
+  }
+
+  private closeLobbySocketOnly(): void {
+    this.lobbyHandshakeReady = false;
+    this.clearTimer(this.lobbyReconnectTimer);
+    this.lobbyReconnectTimer = null;
+    this.clearTimer(this.lobbyConnectTimeoutTimer);
+    this.lobbyConnectTimeoutTimer = null;
+    this.stopLobbyPingLoop();
+    if (this.lobbyWs) {
+      const old = this.lobbyWs;
+      this.lobbyWs = null;
+      try {
+        old.close(1000, 'Closing lobby socket');
       } catch {
         // Ignore
       }
     }
-    this.setConnectionState('disconnected');
   }
 
-  public send(msg: ClientToServerMessage): boolean {
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN || !this.handshakeReady) {
-      if (
-        !this.intentionallyClosed &&
-        msg.type !== 'ping' &&
-        msg.type !== 'session:init' &&
-        msg.type !== 'session:resume'
-      ) {
-        if (this.pendingMessages.length >= 25) {
-          this.pendingMessages.shift();
-        }
-        this.pendingMessages.push(msg);
+  private closeRoomSocketOnly(): void {
+    this.roomHandshakeReady = false;
+    this.roomPendingMessages = [];
+    this.clearTimer(this.roomReconnectTimer);
+    this.roomReconnectTimer = null;
+    this.clearTimer(this.roomConnectTimeoutTimer);
+    this.roomConnectTimeoutTimer = null;
+    this.stopRoomPingLoop();
+    if (this.roomWs) {
+      const old = this.roomWs;
+      this.roomWs = null;
+      try {
+        old.close(1000, 'Leaving room socket');
+      } catch {
+        // Ignore
       }
-      return false;
     }
-    this.ws.send(JSON.stringify(msg));
-    return true;
   }
 
   private sendRaw(socket: WebSocket, msg: ClientToServerMessage): void {
@@ -390,17 +587,23 @@ export class NetworkManager {
     }
   }
 
-  private flushPendingMessages(): void {
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN || !this.handshakeReady) return;
-    const queued = this.pendingMessages.splice(0, this.pendingMessages.length);
+  private flushLobbyPendingMessages(): void {
+    if (!this.lobbyWs || this.lobbyWs.readyState !== WebSocket.OPEN || !this.lobbyHandshakeReady) {
+      return;
+    }
+    const queued = this.lobbyPendingMessages.splice(0, this.lobbyPendingMessages.length);
     for (const msg of queued) {
-      this.ws.send(JSON.stringify(msg));
+      this.lobbyWs.send(JSON.stringify(msg));
     }
   }
 
-  public simulateConnectionDropForDebug(): void {
-    if (this.ws) {
-      this.ws.close(4500, 'Simulated drop');
+  private flushRoomPendingMessages(): void {
+    if (!this.roomWs || this.roomWs.readyState !== WebSocket.OPEN || !this.roomHandshakeReady) {
+      return;
+    }
+    const queued = this.roomPendingMessages.splice(0, this.roomPendingMessages.length);
+    for (const msg of queued) {
+      this.roomWs.send(JSON.stringify(msg));
     }
   }
 
@@ -418,59 +621,104 @@ export class NetworkManager {
     }
   }
 
+  private recomputeConnectionState(): void {
+    if (this.intentionallyClosed) {
+      this.setConnectionState('disconnected');
+      return;
+    }
+    if (this.activeRoomId) {
+      if (this.roomWs && this.roomWs.readyState === WebSocket.OPEN && this.roomHandshakeReady) {
+        this.setConnectionState('connected');
+      } else if (this.roomReconnectAttempts > 0) {
+        this.setConnectionState('reconnecting');
+      } else {
+        this.setConnectionState('connecting');
+      }
+      return;
+    }
+    this.setConnectionState(this.lobbyState);
+  }
+
   private setConnectionState(next: ConnectionState): void {
     if (this.connectionState === next) return;
     this.connectionState = next;
     this.listeners.onConnectionChange(next);
   }
 
-  private startPingLoop(): void {
-    this.stopPingLoop();
-    this.send({
-      type: 'ping',
-      clientTimeMs: Date.now(),
-      latencyMs: this.lastLatencyMs,
-    });
-    this.pingTimer = window.setInterval(() => {
-      this.send({
-        type: 'ping',
-        clientTimeMs: Date.now(),
-        latencyMs: this.lastLatencyMs,
-      });
-    }, 5000);
+  private startLobbyPingLoop(): void {
+    this.stopLobbyPingLoop();
+    const emitPing = () => {
+      if (this.lobbyWs && this.lobbyWs.readyState === WebSocket.OPEN && this.lobbyHandshakeReady) {
+        this.sendRaw(this.lobbyWs, {
+          type: 'ping',
+          clientTimeMs: Date.now(),
+          latencyMs: this.lastLatencyMs,
+        });
+      }
+    };
+    emitPing();
+    this.lobbyPingTimer = window.setInterval(emitPing, 5000);
   }
 
-  private stopPingLoop(): void {
-    if (this.pingTimer !== null) {
-      window.clearInterval(this.pingTimer);
-      this.pingTimer = null;
+  private stopLobbyPingLoop(): void {
+    if (this.lobbyPingTimer !== null) {
+      window.clearInterval(this.lobbyPingTimer);
+      this.lobbyPingTimer = null;
     }
   }
 
-  private scheduleReconnect(): void {
-    this.clearReconnectTimer();
-    this.setConnectionState('reconnecting');
-    const delayMs = Math.min(8000, 600 * Math.pow(1.6, this.reconnectAttempts));
-    this.reconnectAttempts++;
-    this.reconnectTimer = window.setTimeout(() => {
-      this.reconnectTimer = null;
+  private startRoomPingLoop(): void {
+    this.stopRoomPingLoop();
+    const emitPing = () => {
+      if (this.roomWs && this.roomWs.readyState === WebSocket.OPEN && this.roomHandshakeReady) {
+        this.sendRaw(this.roomWs, {
+          type: 'ping',
+          clientTimeMs: Date.now(),
+          latencyMs: this.lastLatencyMs,
+        });
+      }
+    };
+    emitPing();
+    this.roomPingTimer = window.setInterval(emitPing, 5000);
+  }
+
+  private stopRoomPingLoop(): void {
+    if (this.roomPingTimer !== null) {
+      window.clearInterval(this.roomPingTimer);
+      this.roomPingTimer = null;
+    }
+  }
+
+  private scheduleLobbyReconnect(): void {
+    this.clearTimer(this.lobbyReconnectTimer);
+    this.lobbyState = 'reconnecting';
+    this.recomputeConnectionState();
+    const delayMs = Math.min(8000, 600 * Math.pow(1.6, this.lobbyReconnectAttempts));
+    this.lobbyReconnectAttempts++;
+    this.lobbyReconnectTimer = window.setTimeout(() => {
+      this.lobbyReconnectTimer = null;
       if (!this.intentionallyClosed) {
-        this.connect();
+        this.connectLobbySocket();
       }
     }, delayMs);
   }
 
-  private clearReconnectTimer(): void {
-    if (this.reconnectTimer !== null) {
-      window.clearTimeout(this.reconnectTimer);
-      this.reconnectTimer = null;
-    }
+  private scheduleRoomReconnect(): void {
+    this.clearTimer(this.roomReconnectTimer);
+    this.recomputeConnectionState();
+    const delayMs = Math.min(8000, 600 * Math.pow(1.6, this.roomReconnectAttempts));
+    this.roomReconnectAttempts++;
+    this.roomReconnectTimer = window.setTimeout(() => {
+      this.roomReconnectTimer = null;
+      if (!this.intentionallyClosed && this.activeRoomId) {
+        this.connectRoomSocket(this.activeRoomId);
+      }
+    }, delayMs);
   }
 
-  private clearConnectTimeout(): void {
-    if (this.connectTimeoutTimer !== null) {
-      window.clearTimeout(this.connectTimeoutTimer);
-      this.connectTimeoutTimer = null;
+  private clearTimer(timerId: number | null): void {
+    if (timerId !== null) {
+      window.clearTimeout(timerId);
     }
   }
 }

@@ -29,6 +29,16 @@ import type {
   OnlineRoomInfo,
   OpponentConnectionState,
 } from '../multiplayer/shared/protocol';
+import type {
+  BlockedPlayerRecord,
+  DirectMessageRecord,
+  FriendRecord,
+  FriendRequestRecord,
+  MatchInvitationRecord,
+  PresenceStatus,
+  RoomChatMessageRecord,
+  SocialOverviewPayload,
+} from '../multiplayer/shared/social';
 
 const PROFILE_STORAGE_KEY = 'ultimate_pool_3d_online_profile_v1';
 
@@ -88,6 +98,7 @@ export type GameScreen = 'menu' | 'playing';
 export type CameraPreset = 'threeQuarter' | 'topDown' | 'cueAim' | 'sideView';
 export type FeltTheme = 'tournamentGreen' | 'championshipBlue' | 'burgundyClub';
 export type ProgressionTab = 'profile' | 'leaderboard' | 'achievements' | 'history';
+export type SocialTab = 'friends' | 'search' | 'requests' | 'messages' | 'blocked';
 
 export type CanvasInteractionMode = 'smart' | 'aim';
 
@@ -201,6 +212,24 @@ export interface GameState {
   replayShowAnalysis: boolean;
   replayActiveCollisionLabel: string | null;
 
+  // Social, Presence, Invitations & Real-Time Chat (Phase 7)
+  socialModalOpen: boolean;
+  socialTab: SocialTab;
+  activeDmPeerId: string | null;
+  selfPresence: PresenceStatus;
+  friends: FriendRecord[];
+  incomingRequests: FriendRequestRecord[];
+  outgoingRequests: FriendRequestRecord[];
+  blockedPlayers: BlockedPlayerRecord[];
+  incomingInvitations: MatchInvitationRecord[];
+  outgoingInvitations: MatchInvitationRecord[];
+  dmThreads: Record<string, DirectMessageRecord[]>;
+  totalUnreadDmCount: number;
+  roomChatMessages: RoomChatMessageRecord[];
+  roomChatOpen: boolean;
+  roomChatUnreadCount: number;
+  socialNotice: { type: 'ok' | 'err'; text: string } | null;
+
   // Actions
   setScreen: (screen: GameScreen) => void;
   setSettingsOpen: (open: boolean) => void;
@@ -292,6 +321,25 @@ export interface GameState {
     }>,
   ) => void;
   resetReplayUiState: () => void;
+
+  // Social Actions (Phase 7)
+  openSocialModal: (tab?: SocialTab, dmPeerId?: string | null) => void;
+  closeSocialModal: () => void;
+  setSocialTab: (tab: SocialTab) => void;
+  setActiveDmPeerId: (peerId: string | null) => void;
+  setSocialNotice: (notice: { type: 'ok' | 'err'; text: string } | null) => void;
+  applySocialOverview: (overview: SocialOverviewPayload) => void;
+  updatePlayerPresence: (playerId: string, status: PresenceStatus, lastSeenAtMs: number) => void;
+  upsertIncomingFriendRequest: (req: FriendRequestRecord) => void;
+  upsertInvitation: (inv: MatchInvitationRecord) => void;
+  setDmThreadMessages: (peerId: string, messages: DirectMessageRecord[]) => void;
+  appendDirectMessage: (msg: DirectMessageRecord, selfPlayerId: string | null) => void;
+  markDmThreadRead: (peerId: string, readerId: string, readAtMs: number, selfPlayerId: string | null) => void;
+  setRoomChatHistory: (messages: RoomChatMessageRecord[]) => void;
+  appendRoomChatMessage: (msg: RoomChatMessageRecord, selfPlayerId: string | null) => void;
+  setRoomChatOpen: (open: boolean) => void;
+  clearRoomChat: () => void;
+  resetSocialState: () => void;
 }
 
 export function canLocalPlayerAct(state: GameState): boolean {
@@ -421,6 +469,23 @@ export const useGameStore = create<GameState>((set) => ({
   replayAutoSlowMo: false,
   replayShowAnalysis: true,
   replayActiveCollisionLabel: null,
+
+  socialModalOpen: false,
+  socialTab: 'friends',
+  activeDmPeerId: null,
+  selfPresence: 'offline',
+  friends: [],
+  incomingRequests: [],
+  outgoingRequests: [],
+  blockedPlayers: [],
+  incomingInvitations: [],
+  outgoingInvitations: [],
+  dmThreads: {},
+  totalUnreadDmCount: 0,
+  roomChatMessages: [],
+  roomChatOpen: false,
+  roomChatUnreadCount: 0,
+  socialNotice: null,
 
   setScreen: (screen) => set({ screen }),
   setSettingsOpen: (settingsOpen) => set({ settingsOpen }),
@@ -706,6 +771,9 @@ export const useGameStore = create<GameState>((set) => ({
       replayTimeSec: 0,
       replayDurationSec: 0,
       replayActiveCollisionLabel: null,
+      roomChatMessages: [],
+      roomChatOpen: false,
+      roomChatUnreadCount: 0,
     })),
 
   setOwnProfile: (ownProfile) => set({ ownProfile }),
@@ -739,5 +807,185 @@ export const useGameStore = create<GameState>((set) => ({
       replayTimeSec: 0,
       replayDurationSec: 0,
       replayActiveCollisionLabel: null,
+    }),
+
+  openSocialModal: (tab, dmPeerId = null) =>
+    set((state) => ({
+      socialModalOpen: true,
+      socialTab: tab ?? (dmPeerId ? 'messages' : state.socialTab),
+      activeDmPeerId: dmPeerId ?? state.activeDmPeerId,
+      socialNotice: null,
+    })),
+  closeSocialModal: () =>
+    set({
+      socialModalOpen: false,
+      socialNotice: null,
+    }),
+  setSocialTab: (socialTab) => set({ socialTab, socialNotice: null }),
+  setActiveDmPeerId: (activeDmPeerId) => set({ activeDmPeerId }),
+  setSocialNotice: (socialNotice) => set({ socialNotice }),
+  applySocialOverview: (overview) =>
+    set({
+      selfPresence: overview.selfPresence,
+      friends: overview.friends,
+      incomingRequests: overview.incomingRequests,
+      outgoingRequests: overview.outgoingRequests,
+      blockedPlayers: overview.blocked,
+      incomingInvitations: overview.incomingInvitations,
+      outgoingInvitations: overview.outgoingInvitations,
+      totalUnreadDmCount: overview.totalUnreadDmCount,
+    }),
+  updatePlayerPresence: (playerId, status, lastSeenAtMs) =>
+    set((state) => ({
+      selfPresence: state.ownProfile?.playerId === playerId ? status : state.selfPresence,
+      friends: state.friends.map((f) =>
+        f.playerId === playerId ? { ...f, presence: status, lastSeenAtMs } : f,
+      ),
+    })),
+  upsertIncomingFriendRequest: (req) =>
+    set((state) => {
+      if (state.incomingRequests.some((r) => r.playerId === req.playerId)) {
+        return state;
+      }
+      return {
+        incomingRequests: [req, ...state.incomingRequests],
+      };
+    }),
+  upsertInvitation: (inv) =>
+    set((state) => {
+      const myId = state.ownProfile?.playerId ?? null;
+      const now = Date.now();
+      const activePending = inv.status === 'pending' && inv.expiresAtMs > now;
+      if (myId && inv.recipientId === myId) {
+        const rest = state.incomingInvitations.filter((i) => i.inviteId !== inv.inviteId);
+        return {
+          incomingInvitations: activePending ? [inv, ...rest] : rest,
+        };
+      }
+      if (myId && inv.senderId === myId) {
+        const rest = state.outgoingInvitations.filter((i) => i.inviteId !== inv.inviteId);
+        return {
+          outgoingInvitations: activePending ? [inv, ...rest] : rest,
+        };
+      }
+      return state;
+    }),
+  setDmThreadMessages: (peerId, messages) =>
+    set((state) => {
+      let clearedUnread = 0;
+      const friends = state.friends.map((f) => {
+        if (f.playerId === peerId) {
+          clearedUnread = f.unreadDmCount;
+          return { ...f, unreadDmCount: 0 };
+        }
+        return f;
+      });
+      return {
+        dmThreads: { ...state.dmThreads, [peerId]: messages },
+        friends,
+        totalUnreadDmCount: Math.max(0, state.totalUnreadDmCount - clearedUnread),
+      };
+    }),
+  appendDirectMessage: (msg, selfPlayerId) =>
+    set((state) => {
+      const peerId = msg.senderId === selfPlayerId ? msg.recipientId : msg.senderId;
+      const existing = state.dmThreads[peerId] ?? [];
+      if (existing.some((m) => m.messageId === msg.messageId)) {
+        return state;
+      }
+      const isIncoming = Boolean(selfPlayerId && msg.recipientId === selfPlayerId);
+      const isViewingThread =
+        state.socialModalOpen &&
+        state.socialTab === 'messages' &&
+        state.activeDmPeerId === peerId;
+
+      const incrementUnread = isIncoming && !isViewingThread ? 1 : 0;
+      return {
+        dmThreads: {
+          ...state.dmThreads,
+          [peerId]: [...existing, msg].slice(-80),
+        },
+        friends: state.friends.map((f) =>
+          f.playerId === peerId
+            ? { ...f, unreadDmCount: f.unreadDmCount + incrementUnread }
+            : f,
+        ),
+        totalUnreadDmCount: state.totalUnreadDmCount + incrementUnread,
+      };
+    }),
+  markDmThreadRead: (peerId, readerId, readAtMs, selfPlayerId) =>
+    set((state) => {
+      const targetPeer = readerId === selfPlayerId ? peerId : readerId;
+      const thread = state.dmThreads[targetPeer];
+      const updatedThreads = thread
+        ? {
+            ...state.dmThreads,
+            [targetPeer]: thread.map((m) =>
+              m.recipientId === readerId && m.readAtMs === null ? { ...m, readAtMs } : m,
+            ),
+          }
+        : state.dmThreads;
+
+      let clearedUnread = 0;
+      const friends =
+        readerId === selfPlayerId
+          ? state.friends.map((f) => {
+              if (f.playerId === targetPeer) {
+                clearedUnread = f.unreadDmCount;
+                return { ...f, unreadDmCount: 0 };
+              }
+              return f;
+            })
+          : state.friends;
+
+      return {
+        dmThreads: updatedThreads,
+        friends,
+        totalUnreadDmCount: Math.max(0, state.totalUnreadDmCount - clearedUnread),
+      };
+    }),
+  setRoomChatHistory: (roomChatMessages) =>
+    set({
+      roomChatMessages,
+      roomChatUnreadCount: 0,
+    }),
+  appendRoomChatMessage: (msg, selfPlayerId) =>
+    set((state) => {
+      if (state.roomChatMessages.some((m) => m.messageId === msg.messageId)) {
+        return state;
+      }
+      const isSelf = Boolean(selfPlayerId && msg.senderPlayerId === selfPlayerId);
+      const bumpUnread = !state.roomChatOpen && !isSelf ? 1 : 0;
+      return {
+        roomChatMessages: [...state.roomChatMessages, msg].slice(-80),
+        roomChatUnreadCount: state.roomChatUnreadCount + bumpUnread,
+      };
+    }),
+  setRoomChatOpen: (roomChatOpen) =>
+    set((state) => ({
+      roomChatOpen,
+      roomChatUnreadCount: roomChatOpen ? 0 : state.roomChatUnreadCount,
+    })),
+  clearRoomChat: () =>
+    set({
+      roomChatMessages: [],
+      roomChatOpen: false,
+      roomChatUnreadCount: 0,
+    }),
+  resetSocialState: () =>
+    set({
+      selfPresence: 'offline',
+      friends: [],
+      incomingRequests: [],
+      outgoingRequests: [],
+      blockedPlayers: [],
+      incomingInvitations: [],
+      outgoingInvitations: [],
+      dmThreads: {},
+      totalUnreadDmCount: 0,
+      roomChatMessages: [],
+      roomChatOpen: false,
+      roomChatUnreadCount: 0,
+      socialNotice: null,
     }),
 }));

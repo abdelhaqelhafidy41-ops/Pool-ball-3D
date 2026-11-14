@@ -1,13 +1,33 @@
 import { DurableObject } from 'cloudflare:workers';
 import type { RuleProfileId } from '../../src/game/rules/types';
 import type {
+  LeaderboardScope,
+  MatchProgressionRewardSummary,
+  MatchTelemetrySummaryForProgression,
+  OnlineMatchType,
+} from '../../src/multiplayer/shared/progression';
+import type {
   ClientToServerMessage,
   MatchHistoryRecord,
   MultiplayerErrorCode,
   OnlineAvatarId,
+  OnlineRoomInfo,
   OnlineRoomStatus,
   ServerToClientMessage,
 } from '../../src/multiplayer/shared/protocol';
+import {
+  isValidManualPresence,
+  sanitizeChatText,
+  SOCIAL_LIMITS,
+  type DirectMessageRecord,
+  type FriendRequestAction,
+  type ManualPresenceStatus,
+  type MatchInvitationRecord,
+  type MatchInviteAction,
+  type PresenceStatus,
+  type SocialOverviewPayload,
+  type SocialSearchPlayerItem,
+} from '../../src/multiplayer/shared/social';
 import {
   clampLatency,
   constantTimeEqual,
@@ -19,17 +39,13 @@ import {
   type WorkerRuntimeConfig,
 } from './config';
 import { createDurableObjectSqlDb, D1ProgressionService } from './D1ProgressionService';
-import type {
-  LeaderboardScope,
-  MatchProgressionRewardSummary,
-  MatchTelemetrySummaryForProgression,
-  OnlineMatchType,
-} from '../../src/multiplayer/shared/progression';
+import { SocialService, type SocialError } from './SocialService';
 
 const ROOM_CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 
 interface LobbySocketAttachment {
   sessionId: string | null;
+  playerId: string | null;
 }
 
 interface SessionRow {
@@ -115,7 +131,6 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
         payload_json TEXT
       );
     `);
-    // Safe column migrations for pre-existing Durable Object SQLite tables
     const alterStatements = [
       'ALTER TABLE sessions ADD COLUMN player_id TEXT',
       'ALTER TABLE match_history ADD COLUMN player1_id TEXT',
@@ -140,7 +155,7 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
 
     const pair = new WebSocketPair();
     const [client, server] = Object.values(pair);
-    const att: LobbySocketAttachment = { sessionId: null };
+    const att: LobbySocketAttachment = { sessionId: null, playerId: null };
     this.ctx.acceptWebSocket(server);
     server.serializeAttachment(att);
 
@@ -188,6 +203,15 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
           att.sessionId,
         );
       }
+      if (att.playerId) {
+        const res = await this.getSocialService().setPresence({
+          playerId: att.playerId,
+          ttlMs: this.config.presenceTtlMs,
+        });
+        if (res.changed) {
+          await this.broadcastPresenceChanged(att.playerId, res.status, res.lastSeenAtMs);
+        }
+      }
       this.sendSocket(ws, {
         type: 'pong',
         clientTimeMs: typeof msg.clientTimeMs === 'number' ? msg.clientTimeMs : Date.now(),
@@ -209,7 +233,7 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
         msg.latencyMs,
         identity.playerId,
       );
-      this.bindSocketToSession(ws, sess.session_id);
+      this.bindSocketToSession(ws, sess.session_id, identity.playerId);
       this.sendSocket(ws, {
         type: 'session:ready',
         sessionId: sess.session_id,
@@ -223,6 +247,19 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
         balls: null,
         serverTimeMs: Date.now(),
       });
+
+      const pres = await this.getSocialService().setPresence({
+        playerId: identity.playerId,
+        status: 'online',
+        activeRoomId: null,
+        ttlMs: this.config.presenceTtlMs,
+      });
+      if (pres.changed) {
+        await this.broadcastPresenceChanged(identity.playerId, pres.status, pres.lastSeenAtMs);
+      }
+      const overview = await this.getSocialService().getOverview(identity.playerId);
+      this.sendSocket(ws, { type: 'social:state', overview });
+      await this.scheduleNextAlarm();
       return;
     }
 
@@ -241,7 +278,7 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
           35,
           identity.playerId,
         );
-        this.bindSocketToSession(ws, fresh.session_id);
+        this.bindSocketToSession(ws, fresh.session_id, identity.playerId);
         this.sendSocket(ws, {
           type: 'session:ready',
           sessionId: fresh.session_id,
@@ -255,6 +292,19 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
           balls: null,
           serverTimeMs: Date.now(),
         });
+
+        const pres = await this.getSocialService().setPresence({
+          playerId: identity.playerId,
+          status: 'online',
+          activeRoomId: null,
+          ttlMs: this.config.presenceTtlMs,
+        });
+        if (pres.changed) {
+          await this.broadcastPresenceChanged(identity.playerId, pres.status, pres.lastSeenAtMs);
+        }
+        const overview = await this.getSocialService().getOverview(identity.playerId);
+        this.sendSocket(ws, { type: 'social:state', overview });
+        await this.scheduleNextAlarm();
         return;
       }
 
@@ -267,9 +317,11 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
 
       const nextName = sanitizeDisplayName(msg.displayName ?? identity.displayName ?? verified.display_name);
       const nextAvatar = sanitizeAvatarId(msg.avatarId ?? identity.avatarId ?? verified.avatar_id);
+      const effectivePlayerId = verified.player_id ?? identity.playerId;
+
       this.ctx.storage.sql.exec(
         'UPDATE sessions SET player_id = ?, display_name = ?, avatar_id = ?, last_seen_at_ms = ? WHERE session_id = ?',
-        verified.player_id ?? identity.playerId,
+        effectivePlayerId,
         nextName,
         nextAvatar,
         Date.now(),
@@ -277,9 +329,9 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
       );
       verified.display_name = nextName;
       verified.avatar_id = nextAvatar;
-      verified.player_id = verified.player_id ?? identity.playerId;
+      verified.player_id = effectivePlayerId;
 
-      this.bindSocketToSession(ws, verified.session_id);
+      this.bindSocketToSession(ws, verified.session_id, effectivePlayerId);
 
       let resumedRoom = null;
       let resumedMatch = null;
@@ -314,6 +366,20 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
         balls,
         serverTimeMs: Date.now(),
       });
+
+      const inActiveMatch = resumedRoom?.status === 'playing';
+      const pres = await this.getSocialService().setPresence({
+        playerId: effectivePlayerId,
+        status: inActiveMatch ? 'in_match' : 'online',
+        activeRoomId: resumedRoom?.roomId ?? null,
+        ttlMs: this.config.presenceTtlMs,
+      });
+      if (pres.changed) {
+        await this.broadcastPresenceChanged(effectivePlayerId, pres.status, pres.lastSeenAtMs);
+      }
+      const overview = await this.getSocialService().getOverview(effectivePlayerId);
+      this.sendSocket(ws, { type: 'social:state', overview });
+      await this.scheduleNextAlarm();
       return;
     }
 
@@ -327,6 +393,8 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
       this.sendError(ws, 'UNAUTHORIZED', 'Session expired or invalid.');
       return;
     }
+
+    const playerId = session.player_id ?? session.session_id;
 
     switch (msg.type) {
       case 'session:update_profile': {
@@ -368,6 +436,137 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
           );
           await roomStub.updatePlayerProfile(session.session_id, name, avatar);
         }
+        break;
+      }
+
+      case 'presence:set': {
+        if (!isValidManualPresence(msg.status)) {
+          this.sendError(ws, 'INVALID_INPUT', 'Presence status must be online or busy.');
+          return;
+        }
+        const res = await this.handlePresenceUpdate(playerId, {
+          manualStatus: msg.status,
+          status: session.active_room_id ? undefined : msg.status,
+        });
+        const overview = await this.getSocialService().getOverview(playerId);
+        this.sendSocket(ws, { type: 'social:state', overview });
+        if (res.changed) {
+          await this.scheduleNextAlarm();
+        }
+        break;
+      }
+
+      case 'presence:heartbeat': {
+        this.ctx.storage.sql.exec(
+          'UPDATE sessions SET last_seen_at_ms = ? WHERE session_id = ?',
+          Date.now(),
+          session.session_id,
+        );
+        const manual = isValidManualPresence(msg.status) ? msg.status : undefined;
+        await this.handlePresenceUpdate(playerId, {
+          manualStatus: manual,
+        });
+        await this.scheduleNextAlarm();
+        break;
+      }
+
+      case 'social:sync': {
+        const overview = await this.getSocialService().getOverview(playerId);
+        this.sendSocket(ws, { type: 'social:state', overview });
+        break;
+      }
+
+      case 'social:friend_request': {
+        const res = await this.handleFriendRequest(playerId, msg.targetPlayerId);
+        if (!res.ok) {
+          this.sendError(ws, res.code, res.message);
+        }
+        break;
+      }
+
+      case 'social:friend_respond': {
+        const res = await this.handleFriendRespond(playerId, msg.targetPlayerId, msg.action);
+        if (!res.ok) {
+          this.sendError(ws, res.code, res.message);
+        }
+        break;
+      }
+
+      case 'social:friend_remove': {
+        const res = await this.handleFriendRemove(playerId, msg.targetPlayerId);
+        if (!res.ok) {
+          this.sendError(ws, res.code, res.message);
+        }
+        break;
+      }
+
+      case 'social:block': {
+        const res = await this.handleBlockPlayer(playerId, msg.targetPlayerId);
+        if (!res.ok) {
+          this.sendError(ws, res.code, res.message);
+        }
+        break;
+      }
+
+      case 'social:unblock': {
+        const res = await this.handleUnblockPlayer(playerId, msg.targetPlayerId);
+        if (!res.ok) {
+          this.sendError(ws, res.code, res.message);
+        }
+        break;
+      }
+
+      case 'invite:send': {
+        const res = await this.handleSendInvite(playerId, session.session_id, {
+          targetPlayerId: msg.targetPlayerId,
+          ruleProfileId: msg.ruleProfileId,
+          calledShotsEnabled: msg.calledShotsEnabled,
+          ttlMs: msg.ttlMs,
+        });
+        if (!res.ok) {
+          this.sendError(ws, res.code, res.message);
+        }
+        break;
+      }
+
+      case 'invite:respond': {
+        const res = await this.handleRespondInvite(
+          playerId,
+          session.session_id,
+          msg.inviteId,
+          msg.action,
+        );
+        if (!res.ok) {
+          this.sendError(ws, res.code, res.message);
+        }
+        break;
+      }
+
+      case 'chat:dm_send': {
+        const res = await this.handleSendDirectMessage(
+          playerId,
+          msg.recipientId,
+          msg.body,
+          msg.clientMessageId,
+        );
+        if (!res.ok) {
+          this.sendError(ws, res.code, res.message);
+        }
+        break;
+      }
+
+      case 'chat:dm_mark_read': {
+        const res = await this.getSocialService().markDirectMessagesRead(playerId, msg.peerPlayerId);
+        if (res.changed) {
+          this.sendToPlayer(msg.peerPlayerId, {
+            type: 'chat:dm_read',
+            readerId: playerId,
+            peerPlayerId: msg.peerPlayerId,
+            readAtMs: res.readAtMs,
+          });
+        }
+        const overview = await this.getSocialService().getOverview(playerId);
+        this.sendToPlayer(playerId, { type: 'social:state', overview });
         break;
       }
 
@@ -603,37 +802,121 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
     this.ensureSchema();
     await this.processQueue();
     await this.pruneExpiredWaitingRooms();
+    await this.pruneExpiredSocialState();
     await this.scheduleNextAlarm();
   }
 
-  public async onRoomStatusChanged(roomId: string, status: OnlineRoomStatus): Promise<void> {
+  public async onRoomStatusChanged(
+    roomId: string,
+    status: OnlineRoomStatus,
+    playerIds: string[] = [],
+  ): Promise<void> {
     this.ensureSchema();
     this.ctx.storage.sql.exec(
       'UPDATE rooms SET status = ? WHERE room_id = ?',
       status,
       roomId,
     );
+
+    const social = this.getSocialService();
+    if (status === 'playing') {
+      const expiredInvites = await social.expireInvitationsForRoom(roomId, 'expired');
+      for (const inv of expiredInvites) {
+        this.sendToPlayer(inv.senderId, { type: 'invite:updated', invitation: inv });
+        this.sendToPlayer(inv.recipientId, { type: 'invite:updated', invitation: inv });
+      }
+      for (const pid of playerIds) {
+        const res = await social.setPresence({
+          playerId: pid,
+          status: 'in_match',
+          activeRoomId: roomId,
+          ttlMs: Math.max(this.config.presenceTtlMs, 120_000),
+        });
+        if (res.changed) {
+          await this.broadcastPresenceChanged(pid, res.status, res.lastSeenAtMs);
+        }
+      }
+    } else if (status === 'finished') {
+      for (const pid of playerIds) {
+        const hasLobbySocket = this.findSocketsByPlayerId(pid).length > 0;
+        const res = await social.setPresence({
+          playerId: pid,
+          status: hasLobbySocket ? 'online' : 'offline',
+          activeRoomId: hasLobbySocket ? roomId : null,
+          ttlMs: this.config.presenceTtlMs,
+        });
+        if (res.changed) {
+          await this.broadcastPresenceChanged(pid, res.status, res.lastSeenAtMs);
+        }
+      }
+    }
+    await this.scheduleNextAlarm();
   }
 
-  public async onPlayerLeftRoom(roomId: string, sessionId: string): Promise<void> {
+  public async onPlayerLeftRoom(
+    roomId: string,
+    sessionId: string,
+    playerId?: string,
+  ): Promise<void> {
     this.ensureSchema();
     this.ctx.storage.sql.exec(
       'UPDATE sessions SET active_room_id = NULL WHERE session_id = ? AND active_room_id = ?',
       sessionId,
       roomId,
     );
+    const pid = playerId ?? this.getSession(sessionId)?.player_id ?? null;
+    if (pid) {
+      const hasLobbySocket = this.findSocketsByPlayerId(pid).length > 0;
+      const res = await this.getSocialService().setPresence({
+        playerId: pid,
+        status: hasLobbySocket ? 'online' : 'offline',
+        activeRoomId: null,
+        ttlMs: this.config.presenceTtlMs,
+      });
+      if (res.changed) {
+        await this.broadcastPresenceChanged(pid, res.status, res.lastSeenAtMs);
+      }
+    }
   }
 
-  public async onRoomClosed(roomId: string, sessionIds: string[]): Promise<void> {
+  public async onRoomClosed(
+    roomId: string,
+    sessionIds: string[],
+    playerIds: string[] = [],
+  ): Promise<void> {
     this.ensureSchema();
     this.ctx.storage.sql.exec('DELETE FROM rooms WHERE room_id = ?', roomId);
+    const resolvedPlayerIds = new Set<string>(playerIds);
     for (const sid of sessionIds) {
+      const sess = this.getSession(sid);
+      if (sess?.player_id) resolvedPlayerIds.add(sess.player_id);
       this.ctx.storage.sql.exec(
         'UPDATE sessions SET active_room_id = NULL WHERE session_id = ? AND active_room_id = ?',
         sid,
         roomId,
       );
     }
+
+    const social = this.getSocialService();
+    const expiredInvites = await social.expireInvitationsForRoom(roomId, 'expired');
+    for (const inv of expiredInvites) {
+      this.sendToPlayer(inv.senderId, { type: 'invite:updated', invitation: inv });
+      this.sendToPlayer(inv.recipientId, { type: 'invite:updated', invitation: inv });
+    }
+
+    for (const pid of resolvedPlayerIds) {
+      const hasLobbySocket = this.findSocketsByPlayerId(pid).length > 0;
+      const res = await social.setPresence({
+        playerId: pid,
+        status: hasLobbySocket ? 'online' : 'offline',
+        activeRoomId: null,
+        ttlMs: this.config.presenceTtlMs,
+      });
+      if (res.changed) {
+        await this.broadcastPresenceChanged(pid, res.status, res.lastSeenAtMs);
+      }
+    }
+    await this.scheduleNextAlarm();
   }
 
   public async recordMatchHistory(record: MatchHistoryRecord): Promise<void> {
@@ -732,13 +1015,44 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
     const att = this.getAttachment(ws);
     if (!att.sessionId) return;
 
+    let hasOtherSessionSocket = false;
+    let hasOtherPlayerSocket = false;
     for (const other of this.ctx.getWebSockets()) {
-      if (other !== ws && this.getAttachment(other).sessionId === att.sessionId) {
-        return;
+      if (other === ws) continue;
+      const otherAtt = this.getAttachment(other);
+      if (otherAtt.sessionId === att.sessionId) {
+        hasOtherSessionSocket = true;
+      }
+      if (att.playerId && otherAtt.playerId === att.playerId) {
+        hasOtherPlayerSocket = true;
       }
     }
 
-    this.cancelMatchmaking(att.sessionId, 'Disconnected from queue.');
+    if (!hasOtherSessionSocket) {
+      this.cancelMatchmaking(att.sessionId, 'Disconnected from queue.');
+    }
+
+    if (att.playerId && !hasOtherPlayerSocket) {
+      const sess = this.getSession(att.sessionId);
+      const isInPlayingRoom = Boolean(
+        sess?.active_room_id &&
+          this.ctx.storage.sql
+            .exec<{ status: string }>('SELECT status FROM rooms WHERE room_id = ? LIMIT 1', sess.active_room_id)
+            .toArray()[0]?.status === 'playing',
+      );
+      if (!isInPlayingRoom) {
+        const res = await this.getSocialService().setPresence({
+          playerId: att.playerId,
+          status: 'offline',
+          activeRoomId: null,
+          ttlMs: this.config.presenceTtlMs,
+        });
+        if (res.changed) {
+          await this.broadcastPresenceChanged(att.playerId, res.status, res.lastSeenAtMs);
+        }
+      }
+    }
+
     await this.scheduleNextAlarm();
   }
 
@@ -748,6 +1062,29 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
     }
     return new D1ProgressionService(createDurableObjectSqlDb(this.ctx.storage.sql));
   }
+
+  private getSocialService(): SocialService {
+    if (this.env.DB) {
+      return new SocialService(this.env.DB);
+    }
+    return new SocialService(createDurableObjectSqlDb(this.ctx.storage.sql));
+  }
+
+  private async authenticateRestPlayer(
+    playerId: unknown,
+    playerToken: unknown,
+  ): Promise<{ ok: true; playerId: string } | SocialError> {
+    if (typeof playerId !== 'string' || typeof playerToken !== 'string') {
+      return { ok: false, status: 401, code: 'UNAUTHORIZED', message: 'Missing player credentials.' };
+    }
+    const valid = await this.getProgressionService().verifyPlayerToken(playerId, playerToken);
+    if (!valid) {
+      return { ok: false, status: 401, code: 'UNAUTHORIZED', message: 'Invalid player credentials.' };
+    }
+    return { ok: true, playerId: playerId.trim() };
+  }
+
+  // ===== Progression RPC Methods =====
 
   public async progressionAuthenticateOrCreate(input: {
     playerId?: string | null;
@@ -833,6 +1170,821 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
   }> {
     this.ensureSchema();
     return this.getProgressionService().recordCompletedMatch(input);
+  }
+
+  // ===== Phase 7 Social RPC Methods =====
+
+  public async socialIsBlockedBetween(aId: string, bId: string): Promise<boolean> {
+    this.ensureSchema();
+    return this.getSocialService().isBlockedBetween(aId, bId);
+  }
+
+  public async socialGetOverview(
+    playerId: string,
+    playerToken: string,
+  ): Promise<{ ok: true; overview: SocialOverviewPayload } | SocialError> {
+    this.ensureSchema();
+    const auth = await this.authenticateRestPlayer(playerId, playerToken);
+    if (!auth.ok) return auth;
+    const overview = await this.getSocialService().getOverview(auth.playerId);
+    return { ok: true, overview };
+  }
+
+  public async socialSearchPlayers(
+    viewerId: string | null,
+    viewerToken: string | null,
+    query: string,
+    limit = 15,
+  ): Promise<SocialSearchPlayerItem[]> {
+    this.ensureSchema();
+    let authenticatedViewer: string | null = null;
+    if (viewerId && viewerToken) {
+      const ok = await this.getProgressionService().verifyPlayerToken(viewerId, viewerToken);
+      if (ok) authenticatedViewer = viewerId.trim();
+    }
+    return this.getSocialService().searchPlayersForSocial(authenticatedViewer, query, limit);
+  }
+
+  public async socialSendFriendRequest(
+    playerId: string,
+    playerToken: string,
+    targetPlayerId: string,
+  ) {
+    this.ensureSchema();
+    const auth = await this.authenticateRestPlayer(playerId, playerToken);
+    if (!auth.ok) return auth;
+    return this.handleFriendRequest(auth.playerId, targetPlayerId);
+  }
+
+  public async socialRespondFriendRequest(
+    playerId: string,
+    playerToken: string,
+    targetPlayerId: string,
+    action: FriendRequestAction,
+  ) {
+    this.ensureSchema();
+    const auth = await this.authenticateRestPlayer(playerId, playerToken);
+    if (!auth.ok) return auth;
+    return this.handleFriendRespond(auth.playerId, targetPlayerId, action);
+  }
+
+  public async socialRemoveFriend(
+    playerId: string,
+    playerToken: string,
+    targetPlayerId: string,
+  ) {
+    this.ensureSchema();
+    const auth = await this.authenticateRestPlayer(playerId, playerToken);
+    if (!auth.ok) return auth;
+    return this.handleFriendRemove(auth.playerId, targetPlayerId);
+  }
+
+  public async socialBlockPlayer(
+    playerId: string,
+    playerToken: string,
+    targetPlayerId: string,
+  ) {
+    this.ensureSchema();
+    const auth = await this.authenticateRestPlayer(playerId, playerToken);
+    if (!auth.ok) return auth;
+    return this.handleBlockPlayer(auth.playerId, targetPlayerId);
+  }
+
+  public async socialUnblockPlayer(
+    playerId: string,
+    playerToken: string,
+    targetPlayerId: string,
+  ) {
+    this.ensureSchema();
+    const auth = await this.authenticateRestPlayer(playerId, playerToken);
+    if (!auth.ok) return auth;
+    return this.handleUnblockPlayer(auth.playerId, targetPlayerId);
+  }
+
+  public async socialSetPresence(
+    playerId: string,
+    playerToken: string,
+    input: { status?: unknown; ttlMs?: number; expireNow?: boolean },
+  ) {
+    this.ensureSchema();
+    const auth = await this.authenticateRestPlayer(playerId, playerToken);
+    if (!auth.ok) return auth;
+
+    if (input.expireNow) {
+      const res = await this.getSocialService().setPresence({
+        playerId: auth.playerId,
+        status: 'offline',
+        activeRoomId: null,
+        ttlMs: 0,
+      });
+      if (res.changed) {
+        await this.broadcastPresenceChanged(auth.playerId, res.status, res.lastSeenAtMs);
+      }
+      return { ok: true as const, status: res.status };
+    }
+
+    const manual = isValidManualPresence(input.status) ? input.status : undefined;
+    const res = await this.handlePresenceUpdate(auth.playerId, {
+      manualStatus: manual,
+      status: manual,
+      ttlMs: input.ttlMs,
+    });
+    await this.scheduleNextAlarm();
+    return { ok: true as const, status: res.status };
+  }
+
+  public async socialPruneExpired(): Promise<{
+    expiredPresenceIds: string[];
+    expiredInviteIds: string[];
+  }> {
+    this.ensureSchema();
+    const res = await this.pruneExpiredSocialState();
+    await this.scheduleNextAlarm();
+    return res;
+  }
+
+  public async socialCreateInvite(
+    playerId: string,
+    playerToken: string,
+    input: {
+      targetPlayerId: string;
+      ruleProfileId?: RuleProfileId;
+      calledShotsEnabled?: boolean;
+      ttlMs?: number;
+    },
+  ) {
+    this.ensureSchema();
+    const auth = await this.authenticateRestPlayer(playerId, playerToken);
+    if (!auth.ok) return auth;
+    const sess = this.findLatestSessionByPlayerId(auth.playerId);
+    return this.handleSendInvite(auth.playerId, sess?.session_id ?? null, {
+      targetPlayerId: input.targetPlayerId,
+      ruleProfileId: input.ruleProfileId === 'wpa' ? 'wpa' : 'casual',
+      calledShotsEnabled: Boolean(input.calledShotsEnabled),
+      ttlMs: input.ttlMs,
+    });
+  }
+
+  public async socialRespondInvite(
+    playerId: string,
+    playerToken: string,
+    inviteId: string,
+    action: MatchInviteAction,
+  ) {
+    this.ensureSchema();
+    const auth = await this.authenticateRestPlayer(playerId, playerToken);
+    if (!auth.ok) return auth;
+    const sess = this.findLatestSessionByPlayerId(auth.playerId);
+    return this.handleRespondInvite(auth.playerId, sess?.session_id ?? null, inviteId, action);
+  }
+
+  public async socialGetMessages(
+    playerId: string,
+    playerToken: string,
+    peerPlayerId: string,
+    limit: number = SOCIAL_LIMITS.maxDmHistory,
+  ): Promise<{ ok: true; messages: DirectMessageRecord[] } | SocialError> {
+    this.ensureSchema();
+    const auth = await this.authenticateRestPlayer(playerId, playerToken);
+    if (!auth.ok) return auth;
+    const res = await this.getSocialService().getDirectMessageThread(
+      auth.playerId,
+      peerPlayerId,
+      limit,
+    );
+    if (!res.ok) return res;
+    if (res.markedReadAtMs !== null) {
+      this.sendToPlayer(peerPlayerId, {
+        type: 'chat:dm_read',
+        readerId: auth.playerId,
+        peerPlayerId,
+        readAtMs: res.markedReadAtMs,
+      });
+      const overview = await this.getSocialService().getOverview(auth.playerId);
+      this.sendToPlayer(auth.playerId, { type: 'social:state', overview });
+    }
+    return { ok: true, messages: res.messages };
+  }
+
+  public async socialSendMessage(
+    playerId: string,
+    playerToken: string,
+    recipientId: string,
+    body: unknown,
+    clientMessageId?: string,
+  ) {
+    this.ensureSchema();
+    const auth = await this.authenticateRestPlayer(playerId, playerToken);
+    if (!auth.ok) return auth;
+    return this.handleSendDirectMessage(auth.playerId, recipientId, body, clientMessageId);
+  }
+
+  public async socialCreateReport(
+    playerId: string,
+    playerToken: string,
+    input: {
+      reportedId: string;
+      contextType: unknown;
+      contextId?: unknown;
+      reason: unknown;
+      details?: unknown;
+      excerpt?: unknown;
+    },
+  ) {
+    this.ensureSchema();
+    const auth = await this.authenticateRestPlayer(playerId, playerToken);
+    if (!auth.ok) return auth;
+    return this.getSocialService().createReport({
+      reporterId: auth.playerId,
+      ...input,
+    });
+  }
+
+  // ===== Internal Social Handlers (shared between WS & REST) =====
+
+  private async handlePresenceUpdate(
+    playerId: string,
+    opts: {
+      status?: PresenceStatus;
+      manualStatus?: ManualPresenceStatus;
+      activeRoomId?: string | null;
+      ttlMs?: number;
+    },
+  ): Promise<{ status: PresenceStatus; changed: boolean }> {
+    const ttlMs =
+      typeof opts.ttlMs === 'number' && Number.isFinite(opts.ttlMs)
+        ? Math.max(500, Math.min(300_000, opts.ttlMs))
+        : this.config.presenceTtlMs;
+
+    const sess = this.findLatestSessionByPlayerId(playerId);
+    const inActiveMatch = Boolean(
+      sess?.active_room_id &&
+        this.ctx.storage.sql
+          .exec<{ status: string }>('SELECT status FROM rooms WHERE room_id = ? LIMIT 1', sess.active_room_id)
+          .toArray()[0]?.status === 'playing',
+    );
+
+    const res = await this.getSocialService().setPresence({
+      playerId,
+      status: inActiveMatch ? 'in_match' : opts.status,
+      manualStatus: opts.manualStatus,
+      activeRoomId: opts.activeRoomId,
+      ttlMs,
+    });
+    if (res.changed) {
+      await this.broadcastPresenceChanged(playerId, res.status, res.lastSeenAtMs);
+    }
+    return { status: res.status, changed: res.changed };
+  }
+
+  private async handleFriendRequest(playerId: string, targetPlayerId: string) {
+    const social = this.getSocialService();
+    const res = await social.sendFriendRequest(playerId, targetPlayerId);
+    if (!res.ok) return res;
+
+    if (res.outcome === 'accepted') {
+      this.sendToPlayer(targetPlayerId, {
+        type: 'social:friend_updated',
+        actorId: playerId,
+        action: 'accepted',
+      });
+      this.sendToPlayer(playerId, {
+        type: 'social:friend_updated',
+        actorId: targetPlayerId,
+        action: 'accepted',
+      });
+      await this.pushOverviewToPlayers([playerId, targetPlayerId]);
+    } else {
+      if (res.request) {
+        this.sendToPlayer(targetPlayerId, {
+          type: 'social:friend_request_received',
+          request: res.request,
+        });
+      }
+      await this.pushOverviewToPlayers([playerId, targetPlayerId]);
+    }
+    return { ok: true as const, outcome: res.outcome };
+  }
+
+  private async handleFriendRespond(
+    actorId: string,
+    targetPlayerId: string,
+    action: FriendRequestAction,
+  ) {
+    const social = this.getSocialService();
+    const res = await social.respondFriendRequest(actorId, targetPlayerId, action);
+    if (!res.ok) return res;
+
+    const mapped =
+      action === 'accept' ? 'accepted' : action === 'reject' ? 'rejected' : 'cancelled';
+    this.sendToPlayer(targetPlayerId, {
+      type: 'social:friend_updated',
+      actorId,
+      action: mapped,
+    });
+    this.sendToPlayer(actorId, {
+      type: 'social:friend_updated',
+      actorId: targetPlayerId,
+      action: mapped,
+    });
+    await this.pushOverviewToPlayers([actorId, targetPlayerId]);
+    return { ok: true as const, action };
+  }
+
+  private async handleFriendRemove(actorId: string, targetPlayerId: string) {
+    const social = this.getSocialService();
+    const res = await social.removeFriend(actorId, targetPlayerId);
+    if (!res.ok) return res;
+
+    this.sendToPlayer(targetPlayerId, {
+      type: 'social:friend_updated',
+      actorId,
+      action: 'removed',
+    });
+    this.sendToPlayer(actorId, {
+      type: 'social:friend_updated',
+      actorId: targetPlayerId,
+      action: 'removed',
+    });
+    await this.pushOverviewToPlayers([actorId, targetPlayerId]);
+    return { ok: true as const };
+  }
+
+  private async handleBlockPlayer(blockerId: string, targetPlayerId: string) {
+    const social = this.getSocialService();
+    const res = await social.blockPlayer(blockerId, targetPlayerId);
+    if (!res.ok) return res;
+
+    for (const inv of res.cancelledInvites) {
+      this.sendToPlayer(inv.senderId, { type: 'invite:updated', invitation: inv });
+      this.sendToPlayer(inv.recipientId, { type: 'invite:updated', invitation: inv });
+    }
+    this.sendToPlayer(targetPlayerId, {
+      type: 'social:friend_updated',
+      actorId: blockerId,
+      action: 'blocked',
+    });
+    this.sendToPlayer(blockerId, {
+      type: 'social:friend_updated',
+      actorId: targetPlayerId,
+      action: 'blocked',
+    });
+    await this.pushOverviewToPlayers([blockerId, targetPlayerId]);
+    return { ok: true as const };
+  }
+
+  private async handleUnblockPlayer(blockerId: string, targetPlayerId: string) {
+    const social = this.getSocialService();
+    const res = await social.unblockPlayer(blockerId, targetPlayerId);
+    if (!res.ok) return res;
+
+    this.sendToPlayer(blockerId, {
+      type: 'social:friend_updated',
+      actorId: targetPlayerId,
+      action: 'unblocked',
+    });
+    await this.pushOverviewToPlayers([blockerId]);
+    return { ok: true as const };
+  }
+
+  private async handleSendInvite(
+    senderPlayerId: string,
+    senderSessionId: string | null,
+    input: {
+      targetPlayerId: string;
+      ruleProfileId?: RuleProfileId;
+      calledShotsEnabled?: boolean;
+      ttlMs?: number;
+    },
+  ): Promise<{ ok: true; invitation: MatchInvitationRecord } | SocialError> {
+    await this.pruneExpiredWaitingRooms();
+    const senderSess =
+      (senderSessionId ? this.getSession(senderSessionId) : null) ??
+      this.findLatestSessionByPlayerId(senderPlayerId);
+
+    if (senderSess?.in_matchmaking === 1) {
+      return {
+        ok: false,
+        status: 409,
+        code: 'ALREADY_IN_MATCH',
+        message: 'Cancel matchmaking before sending a direct match invitation.',
+      };
+    }
+
+    let attachedRoomId: string | null = null;
+    let attachedRoomCode: string | null = null;
+
+    if (senderSess?.active_room_id) {
+      const roomRows = this.ctx.storage.sql
+        .exec<{
+          room_id: string;
+          room_code: string;
+          host_session_id: string;
+          status: string;
+          expires_at_ms: number;
+          rule_profile_id: string;
+          called_shots_enabled: number;
+        }>('SELECT * FROM rooms WHERE room_id = ? LIMIT 1', senderSess.active_room_id)
+        .toArray();
+      const row = roomRows[0];
+      if (!row || row.status === 'playing' || Date.now() >= row.expires_at_ms) {
+        return {
+          ok: false,
+          status: 409,
+          code: 'ALREADY_IN_MATCH',
+          message: 'Finish or leave your current match before inviting another friend.',
+        };
+      }
+      if (row.host_session_id !== senderSess.session_id || row.status !== 'waiting') {
+        return {
+          ok: false,
+          status: 409,
+          code: 'ALREADY_IN_MATCH',
+          message: 'Your current room already has a challenger.',
+        };
+      }
+      attachedRoomId = row.room_id;
+      attachedRoomCode = row.room_code;
+    }
+
+    const social = this.getSocialService();
+    const requestedTtl =
+      typeof input.ttlMs === 'number' && Number.isFinite(input.ttlMs)
+        ? Math.max(500, Math.min(this.config.inviteTtlMs, input.ttlMs))
+        : this.config.inviteTtlMs;
+
+    const res = await social.createInvitation({
+      senderId: senderPlayerId,
+      targetPlayerId: input.targetPlayerId,
+      roomId: attachedRoomId,
+      roomCode: attachedRoomCode,
+      ruleProfileId: input.ruleProfileId === 'wpa' ? 'wpa' : 'casual',
+      calledShotsEnabled: Boolean(input.calledShotsEnabled),
+      ttlMs: requestedTtl,
+    });
+    if (!res.ok) return res;
+
+    this.sendToPlayer(res.invitation.recipientId, {
+      type: 'invite:received',
+      invitation: res.invitation,
+    });
+    this.sendToPlayer(res.invitation.senderId, {
+      type: 'invite:updated',
+      invitation: res.invitation,
+    });
+    await this.pushOverviewToPlayers([res.invitation.senderId, res.invitation.recipientId]);
+    await this.scheduleNextAlarm();
+    return { ok: true, invitation: res.invitation };
+  }
+
+  private async handleRespondInvite(
+    actorPlayerId: string,
+    actorSessionId: string | null,
+    inviteId: string,
+    action: MatchInviteAction,
+  ): Promise<
+    | { ok: true; invitation: MatchInvitationRecord; room?: OnlineRoomInfo }
+    | SocialError
+  > {
+    await this.pruneExpiredWaitingRooms();
+    const social = this.getSocialService();
+    const check = await social.getPendingInvitationForAction(actorPlayerId, inviteId, action);
+    if (!check.ok) {
+      if (check.code === 'INVITE_EXPIRED') {
+        await this.pushOverviewToPlayers([actorPlayerId]);
+      }
+      return check;
+    }
+
+    const inv = check.invitation;
+    if (action === 'reject' || action === 'cancel') {
+      const nextStatus = action === 'reject' ? 'rejected' : 'cancelled';
+      const updated = (await social.updateInvitationStatus(inv.inviteId, nextStatus)) ?? {
+        ...inv,
+        status: nextStatus,
+        respondedAtMs: Date.now(),
+      };
+      this.sendToPlayer(inv.senderId, { type: 'invite:updated', invitation: updated });
+      this.sendToPlayer(inv.recipientId, { type: 'invite:updated', invitation: updated });
+      await this.pushOverviewToPlayers([inv.senderId, inv.recipientId]);
+      return { ok: true, invitation: updated };
+    }
+
+    // Action === 'accept'
+    const recipientSess =
+      (actorSessionId ? this.getSession(actorSessionId) : null) ??
+      this.findLatestSessionByPlayerId(actorPlayerId);
+
+    if (!recipientSess) {
+      return {
+        ok: false,
+        status: 409,
+        code: 'PLAYER_OFFLINE',
+        message: 'Connect to the online multiplayer service before accepting an invitation.',
+      };
+    }
+    if (recipientSess.active_room_id || recipientSess.in_matchmaking === 1) {
+      return {
+        ok: false,
+        status: 409,
+        code: 'ALREADY_IN_MATCH',
+        message: 'Leave your current room or matchmaking queue before accepting an invitation.',
+      };
+    }
+
+    // Case A: Invitation already references a waiting private room
+    if (inv.roomId) {
+      const roomRows = this.ctx.storage.sql
+        .exec<{ room_id: string; room_code: string; status: string; expires_at_ms: number }>(
+          'SELECT room_id, room_code, status, expires_at_ms FROM rooms WHERE room_id = ? LIMIT 1',
+          inv.roomId,
+        )
+        .toArray();
+      const row = roomRows[0];
+      if (!row || Date.now() >= row.expires_at_ms || row.status !== 'waiting') {
+        const expiredInv = (await social.updateInvitationStatus(inv.inviteId, 'expired')) ?? {
+          ...inv,
+          status: 'expired' as const,
+          respondedAtMs: Date.now(),
+        };
+        this.sendToPlayer(inv.senderId, { type: 'invite:updated', invitation: expiredInv });
+        this.sendToPlayer(inv.recipientId, { type: 'invite:updated', invitation: expiredInv });
+        await this.pushOverviewToPlayers([inv.senderId, inv.recipientId]);
+        return {
+          ok: false,
+          status: 410,
+          code: 'ROOM_EXPIRED',
+          message: 'The invited private room has expired or is no longer waiting.',
+        };
+      }
+
+      const roomStub = this.env.POOL_ROOM.get(this.env.POOL_ROOM.idFromName(row.room_id));
+      const joinRes = await roomStub.joinRoom({
+        sessionId: recipientSess.session_id,
+        playerId: actorPlayerId,
+        reconnectToken: recipientSess.reconnect_token,
+        displayName: recipientSess.display_name,
+        avatarId: sanitizeAvatarId(recipientSess.avatar_id),
+        latencyMs: recipientSess.latency_ms,
+      });
+
+      if (!joinRes.ok) {
+        if (joinRes.code === 'ROOM_EXPIRED' || joinRes.code === 'INVALID_ROOM') {
+          await social.updateInvitationStatus(inv.inviteId, 'expired');
+        }
+        return { ok: false, status: 409, code: joinRes.code, message: joinRes.message };
+      }
+
+      this.ctx.storage.sql.exec(
+        'UPDATE sessions SET active_room_id = ?, in_matchmaking = 0 WHERE session_id = ?',
+        row.room_id,
+        recipientSess.session_id,
+      );
+      this.ctx.storage.sql.exec(
+        'UPDATE rooms SET expires_at_ms = ?, status = ? WHERE room_id = ?',
+        joinRes.room.expiresAtMs,
+        joinRes.room.status,
+        row.room_id,
+      );
+
+      const acceptedInv = (await social.updateInvitationStatus(inv.inviteId, 'accepted', {
+        roomId: row.room_id,
+        roomCode: row.room_code,
+      })) ?? { ...inv, status: 'accepted' as const, respondedAtMs: Date.now() };
+
+      this.sendToPlayer(inv.senderId, {
+        type: 'invite:updated',
+        invitation: acceptedInv,
+        room: joinRes.room,
+      });
+      this.sendToPlayer(inv.recipientId, {
+        type: 'invite:updated',
+        invitation: acceptedInv,
+        room: joinRes.room,
+      });
+      this.sendToPlayer(inv.senderId, { type: 'room:updated', room: joinRes.room });
+      this.sendToPlayer(inv.recipientId, { type: 'room:updated', room: joinRes.room });
+      await this.pushOverviewToPlayers([inv.senderId, inv.recipientId]);
+      await this.scheduleNextAlarm();
+      return { ok: true, invitation: acceptedInv, room: joinRes.room };
+    }
+
+    // Case B: Direct invitation without pre-created room — verify sender is online & free, then create private room
+    const senderSockets = this.findSocketsByPlayerId(inv.senderId);
+    const senderSess = this.findLatestConnectedSessionByPlayerId(inv.senderId);
+    if (senderSockets.length === 0 || !senderSess) {
+      const expiredInv = (await social.updateInvitationStatus(inv.inviteId, 'expired')) ?? {
+        ...inv,
+        status: 'expired' as const,
+        respondedAtMs: Date.now(),
+      };
+      this.sendToPlayer(inv.recipientId, { type: 'invite:updated', invitation: expiredInv });
+      await this.pushOverviewToPlayers([inv.senderId, inv.recipientId]);
+      return {
+        ok: false,
+        status: 409,
+        code: 'PLAYER_OFFLINE',
+        message: `${inv.senderName} is no longer online to host this match.`,
+      };
+    }
+
+    if (senderSess.active_room_id || senderSess.in_matchmaking === 1) {
+      return {
+        ok: false,
+        status: 409,
+        code: 'ALREADY_IN_MATCH',
+        message: `${inv.senderName} is currently busy in another room or queue.`,
+      };
+    }
+
+    const now = Date.now();
+    const expiresAtMs = now + this.config.roomTtlMs;
+    const roomId = `room_${crypto.randomUUID().replace(/-/g, '').slice(0, 12)}`;
+    const roomCode = this.generateUniqueCode();
+
+    this.ctx.storage.sql.exec(
+      `INSERT INTO rooms (
+        room_id, room_code, host_session_id, is_private, rule_profile_id,
+        called_shots_enabled, status, created_at_ms, expires_at_ms
+      ) VALUES (?, ?, ?, 1, ?, ?, 'waiting', ?, ?)`,
+      roomId,
+      roomCode,
+      senderSess.session_id,
+      inv.ruleProfileId,
+      inv.calledShotsEnabled ? 1 : 0,
+      now,
+      expiresAtMs,
+    );
+
+    const roomStub = this.env.POOL_ROOM.get(this.env.POOL_ROOM.idFromName(roomId));
+    await roomStub.initPrivateRoom({
+      roomId,
+      roomCode,
+      ruleProfileId: inv.ruleProfileId,
+      calledShotsEnabled: inv.calledShotsEnabled,
+      createdAtMs: now,
+      expiresAtMs,
+      host: {
+        sessionId: senderSess.session_id,
+        playerId: inv.senderId,
+        reconnectToken: senderSess.reconnect_token,
+        displayName: senderSess.display_name,
+        avatarId: sanitizeAvatarId(senderSess.avatar_id),
+        latencyMs: senderSess.latency_ms,
+      },
+    });
+
+    const joinRes = await roomStub.joinRoom({
+      sessionId: recipientSess.session_id,
+      playerId: actorPlayerId,
+      reconnectToken: recipientSess.reconnect_token,
+      displayName: recipientSess.display_name,
+      avatarId: sanitizeAvatarId(recipientSess.avatar_id),
+      latencyMs: recipientSess.latency_ms,
+    });
+
+    if (!joinRes.ok) {
+      this.ctx.storage.sql.exec('DELETE FROM rooms WHERE room_id = ?', roomId);
+      return { ok: false, status: 409, code: joinRes.code, message: joinRes.message };
+    }
+
+    this.ctx.storage.sql.exec(
+      'UPDATE sessions SET active_room_id = ?, in_matchmaking = 0 WHERE session_id IN (?, ?)',
+      roomId,
+      senderSess.session_id,
+      recipientSess.session_id,
+    );
+    this.ctx.storage.sql.exec(
+      'UPDATE rooms SET expires_at_ms = ?, status = ? WHERE room_id = ?',
+      joinRes.room.expiresAtMs,
+      joinRes.room.status,
+      roomId,
+    );
+
+    const acceptedInv = (await social.updateInvitationStatus(inv.inviteId, 'accepted', {
+      roomId,
+      roomCode,
+    })) ?? {
+      ...inv,
+      roomId,
+      roomCode,
+      status: 'accepted' as const,
+      respondedAtMs: Date.now(),
+    };
+
+    this.sendToPlayer(inv.senderId, {
+      type: 'invite:updated',
+      invitation: acceptedInv,
+      room: joinRes.room,
+    });
+    this.sendToPlayer(inv.recipientId, {
+      type: 'invite:updated',
+      invitation: acceptedInv,
+      room: joinRes.room,
+    });
+    this.sendToPlayer(inv.senderId, { type: 'room:created', room: joinRes.room });
+    this.sendToPlayer(inv.recipientId, { type: 'room:updated', room: joinRes.room });
+    await this.pushOverviewToPlayers([inv.senderId, inv.recipientId]);
+    await this.scheduleNextAlarm();
+
+    return { ok: true, invitation: acceptedInv, room: joinRes.room };
+  }
+
+  private async handleSendDirectMessage(
+    senderId: string,
+    recipientId: string,
+    rawBody: unknown,
+    clientMessageId?: string,
+  ): Promise<{ ok: true; message: DirectMessageRecord } | SocialError> {
+    const social = this.getSocialService();
+    const textCheck = sanitizeChatText(rawBody);
+    if (!textCheck.ok) {
+      return { ok: false, status: 400, code: textCheck.code, message: textCheck.message };
+    }
+
+    const res = await social.sendDirectMessage({
+      senderId,
+      recipientId,
+      body: textCheck.text,
+    });
+    if (!res.ok) return res;
+
+    this.sendToPlayer(senderId, {
+      type: 'chat:dm_message',
+      message: res.message,
+      clientMessageId,
+    });
+    this.sendToPlayer(recipientId, {
+      type: 'chat:dm_message',
+      message: res.message,
+    });
+    await this.pushOverviewToPlayers([recipientId]);
+    return { ok: true, message: res.message };
+  }
+
+  private async broadcastPresenceChanged(
+    playerId: string,
+    status: PresenceStatus,
+    lastSeenAtMs: number,
+  ): Promise<void> {
+    const msg: ServerToClientMessage = {
+      type: 'social:presence_changed',
+      playerId,
+      status,
+      lastSeenAtMs,
+    };
+    this.sendToPlayer(playerId, msg);
+    const friendIds = await this.getSocialService().getFriendIds(playerId);
+    for (const fid of friendIds) {
+      this.sendToPlayer(fid, msg);
+    }
+  }
+
+  private async pushOverviewToPlayers(playerIds: string[]): Promise<void> {
+    const social = this.getSocialService();
+    const seen = new Set<string>();
+    for (const pid of playerIds) {
+      if (!pid || seen.has(pid)) continue;
+      seen.add(pid);
+      if (this.findSocketsByPlayerId(pid).length === 0) continue;
+      try {
+        const overview = await social.getOverview(pid);
+        this.sendToPlayer(pid, { type: 'social:state', overview });
+      } catch {
+        // Non-blocking
+      }
+    }
+  }
+
+  private async pruneExpiredSocialState(): Promise<{
+    expiredPresenceIds: string[];
+    expiredInviteIds: string[];
+  }> {
+    const now = Date.now();
+    const social = this.getSocialService();
+    const expiredPresence = await social.expireStalePresence(now);
+    for (const entry of expiredPresence) {
+      await this.broadcastPresenceChanged(entry.playerId, 'offline', entry.lastSeenAtMs);
+    }
+
+    const expiredInvites = await social.expirePendingInvitations(now);
+    for (const inv of expiredInvites) {
+      this.sendToPlayer(inv.senderId, { type: 'invite:updated', invitation: inv });
+      this.sendToPlayer(inv.recipientId, { type: 'invite:updated', invitation: inv });
+    }
+    if (expiredInvites.length > 0) {
+      const affected = new Set<string>();
+      for (const inv of expiredInvites) {
+        affected.add(inv.senderId);
+        affected.add(inv.recipientId);
+      }
+      await this.pushOverviewToPlayers([...affected]);
+    }
+
+    return {
+      expiredPresenceIds: expiredPresence.map((e) => e.playerId),
+      expiredInviteIds: expiredInvites.map((i) => i.inviteId),
+    };
   }
 
   private async resolvePersistentPlayerIdentity(input: {
@@ -935,6 +2087,41 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
     };
   }
 
+  private findLatestSessionByPlayerId(playerId: string): SessionRow | null {
+    const rows = this.ctx.storage.sql
+      .exec<Record<string, SqlStorageValue>>(
+        'SELECT * FROM sessions WHERE player_id = ? ORDER BY last_seen_at_ms DESC LIMIT 1',
+        playerId,
+      )
+      .toArray();
+    if (rows.length === 0) return null;
+    const r = rows[0];
+    return {
+      session_id: String(r.session_id),
+      player_id: r.player_id ? String(r.player_id) : String(r.session_id),
+      reconnect_token: String(r.reconnect_token),
+      display_name: String(r.display_name),
+      avatar_id: String(r.avatar_id),
+      latency_ms: Number(r.latency_ms),
+      active_room_id: r.active_room_id ? String(r.active_room_id) : null,
+      in_matchmaking: Number(r.in_matchmaking),
+      created_at_ms: Number(r.created_at_ms),
+      last_seen_at_ms: Number(r.last_seen_at_ms),
+    };
+  }
+
+  private findLatestConnectedSessionByPlayerId(playerId: string): SessionRow | null {
+    const sockets = this.findSocketsByPlayerId(playerId);
+    for (const ws of sockets) {
+      const att = this.getAttachment(ws);
+      if (att.sessionId) {
+        const sess = this.getSession(att.sessionId);
+        if (sess) return sess;
+      }
+    }
+    return null;
+  }
+
   private verifyReconnect(sessionId: string, reconnectToken: string): SessionRow | null {
     if (typeof sessionId !== 'string' || typeof reconnectToken !== 'string') return null;
     const sess = this.getSession(sessionId);
@@ -948,12 +2135,13 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
     return sess;
   }
 
-  private bindSocketToSession(ws: WebSocket, sessionId: string): void {
+  private bindSocketToSession(ws: WebSocket, sessionId: string, playerId: string): void {
     for (const existing of this.ctx.getWebSockets()) {
       if (existing === ws) continue;
       const att = this.getAttachment(existing);
       if (att.sessionId === sessionId) {
         att.sessionId = null;
+        att.playerId = null;
         existing.serializeAttachment(att);
         try {
           existing.close(4001, 'Replaced by resumed session');
@@ -962,7 +2150,7 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
         }
       }
     }
-    ws.serializeAttachment({ sessionId } satisfies LobbySocketAttachment);
+    ws.serializeAttachment({ sessionId, playerId } satisfies LobbySocketAttachment);
   }
 
   private findSocketBySession(sessionId: string): WebSocket | null {
@@ -972,6 +2160,28 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
       }
     }
     return null;
+  }
+
+  private findSocketsByPlayerId(playerId: string): WebSocket[] {
+    const result: WebSocket[] = [];
+    for (const ws of this.ctx.getWebSockets()) {
+      const att = this.getAttachment(ws);
+      if (att.playerId === playerId) {
+        result.push(ws);
+      }
+    }
+    return result;
+  }
+
+  private sendToPlayer(playerId: string, msg: ServerToClientMessage): void {
+    const encoded = JSON.stringify(msg);
+    for (const ws of this.findSocketsByPlayerId(playerId)) {
+      try {
+        ws.send(encoded);
+      } catch {
+        // Ignore closed socket
+      }
+    }
   }
 
   private cancelMatchmaking(sessionId: string, reason: string): boolean {
@@ -1150,6 +2360,11 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
           },
         });
 
+        await this.onRoomStatusChanged(roomId, 'playing', [
+          sessA.player_id ?? sessA.session_id,
+          sessB.player_id ?? sessB.session_id,
+        ]);
+
         this.sendSocket(wsA, { type: 'matchmaking:matched', room: started.room });
         this.sendSocket(wsB, { type: 'matchmaking:matched', room: started.room });
       }
@@ -1173,12 +2388,20 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
         'UPDATE sessions SET active_room_id = NULL WHERE active_room_id = ?',
         row.room_id,
       );
+      const expiredInvites = await this.getSocialService().expireInvitationsForRoom(
+        row.room_id,
+        'expired',
+      );
+      for (const inv of expiredInvites) {
+        this.sendToPlayer(inv.senderId, { type: 'invite:updated', invitation: inv });
+        this.sendToPlayer(inv.recipientId, { type: 'invite:updated', invitation: inv });
+      }
     }
   }
 
   private async scheduleNextAlarm(): Promise<void> {
     const queueCount = this.getQueueCount();
-    const earliestExpiry = this.ctx.storage.sql
+    const earliestRoomExpiry = this.ctx.storage.sql
       .exec<{ m: number | null }>(
         "SELECT MIN(expires_at_ms) AS m FROM rooms WHERE status IN ('waiting', 'ready')",
       )
@@ -1189,8 +2412,20 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
     if (queueCount > 0) {
       candidates.push(now + 1000);
     }
-    if (typeof earliestExpiry === 'number' && Number.isFinite(earliestExpiry)) {
-      candidates.push(earliestExpiry);
+    if (typeof earliestRoomExpiry === 'number' && Number.isFinite(earliestRoomExpiry)) {
+      candidates.push(earliestRoomExpiry);
+    }
+
+    try {
+      const socialExpiry = await this.getSocialService().getEarliestExpiryTimes();
+      if (socialExpiry.presenceExpiryMs !== null) {
+        candidates.push(Math.max(now + 500, socialExpiry.presenceExpiryMs));
+      }
+      if (socialExpiry.inviteExpiryMs !== null) {
+        candidates.push(Math.max(now + 500, socialExpiry.inviteExpiryMs));
+      }
+    } catch {
+      // Ignore if social schema not yet ready
     }
 
     if (candidates.length === 0) {
@@ -1246,7 +2481,7 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
 
   private getAttachment(ws: WebSocket): LobbySocketAttachment {
     const raw = ws.deserializeAttachment() as LobbySocketAttachment | null;
-    return raw ?? { sessionId: null };
+    return raw ? { sessionId: raw.sessionId ?? null, playerId: raw.playerId ?? null } : { sessionId: null, playerId: null };
   }
 
   private sendSocket(ws: WebSocket, msg: ServerToClientMessage): void {

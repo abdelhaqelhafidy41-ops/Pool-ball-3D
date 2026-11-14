@@ -8,6 +8,7 @@ import { D1ProgressionService } from './D1ProgressionService';
 import { MatchmakerDurableObject } from './MatchmakerDurableObject';
 import { PoolRoomDurableObject } from './PoolRoomDurableObject';
 import { ACHIEVEMENTS_CATALOG, type LeaderboardScope } from '../../src/multiplayer/shared/progression';
+import type { FriendRequestAction, MatchInviteAction } from '../../src/multiplayer/shared/social';
 
 export { MatchmakerDurableObject, PoolRoomDurableObject };
 
@@ -321,6 +322,267 @@ export default {
         );
       }
       return jsonResponse({ ok: true, catalog: ACHIEVEMENTS_CATALOG, unlocked: [] }, 200, cors);
+    }
+
+    // ===== Phase 7 Social, Presence, Invitations & Messaging API =====
+
+    if (url.pathname === '/api/social/overview' && request.method === 'GET') {
+      const playerId = (url.searchParams.get('playerId') ?? '').trim();
+      const token = extractBearerToken(request);
+      const res = await getMatchmakerStub().socialGetOverview(playerId, token);
+      if (!res.ok) {
+        return jsonResponse({ error: res.code, message: res.message }, res.status, cors);
+      }
+      return jsonResponse(res, 200, cors);
+    }
+
+    if (url.pathname === '/api/social/search' && request.method === 'GET') {
+      const q = url.searchParams.get('q') ?? '';
+      const limit = Number.parseInt(url.searchParams.get('limit') ?? '15', 10) || 15;
+      const viewerId = url.searchParams.get('playerId');
+      const token = extractBearerToken(request) || null;
+      const players = await getMatchmakerStub().socialSearchPlayers(viewerId, token, q, limit);
+      return jsonResponse({ ok: true, players }, 200, cors);
+    }
+
+    if (url.pathname === '/api/social/friends/request' && request.method === 'POST') {
+      const body = await readJsonBody(request);
+      if (!body || typeof body.playerId !== 'string' || typeof body.targetPlayerId !== 'string') {
+        return jsonResponse(
+          { error: 'INVALID_INPUT', message: 'playerId and targetPlayerId are required.' },
+          400,
+          cors,
+        );
+      }
+      const token = extractBearerToken(request, body);
+      const res = await getMatchmakerStub().socialSendFriendRequest(
+        body.playerId,
+        token,
+        body.targetPlayerId,
+      );
+      if (!res.ok) {
+        return jsonResponse({ error: res.code, message: res.message }, res.status, cors);
+      }
+      return jsonResponse(res, 200, cors);
+    }
+
+    if (url.pathname === '/api/social/friends/respond' && request.method === 'POST') {
+      const body = await readJsonBody(request);
+      const action = body?.action;
+      if (
+        !body ||
+        typeof body.playerId !== 'string' ||
+        typeof body.targetPlayerId !== 'string' ||
+        (action !== 'accept' && action !== 'reject' && action !== 'cancel')
+      ) {
+        return jsonResponse(
+          { error: 'INVALID_INPUT', message: 'playerId, targetPlayerId, and valid action are required.' },
+          400,
+          cors,
+        );
+      }
+      const token = extractBearerToken(request, body);
+      const res = await getMatchmakerStub().socialRespondFriendRequest(
+        body.playerId,
+        token,
+        body.targetPlayerId,
+        action as FriendRequestAction,
+      );
+      if (!res.ok) {
+        return jsonResponse({ error: res.code, message: res.message }, res.status, cors);
+      }
+      return jsonResponse(res, 200, cors);
+    }
+
+    if (url.pathname === '/api/social/friends/remove' && request.method === 'POST') {
+      const body = await readJsonBody(request);
+      if (!body || typeof body.playerId !== 'string' || typeof body.targetPlayerId !== 'string') {
+        return jsonResponse(
+          { error: 'INVALID_INPUT', message: 'playerId and targetPlayerId are required.' },
+          400,
+          cors,
+        );
+      }
+      const token = extractBearerToken(request, body);
+      const res = await getMatchmakerStub().socialRemoveFriend(
+        body.playerId,
+        token,
+        body.targetPlayerId,
+      );
+      if (!res.ok) {
+        return jsonResponse({ error: res.code, message: res.message }, res.status, cors);
+      }
+      return jsonResponse(res, 200, cors);
+    }
+
+    if (url.pathname === '/api/social/block' && request.method === 'POST') {
+      const body = await readJsonBody(request);
+      if (!body || typeof body.playerId !== 'string' || typeof body.targetPlayerId !== 'string') {
+        return jsonResponse(
+          { error: 'INVALID_INPUT', message: 'playerId and targetPlayerId are required.' },
+          400,
+          cors,
+        );
+      }
+      const token = extractBearerToken(request, body);
+      const res = await getMatchmakerStub().socialBlockPlayer(
+        body.playerId,
+        token,
+        body.targetPlayerId,
+      );
+      if (!res.ok) {
+        return jsonResponse({ error: res.code, message: res.message }, res.status, cors);
+      }
+      return jsonResponse(res, 200, cors);
+    }
+
+    if (url.pathname === '/api/social/unblock' && request.method === 'POST') {
+      const body = await readJsonBody(request);
+      if (!body || typeof body.playerId !== 'string' || typeof body.targetPlayerId !== 'string') {
+        return jsonResponse(
+          { error: 'INVALID_INPUT', message: 'playerId and targetPlayerId are required.' },
+          400,
+          cors,
+        );
+      }
+      const token = extractBearerToken(request, body);
+      const res = await getMatchmakerStub().socialUnblockPlayer(
+        body.playerId,
+        token,
+        body.targetPlayerId,
+      );
+      if (!res.ok) {
+        return jsonResponse({ error: res.code, message: res.message }, res.status, cors);
+      }
+      return jsonResponse(res, 200, cors);
+    }
+
+    if (url.pathname === '/api/social/presence' && request.method === 'POST') {
+      const body = await readJsonBody(request);
+      if (!body || typeof body.playerId !== 'string') {
+        return jsonResponse({ error: 'INVALID_INPUT', message: 'playerId is required.' }, 400, cors);
+      }
+      const token = extractBearerToken(request, body);
+      const res = await getMatchmakerStub().socialSetPresence(body.playerId, token, {
+        status: body.status,
+        ttlMs: typeof body.ttlMs === 'number' ? body.ttlMs : undefined,
+        expireNow: Boolean(body.expireNow),
+      });
+      if (!res.ok) {
+        return jsonResponse({ error: res.code, message: res.message }, res.status, cors);
+      }
+      return jsonResponse(res, 200, cors);
+    }
+
+    if (url.pathname === '/api/social/invites' && request.method === 'POST') {
+      const body = await readJsonBody(request);
+      if (!body || typeof body.playerId !== 'string' || typeof body.targetPlayerId !== 'string') {
+        return jsonResponse(
+          { error: 'INVALID_INPUT', message: 'playerId and targetPlayerId are required.' },
+          400,
+          cors,
+        );
+      }
+      const token = extractBearerToken(request, body);
+      const res = await getMatchmakerStub().socialCreateInvite(body.playerId, token, {
+        targetPlayerId: body.targetPlayerId,
+        ruleProfileId: body.ruleProfileId === 'wpa' ? 'wpa' : 'casual',
+        calledShotsEnabled: Boolean(body.calledShotsEnabled),
+        ttlMs: typeof body.ttlMs === 'number' ? body.ttlMs : undefined,
+      });
+      if (!res.ok) {
+        return jsonResponse({ error: res.code, message: res.message }, res.status, cors);
+      }
+      return jsonResponse(res, 200, cors);
+    }
+
+    if (url.pathname === '/api/social/invites/respond' && request.method === 'POST') {
+      const body = await readJsonBody(request);
+      const action = body?.action;
+      if (
+        !body ||
+        typeof body.playerId !== 'string' ||
+        typeof body.inviteId !== 'string' ||
+        (action !== 'accept' && action !== 'reject' && action !== 'cancel')
+      ) {
+        return jsonResponse(
+          { error: 'INVALID_INPUT', message: 'playerId, inviteId, and valid action are required.' },
+          400,
+          cors,
+        );
+      }
+      const token = extractBearerToken(request, body);
+      const res = await getMatchmakerStub().socialRespondInvite(
+        body.playerId,
+        token,
+        body.inviteId,
+        action as MatchInviteAction,
+      );
+      if (!res.ok) {
+        return jsonResponse({ error: res.code, message: res.message }, res.status, cors);
+      }
+      return jsonResponse(res, 200, cors);
+    }
+
+    if (url.pathname.startsWith('/api/social/messages/') && request.method === 'GET') {
+      const peerId = decodeURIComponent(
+        url.pathname.slice('/api/social/messages/'.length),
+      ).trim();
+      const playerId = (url.searchParams.get('playerId') ?? '').trim();
+      const limit = Number.parseInt(url.searchParams.get('limit') ?? '60', 10) || 60;
+      const token = extractBearerToken(request);
+      const res = await getMatchmakerStub().socialGetMessages(playerId, token, peerId, limit);
+      if (!res.ok) {
+        return jsonResponse({ error: res.code, message: res.message }, res.status, cors);
+      }
+      return jsonResponse(res, 200, cors);
+    }
+
+    if (url.pathname === '/api/social/messages' && request.method === 'POST') {
+      const body = await readJsonBody(request);
+      if (!body || typeof body.playerId !== 'string' || typeof body.recipientId !== 'string') {
+        return jsonResponse(
+          { error: 'INVALID_INPUT', message: 'playerId and recipientId are required.' },
+          400,
+          cors,
+        );
+      }
+      const token = extractBearerToken(request, body);
+      const res = await getMatchmakerStub().socialSendMessage(
+        body.playerId,
+        token,
+        body.recipientId,
+        body.body,
+        typeof body.clientMessageId === 'string' ? body.clientMessageId : undefined,
+      );
+      if (!res.ok) {
+        return jsonResponse({ error: res.code, message: res.message }, res.status, cors);
+      }
+      return jsonResponse(res, 200, cors);
+    }
+
+    if (url.pathname === '/api/social/reports' && request.method === 'POST') {
+      const body = await readJsonBody(request);
+      if (!body || typeof body.playerId !== 'string' || typeof body.reportedId !== 'string') {
+        return jsonResponse(
+          { error: 'INVALID_INPUT', message: 'playerId and reportedId are required.' },
+          400,
+          cors,
+        );
+      }
+      const token = extractBearerToken(request, body);
+      const res = await getMatchmakerStub().socialCreateReport(body.playerId, token, {
+        reportedId: body.reportedId,
+        contextType: body.contextType,
+        contextId: body.contextId,
+        reason: body.reason,
+        details: body.details,
+        excerpt: body.excerpt,
+      });
+      if (!res.ok) {
+        return jsonResponse({ error: res.code, message: res.message }, res.status, cors);
+      }
+      return jsonResponse(res, 200, cors);
     }
 
     if (url.pathname === '/') {

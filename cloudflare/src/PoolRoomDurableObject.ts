@@ -30,6 +30,12 @@ import type {
   MatchProgressionRewardSummary,
   MatchTelemetrySummaryForProgression,
 } from '../../src/multiplayer/shared/progression';
+import {
+  sanitizeChatText,
+  SOCIAL_LIMITS,
+  type RoomChatMessageRecord,
+} from '../../src/multiplayer/shared/social';
+import { checkChatAntiSpam } from './SocialService';
 
 interface RoomSocketAttachment {
   sessionId: string | null;
@@ -113,6 +119,16 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
       );
       CREATE TABLE IF NOT EXISTS used_shot_tokens (
         token TEXT PRIMARY KEY,
+        created_at_ms INTEGER NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS room_chat_messages (
+        message_id TEXT PRIMARY KEY,
+        sender_session_id TEXT NOT NULL,
+        sender_player_id TEXT NOT NULL,
+        sender_name TEXT NOT NULL,
+        sender_avatar TEXT NOT NULL,
+        sender_role TEXT NOT NULL,
+        body TEXT NOT NULL,
         created_at_ms INTEGER NOT NULL
       );
     `);
@@ -284,6 +300,7 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
     this.match = null;
     this.ctx.storage.sql.exec('DELETE FROM match_state');
     this.ctx.storage.sql.exec('DELETE FROM used_shot_tokens');
+    this.ctx.storage.sql.exec('DELETE FROM room_chat_messages');
 
     this.room = {
       roomId: params.roomId,
@@ -330,6 +347,7 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
   }): Promise<{ room: OnlineRoomInfo; match: OnlineMatchSnapshot; balls: OnlineBallFrame[] }> {
     await this.ensureHydrated();
     this.ctx.storage.sql.exec('DELETE FROM used_shot_tokens');
+    this.ctx.storage.sql.exec('DELETE FROM room_chat_messages');
 
     this.room = {
       roomId: params.roomId,
@@ -709,6 +727,11 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
         break;
       }
 
+      case 'chat:room_send': {
+        await this.handleRoomChatMessage(ws, player, msg.body, msg.clientMessageId);
+        break;
+      }
+
       default:
         this.sendError(ws, 'INVALID_INPUT', 'Unsupported message type.');
     }
@@ -763,7 +786,10 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
         }
         this.room.status = 'finished';
         this.room.players = this.room.players.filter((p) => p.sessionId !== player.sessionId);
-        await this.notifyMatchmakerPlayerLeft(player.sessionId);
+        await this.notifyMatchmakerPlayerLeft(
+          player.sessionId,
+          player.playerId ?? player.sessionId,
+        );
         if (this.room.players.length === 0) {
           await this.destroyRoom('All players disconnected.');
           return;
@@ -862,6 +888,15 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
       serverTimeMs: Date.now(),
     });
 
+    const chatHistory = this.loadRoomChatHistory(this.room.roomId);
+    if (chatHistory.length > 0) {
+      this.sendSocket(ws, {
+        type: 'chat:room_history',
+        roomId: this.room.roomId,
+        messages: chatHistory,
+      });
+    }
+
     if (wasDisconnected) {
       this.broadcastToOthers(player.sessionId, {
         type: 'opponent:reconnected',
@@ -912,7 +947,7 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
     const leaving = this.room.players.find((p) => p.sessionId === sessionId);
     if (!leaving) return;
 
-    await this.notifyMatchmakerPlayerLeft(sessionId);
+    await this.notifyMatchmakerPlayerLeft(sessionId, leaving.playerId ?? leaving.sessionId);
 
     if (this.room.status === 'playing' && this.match && this.match.getPhase() !== 'GAME_OVER') {
       this.match.forfeit(leaving.role, `${leaving.displayName} left the match.`);
@@ -1274,6 +1309,7 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
     if (!this.room) return;
     const roomId = this.room.roomId;
     const sessionIds = this.room.players.map((p) => p.sessionId);
+    const playerIds = this.room.players.map((p) => p.playerId ?? p.sessionId);
 
     this.broadcastToRoom({
       type: 'room:closed',
@@ -1295,7 +1331,7 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
     this.schemaReady = false;
     await this.ctx.storage.deleteAlarm();
     await this.ctx.storage.deleteAll();
-    await this.notifyMatchmakerRoomClosed(roomId, sessionIds);
+    await this.notifyMatchmakerRoomClosed(roomId, sessionIds, playerIds);
   }
 
   private updateWaitingStatus(room: StoredRoomState): void {
@@ -1437,22 +1473,147 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
     });
   }
 
+  private async handleRoomChatMessage(
+    ws: WebSocket,
+    sender: StoredPlayerRecord,
+    rawBody: unknown,
+    clientMessageId?: string,
+  ): Promise<void> {
+    if (!this.room) {
+      this.sendError(ws, 'INVALID_ROOM', 'Room no longer exists.');
+      return;
+    }
+
+    const textCheck = sanitizeChatText(rawBody);
+    if (!textCheck.ok) {
+      this.sendError(ws, textCheck.code, textCheck.message);
+      return;
+    }
+
+    const senderPlayerId = sender.playerId ?? sender.sessionId;
+    const spamCheck = checkChatAntiSpam(`room:${senderPlayerId}`, textCheck.text, Date.now());
+    if (!spamCheck.ok) {
+      this.sendError(ws, 'RATE_LIMITED', spamCheck.message);
+      return;
+    }
+
+    const otherPlayers = this.room.players.filter((p) => p.sessionId !== sender.sessionId);
+    for (const peer of otherPlayers) {
+      const peerPlayerId = peer.playerId ?? peer.sessionId;
+      if (peerPlayerId !== senderPlayerId) {
+        const blocked = await this.getMatchmakerStub().socialIsBlockedBetween(
+          senderPlayerId,
+          peerPlayerId,
+        );
+        if (blocked) {
+          this.sendError(
+            ws,
+            'BLOCKED_PLAYER',
+            'Room chat is disabled because a player block is active between participants.',
+          );
+          return;
+        }
+      }
+    }
+
+    const now = Date.now();
+    const message: RoomChatMessageRecord = {
+      messageId: `rc_${crypto.randomUUID().replace(/-/g, '').slice(0, 14)}`,
+      roomId: this.room.roomId,
+      senderSessionId: sender.sessionId,
+      senderPlayerId,
+      senderName: sender.displayName,
+      senderAvatar: sender.avatarId,
+      senderRole: sender.role,
+      body: textCheck.text,
+      createdAtMs: now,
+    };
+
+    this.ctx.storage.sql.exec(
+      `INSERT INTO room_chat_messages (
+        message_id, sender_session_id, sender_player_id, sender_name, sender_avatar, sender_role, body, created_at_ms
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      message.messageId,
+      message.senderSessionId,
+      message.senderPlayerId,
+      message.senderName,
+      message.senderAvatar,
+      message.senderRole,
+      message.body,
+      message.createdAtMs,
+    );
+    this.ctx.storage.sql.exec(
+      `DELETE FROM room_chat_messages
+       WHERE message_id NOT IN (
+         SELECT message_id FROM room_chat_messages ORDER BY created_at_ms DESC LIMIT ?
+       )`,
+      SOCIAL_LIMITS.maxRoomChatHistory,
+    );
+
+    const encoded = JSON.stringify({
+      type: 'chat:room_message',
+      roomId: this.room.roomId,
+      message,
+      clientMessageId,
+    } satisfies ServerToClientMessage);
+
+    for (const sock of this.ctx.getWebSockets()) {
+      const att = this.getAttachment(sock);
+      if (!att.sessionId) continue;
+      try {
+        sock.send(encoded);
+      } catch {
+        // Ignore closed socket
+      }
+    }
+  }
+
+  private loadRoomChatHistory(roomId: string): RoomChatMessageRecord[] {
+    this.ensureSchema();
+    const rows = this.ctx.storage.sql
+      .exec<Record<string, SqlStorageValue>>(
+        'SELECT * FROM room_chat_messages ORDER BY created_at_ms ASC LIMIT ?',
+        SOCIAL_LIMITS.maxRoomChatHistory,
+      )
+      .toArray();
+
+    return rows.map((r) => ({
+      messageId: String(r.message_id),
+      roomId,
+      senderSessionId: String(r.sender_session_id),
+      senderPlayerId: String(r.sender_player_id),
+      senderName: String(r.sender_name),
+      senderAvatar: sanitizeAvatarId(r.sender_avatar),
+      senderRole: r.sender_role === 'player2' ? 'player2' : 'player1',
+      body: String(r.body),
+      createdAtMs: Number(r.created_at_ms),
+    }));
+  }
+
   private getMatchmakerStub() {
     return this.env.MATCHMAKER.get(this.env.MATCHMAKER.idFromName('global'));
   }
 
   private async notifyMatchmakerRoomStatus(status: OnlineRoomStatus): Promise<void> {
     if (!this.room) return;
-    await this.getMatchmakerStub().onRoomStatusChanged(this.room.roomId, status);
+    const playerIds = this.room.players.map((p) => p.playerId ?? p.sessionId);
+    await this.getMatchmakerStub().onRoomStatusChanged(this.room.roomId, status, playerIds);
   }
 
-  private async notifyMatchmakerPlayerLeft(sessionId: string): Promise<void> {
+  private async notifyMatchmakerPlayerLeft(
+    sessionId: string,
+    playerId?: string,
+  ): Promise<void> {
     if (!this.room) return;
-    await this.getMatchmakerStub().onPlayerLeftRoom(this.room.roomId, sessionId);
+    await this.getMatchmakerStub().onPlayerLeftRoom(this.room.roomId, sessionId, playerId);
   }
 
-  private async notifyMatchmakerRoomClosed(roomId: string, sessionIds: string[]): Promise<void> {
-    await this.getMatchmakerStub().onRoomClosed(roomId, sessionIds);
+  private async notifyMatchmakerRoomClosed(
+    roomId: string,
+    sessionIds: string[],
+    playerIds: string[] = [],
+  ): Promise<void> {
+    await this.getMatchmakerStub().onRoomClosed(roomId, sessionIds, playerIds);
   }
 
   private async notifyMatchmakerHistory(record: MatchHistoryRecord): Promise<void> {

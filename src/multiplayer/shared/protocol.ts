@@ -13,6 +13,17 @@ import type {
   MatchProgressionRewardSummary,
   OnlineMatchType,
 } from './progression';
+import type {
+  DirectMessageRecord,
+  FriendRequestAction,
+  FriendRequestRecord,
+  ManualPresenceStatus,
+  MatchInvitationRecord,
+  MatchInviteAction,
+  PresenceStatus,
+  RoomChatMessageRecord,
+  SocialOverviewPayload,
+} from './social';
 
 export type ConnectionState = 'disconnected' | 'connecting' | 'connected' | 'reconnecting';
 export type OpponentConnectionState = 'connected' | 'disconnected' | 'reconnected';
@@ -168,7 +179,15 @@ export type MultiplayerErrorCode =
   | 'MATCH_FINISHED'
   | 'MATCH_NOT_READY'
   | 'RATE_LIMITED'
-  | 'MATCHMAKING_TIMEOUT';
+  | 'MATCHMAKING_TIMEOUT'
+  | 'BLOCKED_PLAYER'
+  | 'INVITE_EXPIRED'
+  | 'INVITE_ALREADY_EXISTS'
+  | 'PLAYER_OFFLINE'
+  | 'SELF_ACTION_FORBIDDEN'
+  | 'ALREADY_FRIENDS'
+  | 'DUPLICATE_REQUEST'
+  | 'MESSAGE_TOO_LONG';
 
 export type ClientToServerMessage =
   | {
@@ -267,6 +286,65 @@ export type ClientToServerMessage =
     }
   | {
       type: 'game:request_sync';
+    }
+  | {
+      type: 'presence:set';
+      status: ManualPresenceStatus;
+    }
+  | {
+      type: 'presence:heartbeat';
+      status?: ManualPresenceStatus;
+    }
+  | {
+      type: 'social:sync';
+    }
+  | {
+      type: 'social:friend_request';
+      targetPlayerId: string;
+    }
+  | {
+      type: 'social:friend_respond';
+      targetPlayerId: string;
+      action: FriendRequestAction;
+    }
+  | {
+      type: 'social:friend_remove';
+      targetPlayerId: string;
+    }
+  | {
+      type: 'social:block';
+      targetPlayerId: string;
+    }
+  | {
+      type: 'social:unblock';
+      targetPlayerId: string;
+    }
+  | {
+      type: 'invite:send';
+      targetPlayerId: string;
+      ruleProfileId: RuleProfileId;
+      calledShotsEnabled: boolean;
+      ttlMs?: number;
+    }
+  | {
+      type: 'invite:respond';
+      inviteId: string;
+      action: MatchInviteAction;
+    }
+  | {
+      type: 'chat:dm_send';
+      recipientId: string;
+      body: string;
+      clientMessageId?: string;
+    }
+  | {
+      type: 'chat:dm_mark_read';
+      peerPlayerId: string;
+    }
+  | {
+      type: 'chat:room_send';
+      body: string;
+      clientMessageId?: string;
     };
 
 export type ServerToClientMessage =
@@ -406,4 +484,54 @@ export type ServerToClientMessage =
       roomId: string;
       sessionId: string;
       displayName: string;
+    }
+  | {
+      type: 'social:state';
+      overview: SocialOverviewPayload;
+    }
+  | {
+      type: 'social:presence_changed';
+      playerId: string;
+      status: PresenceStatus;
+      lastSeenAtMs: number;
+    }
+  | {
+      type: 'social:friend_request_received';
+      request: FriendRequestRecord;
+    }
+  | {
+      type: 'social:friend_updated';
+      actorId: string;
+      action: 'accepted' | 'rejected' | 'cancelled' | 'removed' | 'blocked' | 'unblocked';
+    }
+  | {
+      type: 'invite:received';
+      invitation: MatchInvitationRecord;
+    }
+  | {
+      type: 'invite:updated';
+      invitation: MatchInvitationRecord;
+      room?: OnlineRoomInfo;
+    }
+  | {
+      type: 'chat:dm_message';
+      message: DirectMessageRecord;
+      clientMessageId?: string;
+    }
+  | {
+      type: 'chat:dm_read';
+      readerId: string;
+      peerPlayerId: string;
+      readAtMs: number;
+    }
+  | {
+      type: 'chat:room_history';
+      roomId: string;
+      messages: RoomChatMessageRecord[];
+    }
+  | {
+      type: 'chat:room_message';
+      roomId: string;
+      message: RoomChatMessageRecord;
+      clientMessageId?: string;
     };

@@ -28,6 +28,7 @@ import { progressionClient } from '../multiplayer/ProgressionClient';
 import { ONLINE_AVATARS, type OnlineModeIntent } from '../multiplayer/shared/protocol';
 import { useGameStore } from '../store/useGameStore';
 import { FpsCounter } from './FpsCounter';
+import { presenceDotClass, presenceLabel } from './SocialModal';
 
 interface MainMenuProps {
   onStartMatch: () => void;
@@ -48,6 +49,12 @@ export function MainMenu({ onStartMatch, onToggleFullscreen }: MainMenuProps) {
   const ownProfile = useGameStore((s) => s.ownProfile);
   const onlineProfile = useGameStore((s) => s.onlineProfile);
   const openProgressionModal = useGameStore((s) => s.openProgressionModal);
+  const openSocialModal = useGameStore((s) => s.openSocialModal);
+  const selfPresence = useGameStore((s) => s.selfPresence);
+  const friends = useGameStore((s) => s.friends);
+  const incomingRequests = useGameStore((s) => s.incomingRequests);
+  const incomingInvitations = useGameStore((s) => s.incomingInvitations);
+  const totalUnreadDmCount = useGameStore((s) => s.totalUnreadDmCount);
 
   useEffect(() => {
     if (screen === 'menu' && !ownProfile) {
@@ -460,6 +467,43 @@ export function MainMenu({ onStartMatch, onToggleFullscreen }: MainMenuProps) {
                       );
                     })}
                   </div>
+
+                  {(() => {
+                    const socialBadge =
+                      incomingRequests.length + incomingInvitations.length + totalUnreadDmCount;
+                    return (
+                      <button
+                        type="button"
+                        data-testid="open-social-btn"
+                        onClick={() => {
+                          soundEngine.unlock();
+                          soundEngine.playUiClick();
+                          multiplayerManager.ensureConnected();
+                          openSocialModal('friends');
+                        }}
+                        className="mt-1.5 flex w-full items-center justify-between rounded-lg border border-white/10 bg-white/5 px-2.5 py-1.5 text-[11px] font-bold text-slate-200 hover:bg-white/10 transition-colors cursor-pointer"
+                      >
+                        <span className="inline-flex items-center gap-1.5">
+                          <Users className="h-3.5 w-3.5 text-amber-400" />
+                          <span>Friends & Social</span>
+                          <span className="inline-flex items-center gap-1 rounded border border-white/10 bg-black/40 px-1.5 py-0.2 text-[9px] font-semibold text-slate-300">
+                            <span
+                              className={`h-1.5 w-1.5 rounded-full ${presenceDotClass(selfPresence)}`}
+                            />
+                            {presenceLabel(selfPresence)}
+                          </span>
+                        </span>
+                        <span className="inline-flex items-center gap-1.5 font-mono text-[10px] text-slate-400">
+                          <span>{friends.length} friends</span>
+                          {socialBadge > 0 && (
+                            <span className="rounded bg-amber-500 px-1.5 py-0.2 font-black text-slate-950">
+                              {socialBadge}
+                            </span>
+                          )}
+                        </span>
+                      </button>
+                    );
+                  })()}
                 </div>
               );
             })()}

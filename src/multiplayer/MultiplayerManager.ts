@@ -11,6 +11,11 @@ import type {
   OnlineRoomInfo,
   ServerToClientMessage,
 } from './shared/protocol';
+import type {
+  FriendRequestAction,
+  ManualPresenceStatus,
+  MatchInviteAction,
+} from './shared/social';
 
 export interface MultiplayerSceneBridge {
   onApplyAuthoritativeBalls: (balls: OnlineBallFrame[]) => void;
@@ -80,6 +85,7 @@ class MultiplayerManagerImpl {
 
   public reauthenticateSocketIdentity(): void {
     this.network.clearSessionCredentials();
+    useGameStore.getState().resetSocialState();
     const state = this.network.getConnectionState();
     if (state === 'connected' || state === 'connecting' || state === 'reconnecting') {
       this.network.retryConnect();
@@ -248,6 +254,68 @@ class MultiplayerManagerImpl {
     } catch {
       return [];
     }
+  }
+
+  public setManualPresence(status: ManualPresenceStatus): void {
+    this.ensureConnected();
+    this.network.send({ type: 'presence:set', status });
+  }
+
+  public syncSocialState(): void {
+    this.ensureConnected();
+    this.network.send({ type: 'social:sync' });
+  }
+
+  public sendFriendRequestWs(targetPlayerId: string): void {
+    this.ensureConnected();
+    this.network.send({ type: 'social:friend_request', targetPlayerId });
+  }
+
+  public respondFriendRequestWs(targetPlayerId: string, action: FriendRequestAction): void {
+    this.ensureConnected();
+    this.network.send({ type: 'social:friend_respond', targetPlayerId, action });
+  }
+
+  public sendMatchInviteWs(
+    targetPlayerId: string,
+    ruleProfileId: RuleProfileId,
+    calledShotsEnabled: boolean,
+  ): void {
+    this.ensureConnected();
+    this.network.send({
+      type: 'invite:send',
+      targetPlayerId,
+      ruleProfileId,
+      calledShotsEnabled,
+    });
+  }
+
+  public respondMatchInviteWs(inviteId: string, action: MatchInviteAction): void {
+    this.ensureConnected();
+    this.network.send({ type: 'invite:respond', inviteId, action });
+  }
+
+  public sendDirectMessageWs(recipientId: string, body: string): void {
+    this.ensureConnected();
+    this.network.send({
+      type: 'chat:dm_send',
+      recipientId,
+      body,
+      clientMessageId: `dm_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+    });
+  }
+
+  public markDirectMessagesReadWs(peerPlayerId: string): void {
+    this.ensureConnected();
+    this.network.send({ type: 'chat:dm_mark_read', peerPlayerId });
+  }
+
+  public sendRoomChatMessage(body: string): boolean {
+    return this.network.send({
+      type: 'chat:room_send',
+      body,
+      clientMessageId: `rc_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+    });
   }
 
   private resolveLocalRole(room: OnlineRoomInfo | null): PlayerId | null {
@@ -481,6 +549,83 @@ class MultiplayerManagerImpl {
             });
           }
         }, 3000);
+        break;
+      }
+
+      case 'social:state': {
+        store.applySocialOverview(msg.overview);
+        break;
+      }
+
+      case 'social:presence_changed': {
+        store.updatePlayerPresence(msg.playerId, msg.status, msg.lastSeenAtMs);
+        break;
+      }
+
+      case 'social:friend_request_received': {
+        store.upsertIncomingFriendRequest(msg.request);
+        soundEngine.playUiClick();
+        break;
+      }
+
+      case 'social:friend_updated': {
+        this.network.send({ type: 'social:sync' });
+        break;
+      }
+
+      case 'invite:received': {
+        store.upsertInvitation(msg.invitation);
+        soundEngine.playUiClick();
+        break;
+      }
+
+      case 'invite:updated': {
+        store.upsertInvitation(msg.invitation);
+        if (msg.invitation.status === 'accepted' && msg.room) {
+          this.network.bindRoomSocket(msg.room.roomId);
+          store.setOnlineRoom(msg.room);
+          store.setOnlineError(null);
+          store.closeSocialModal();
+          if (store.screen !== 'playing') {
+            store.openOnlineLobby('friend');
+          }
+          soundEngine.playUiClick();
+        }
+        break;
+      }
+
+      case 'chat:dm_message': {
+        const selfId = store.ownProfile?.playerId ?? null;
+        store.appendDirectMessage(msg.message, selfId);
+        if (
+          selfId &&
+          msg.message.recipientId === selfId &&
+          store.socialModalOpen &&
+          store.socialTab === 'messages' &&
+          store.activeDmPeerId === msg.message.senderId
+        ) {
+          this.network.send({
+            type: 'chat:dm_mark_read',
+            peerPlayerId: msg.message.senderId,
+          });
+        }
+        break;
+      }
+
+      case 'chat:dm_read': {
+        const selfId = store.ownProfile?.playerId ?? null;
+        store.markDmThreadRead(msg.peerPlayerId, msg.readerId, msg.readAtMs, selfId);
+        break;
+      }
+
+      case 'chat:room_history': {
+        store.setRoomChatHistory(msg.messages);
+        break;
+      }
+
+      case 'chat:room_message': {
+        const selfId = store.ownProfile?.playerId ?? null;
+        store.appendRoomChatMessage(msg.message, selfId);
         break;
       }
     }

@@ -27,6 +27,7 @@ import { BallInHandOverlay } from './BallInHandOverlay';
 import { CalledShotPanel } from './CalledShotPanel';
 import { CueBallSpinControl } from './CueBallSpinControl';
 import { FpsCounter } from './FpsCounter';
+import { InMatchChatPanel } from './InMatchChatPanel';
 import { MatchNotificationBanner } from './MatchNotificationBanner';
 import { MatchScoreboard } from './MatchScoreboard';
 import { MiniatureCueController } from './MiniatureCueController';
@@ -236,6 +237,7 @@ export function GameHUD({
       {/* Turn / Foul / Group Banner, AI Indicator, Online Status & Ball-in-Hand Overlay */}
       <AIOpponentPanel />
       <OnlineMatchBanner />
+      <InMatchChatPanel />
       <MatchNotificationBanner />
       <BallInHandOverlay
         onConfirmPlacement={onConfirmPlacement}

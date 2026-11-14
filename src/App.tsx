@@ -2,22 +2,26 @@ import { useCallback, useEffect, useRef } from 'react';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { GameCanvas, type PoolSceneActions } from './components/GameCanvas';
 import { GameHUD } from './components/GameHUD';
+import { InviteNotificationBanner } from './components/InviteNotificationBanner';
 import { MainMenu } from './components/MainMenu';
 import { MatchEndModal } from './components/MatchEndModal';
 import { OnlineLobbyUI } from './components/OnlineLobbyUI';
 import { ProgressionModal } from './components/ProgressionModal';
 import { ReplayOverlay } from './components/ReplayOverlay';
 import { SettingsModal } from './components/SettingsModal';
+import { SocialModal } from './components/SocialModal';
 import type { ReplaySpeed } from './game/replay/types';
 import type { PocketId } from './game/rules/types';
 import { soundEngine } from './game/utils/SoundEngine';
 import { multiplayerManager } from './multiplayer/MultiplayerManager';
+import { socialClient } from './multiplayer/SocialClient';
 import { useGameStore } from './store/useGameStore';
 
 export default function App() {
   const actionsRef = useRef<PoolSceneActions | null>(null);
   const setIsFullscreen = useGameStore((s) => s.setIsFullscreen);
   const setScreen = useGameStore((s) => s.setScreen);
+  const ownPlayerId = useGameStore((s) => s.ownProfile?.playerId ?? null);
 
   const handleToggleFullscreen = useCallback(() => {
     soundEngine.playUiClick();
@@ -38,6 +42,12 @@ export default function App() {
       soundEngine.dispose();
     };
   }, [setIsFullscreen]);
+
+  useEffect(() => {
+    if (!ownPlayerId) return;
+    multiplayerManager.ensureConnected();
+    void socialClient.fetchOverview();
+  }, [ownPlayerId]);
 
   const handleStartMatch = useCallback(() => {
     actionsRef.current?.startMatch();
@@ -160,6 +170,8 @@ export default function App() {
         />
         <OnlineLobbyUI />
         <ProgressionModal />
+        <SocialModal />
+        <InviteNotificationBanner />
       </main>
     </ErrorBoundary>
   );
