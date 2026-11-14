@@ -797,14 +797,21 @@ async function runSuite4CloudflareD1Integration(): Promise<void> {
       profile: {
         elo: number;
         rank: number;
-        stats: { wins: number; totalMatches: number; wpaWins: number; privateWins: number };
+        stats: {
+          wins: number;
+          totalMatches: number;
+          byMatchType: {
+            wpa: { matches: number; wins: number };
+            private: { matches: number; wins: number };
+          };
+        };
       };
     };
     assert(profJson.profile.elo > 1200);
     assert.equal(profJson.profile.rank, 1);
     assert.equal(profJson.profile.stats.wins, 1);
-    assert.equal(profJson.profile.stats.wpaWins, 1);
-    assert.equal(profJson.profile.stats.privateWins, 1);
+    assert.equal(profJson.profile.stats.byMatchType.wpa.wins, 1);
+    assert.equal(profJson.profile.stats.byMatchType.private.wins, 1);
 
     const lbRes = await fetch(
       `${baseHttp}/api/leaderboard?scope=monthly&page=1&limit=10&q=D1`,
