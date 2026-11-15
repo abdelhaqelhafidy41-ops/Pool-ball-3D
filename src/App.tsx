@@ -11,6 +11,7 @@ import { ReplayOverlay } from './components/ReplayOverlay';
 import { SettingsModal } from './components/SettingsModal';
 import { SocialModal } from './components/SocialModal';
 import { StoreModal } from './components/StoreModal';
+import { TournamentModal } from './components/TournamentModal';
 import type { ReplaySpeed } from './game/replay/types';
 import type { PocketId } from './game/rules/types';
 import { soundEngine } from './game/utils/SoundEngine';
@@ -175,6 +176,7 @@ export default function App() {
         <ProgressionModal />
         <SocialModal />
         <StoreModal />
+        <TournamentModal />
         <InviteNotificationBanner />
       </main>
     </ErrorBoundary>

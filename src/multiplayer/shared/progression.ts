@@ -1,7 +1,7 @@
 import type { PlayerId, RuleProfileId } from '../../game/rules/types';
 
 export type LeaderboardScope = 'global' | 'weekly' | 'monthly';
-export type OnlineMatchType = 'quick' | 'private';
+export type OnlineMatchType = 'quick' | 'private' | 'tournament';
 export type MatchCompletionType =
   | 'legal_8ball'
   | 'opponent_early_8ball'

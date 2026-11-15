@@ -621,6 +621,10 @@ export function StoreModal() {
                                 <span className="text-[11px] font-bold uppercase tracking-wider text-slate-300">
                                   Owned
                                 </span>
+                              ) : item.isRewardExclusive ? (
+                                <span className="text-[11px] font-bold uppercase tracking-wider text-amber-300">
+                                  Tournament Prize
+                                </span>
                               ) : (
                                 <span className="inline-flex items-center gap-1 font-mono text-xs font-black tabular-nums text-amber-300">
                                   <Coins className="h-3.5 w-3.5 text-amber-400" />
@@ -719,6 +723,10 @@ export function StoreModal() {
                                 : 'Unequip to Default'
                               : 'Equip Cosmetic'}
                           </button>
+                        ) : selectedItem.isRewardExclusive ? (
+                          <div className="rounded-lg border border-amber-400/35 bg-amber-500/10 px-3 py-2.5 text-center text-xs font-bold text-amber-200">
+                            Unlocked exclusively through Championship &amp; Tournament placements.
+                          </div>
                         ) : (
                           <div className="space-y-2">
                             <button

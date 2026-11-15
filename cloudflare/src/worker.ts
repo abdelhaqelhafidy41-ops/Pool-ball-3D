@@ -2,6 +2,7 @@ import {
   buildCorsHeaders,
   isOriginAllowed,
   loadWorkerConfig,
+  verifyTournamentAdmin,
   type Env,
 } from './config';
 import { D1ProgressionService } from './D1ProgressionService';
@@ -16,6 +17,11 @@ import {
 } from '../../src/multiplayer/shared/economy';
 import { ACHIEVEMENTS_CATALOG, type LeaderboardScope } from '../../src/multiplayer/shared/progression';
 import type { FriendRequestAction, MatchInviteAction } from '../../src/multiplayer/shared/social';
+import {
+  TOURNAMENT_TROPHY_CATALOG,
+  type CreateTournamentInput,
+  type TournamentMatchResolutionType,
+} from '../../src/multiplayer/shared/tournaments';
 
 export { MatchmakerDurableObject, PoolRoomDurableObject };
 
@@ -799,6 +805,298 @@ export default {
         return jsonResponse({ error: res.code, message: res.message }, res.status, cors);
       }
       return jsonResponse(res, 200, cors);
+    }
+
+    // ===== Phase 9 Global Tournaments & Championships API =====
+
+    if (url.pathname === '/api/tournaments' && request.method === 'GET') {
+      const viewerId = url.searchParams.get('playerId')?.trim() || null;
+      const type = url.searchParams.get('type')?.trim() || null;
+      const status = url.searchParams.get('status')?.trim() || null;
+      const adminCheck = verifyTournamentAdmin(request, env);
+      const tournaments = await getMatchmakerStub().tournamentList({
+        viewerId,
+        type,
+        status,
+        includePrivateForAdmin: adminCheck.ok,
+      });
+      return jsonResponse(
+        {
+          ok: true,
+          tournaments,
+          trophyCatalog: TOURNAMENT_TROPHY_CATALOG,
+        },
+        200,
+        cors,
+      );
+    }
+
+    if (url.pathname === '/api/tournaments/leaderboard' && request.method === 'GET') {
+      const seasonKey = url.searchParams.get('seasonKey')?.trim() || null;
+      const limit = Number.parseInt(url.searchParams.get('limit') ?? '25', 10) || 25;
+      const entries = await getMatchmakerStub().tournamentLeaderboard({ seasonKey, limit });
+      return jsonResponse({ ok: true, seasonKey: seasonKey ?? 'ALL', entries }, 200, cors);
+    }
+
+    if (url.pathname.startsWith('/api/tournaments/stats/') && request.method === 'GET') {
+      const targetId = decodeURIComponent(
+        url.pathname.slice('/api/tournaments/stats/'.length),
+      ).trim();
+      if (!targetId) {
+        return jsonResponse({ error: 'INVALID_INPUT', message: 'playerId is required.' }, 400, cors);
+      }
+      const stats = await getMatchmakerStub().tournamentPlayerStats(targetId);
+      return jsonResponse({ ok: true, stats, trophyCatalog: TOURNAMENT_TROPHY_CATALOG }, 200, cors);
+    }
+
+    if (url.pathname === '/api/tournaments/private' && request.method === 'POST') {
+      const body = await readJsonBody(request);
+      if (!body || typeof body.playerId !== 'string') {
+        return jsonResponse({ error: 'INVALID_INPUT', message: 'playerId is required.' }, 400, cors);
+      }
+      const token = extractBearerToken(request, body);
+      const res = await getMatchmakerStub().tournamentCreatePrivate(
+        body.playerId,
+        token,
+        body as Partial<CreateTournamentInput>,
+      );
+      if (!res.ok) {
+        return jsonResponse({ error: res.code, message: res.message }, res.status, cors);
+      }
+      return jsonResponse(res, 200, cors);
+    }
+
+    if (url.pathname === '/api/tournaments/join-code' && request.method === 'POST') {
+      const body = await readJsonBody(request);
+      if (
+        !body ||
+        typeof body.playerId !== 'string' ||
+        typeof body.inviteCode !== 'string'
+      ) {
+        return jsonResponse(
+          { error: 'INVALID_INPUT', message: 'playerId and inviteCode are required.' },
+          400,
+          cors,
+        );
+      }
+      const token = extractBearerToken(request, body);
+      const res = await getMatchmakerStub().tournamentJoinByCode(
+        body.playerId,
+        token,
+        body.inviteCode,
+      );
+      if (!res.ok) {
+        return jsonResponse({ error: res.code, message: res.message }, res.status, cors);
+      }
+      return jsonResponse(res, 200, cors);
+    }
+
+    // Admin tournament routes (server-verified secret required; never exposed in frontend)
+    if (url.pathname === '/api/admin/tournaments' && request.method === 'POST') {
+      const adminAuth = verifyTournamentAdmin(request, env);
+      if (!adminAuth.ok) {
+        return jsonResponse({ error: adminAuth.code, message: adminAuth.message }, adminAuth.status, cors);
+      }
+      const body = await readJsonBody(request);
+      if (!body) {
+        return jsonResponse({ error: 'INVALID_INPUT', message: 'Invalid JSON request body.' }, 400, cors);
+      }
+      const res = await getMatchmakerStub().tournamentAdminCreate(
+        body as Partial<CreateTournamentInput>,
+      );
+      if (!res.ok) {
+        return jsonResponse({ error: res.code, message: res.message }, res.status, cors);
+      }
+      return jsonResponse(res, 200, cors);
+    }
+
+    if (url.pathname.startsWith('/api/admin/tournaments/')) {
+      const adminAuth = verifyTournamentAdmin(request, env);
+      if (!adminAuth.ok) {
+        return jsonResponse({ error: adminAuth.code, message: adminAuth.message }, adminAuth.status, cors);
+      }
+      const rest = url.pathname.slice('/api/admin/tournaments/'.length);
+      const parts = rest.split('/').filter(Boolean).map((p) => decodeURIComponent(p));
+
+      if (parts.length === 2 && parts[1] === 'start' && request.method === 'POST') {
+        const res = await getMatchmakerStub().tournamentStart(parts[0], { isAdmin: true });
+        if (!res.ok) {
+          return jsonResponse({ error: res.code, message: res.message }, res.status, cors);
+        }
+        return jsonResponse(res, 200, cors);
+      }
+
+      if (parts.length === 2 && parts[1] === 'cancel' && request.method === 'POST') {
+        const body = await readJsonBody(request);
+        const res = await getMatchmakerStub().tournamentCancel(parts[0], {
+          isAdmin: true,
+          reason: typeof body?.reason === 'string' ? body.reason : undefined,
+        });
+        if (!res.ok) {
+          return jsonResponse({ error: res.code, message: res.message }, res.status, cors);
+        }
+        return jsonResponse(res, 200, cors);
+      }
+
+      if (parts.length === 2 && parts[1] === 'process-timers' && request.method === 'POST') {
+        const res = await getMatchmakerStub().tournamentProcessTimers(parts[0]);
+        return jsonResponse({ ok: true, ...res }, 200, cors);
+      }
+
+      if (
+        parts.length === 4 &&
+        parts[1] === 'matches' &&
+        parts[3] === 'resolve' &&
+        request.method === 'POST'
+      ) {
+        const body = await readJsonBody(request);
+        if (!body || typeof body.winnerId !== 'string') {
+          return jsonResponse({ error: 'INVALID_INPUT', message: 'winnerId is required.' }, 400, cors);
+        }
+        const res = await getMatchmakerStub().tournamentAdminResolveMatch(parts[0], parts[2], {
+          winnerId: body.winnerId,
+          resolutionType:
+            typeof body.resolutionType === 'string'
+              ? (body.resolutionType as TournamentMatchResolutionType)
+              : 'admin_resolved',
+          reason: typeof body.reason === 'string' ? body.reason : undefined,
+        });
+        if (!res.ok) {
+          return jsonResponse({ error: res.code, message: res.message }, res.status, cors);
+        }
+        return jsonResponse(res, 200, cors);
+      }
+    }
+
+    if (url.pathname.startsWith('/api/tournaments/')) {
+      const rest = url.pathname.slice('/api/tournaments/'.length);
+      const parts = rest.split('/').filter(Boolean).map((p) => decodeURIComponent(p));
+
+      if (parts.length === 1 && request.method === 'GET') {
+        const viewerId = url.searchParams.get('playerId')?.trim() || null;
+        const adminCheck = verifyTournamentAdmin(request, env);
+        const detail = await getMatchmakerStub().tournamentDetail(parts[0], {
+          viewerId,
+          isAdmin: adminCheck.ok,
+        });
+        if (!detail) {
+          return jsonResponse({ error: 'NOT_FOUND', message: 'Tournament not found.' }, 404, cors);
+        }
+        return jsonResponse(
+          { ok: true, ...detail, trophyCatalog: TOURNAMENT_TROPHY_CATALOG },
+          200,
+          cors,
+        );
+      }
+
+      if (parts.length === 2 && parts[1] === 'register' && request.method === 'POST') {
+        const body = await readJsonBody(request);
+        if (!body || typeof body.playerId !== 'string') {
+          return jsonResponse({ error: 'INVALID_INPUT', message: 'playerId is required.' }, 400, cors);
+        }
+        const token = extractBearerToken(request, body);
+        const res = await getMatchmakerStub().tournamentRegister(
+          body.playerId,
+          token,
+          parts[0],
+          typeof body.inviteCode === 'string' ? body.inviteCode : undefined,
+        );
+        if (!res.ok) {
+          return jsonResponse({ error: res.code, message: res.message }, res.status, cors);
+        }
+        return jsonResponse(res, 200, cors);
+      }
+
+      if (parts.length === 2 && parts[1] === 'withdraw' && request.method === 'POST') {
+        const body = await readJsonBody(request);
+        if (!body || typeof body.playerId !== 'string') {
+          return jsonResponse({ error: 'INVALID_INPUT', message: 'playerId is required.' }, 400, cors);
+        }
+        const token = extractBearerToken(request, body);
+        const res = await getMatchmakerStub().tournamentWithdraw(body.playerId, token, parts[0]);
+        if (!res.ok) {
+          return jsonResponse({ error: res.code, message: res.message }, res.status, cors);
+        }
+        return jsonResponse(res, 200, cors);
+      }
+
+      if (parts.length === 2 && parts[1] === 'start' && request.method === 'POST') {
+        const body = await readJsonBody(request);
+        const adminCheck = verifyTournamentAdmin(request, env);
+        if (adminCheck.ok) {
+          const res = await getMatchmakerStub().tournamentStart(parts[0], { isAdmin: true });
+          if (!res.ok) {
+            return jsonResponse({ error: res.code, message: res.message }, res.status, cors);
+          }
+          return jsonResponse(res, 200, cors);
+        }
+        if (!body || typeof body.playerId !== 'string') {
+          return jsonResponse({ error: 'INVALID_INPUT', message: 'playerId is required.' }, 400, cors);
+        }
+        const token = extractBearerToken(request, body);
+        const res = await getMatchmakerStub().tournamentStart(parts[0], {
+          playerId: body.playerId,
+          playerToken: token,
+          isAdmin: false,
+        });
+        if (!res.ok) {
+          return jsonResponse({ error: res.code, message: res.message }, res.status, cors);
+        }
+        return jsonResponse(res, 200, cors);
+      }
+
+      if (parts.length === 2 && parts[1] === 'cancel' && request.method === 'POST') {
+        const body = await readJsonBody(request);
+        const adminCheck = verifyTournamentAdmin(request, env);
+        if (adminCheck.ok) {
+          const res = await getMatchmakerStub().tournamentCancel(parts[0], {
+            isAdmin: true,
+            reason: typeof body?.reason === 'string' ? body.reason : undefined,
+          });
+          if (!res.ok) {
+            return jsonResponse({ error: res.code, message: res.message }, res.status, cors);
+          }
+          return jsonResponse(res, 200, cors);
+        }
+        if (!body || typeof body.playerId !== 'string') {
+          return jsonResponse({ error: 'INVALID_INPUT', message: 'playerId is required.' }, 400, cors);
+        }
+        const token = extractBearerToken(request, body);
+        const res = await getMatchmakerStub().tournamentCancel(parts[0], {
+          playerId: body.playerId,
+          playerToken: token,
+          isAdmin: false,
+          reason: typeof body.reason === 'string' ? body.reason : undefined,
+        });
+        if (!res.ok) {
+          return jsonResponse({ error: res.code, message: res.message }, res.status, cors);
+        }
+        return jsonResponse(res, 200, cors);
+      }
+
+      if (
+        parts.length === 4 &&
+        parts[1] === 'matches' &&
+        parts[3] === 'join' &&
+        request.method === 'POST'
+      ) {
+        const body = await readJsonBody(request);
+        if (!body || typeof body.playerId !== 'string') {
+          return jsonResponse({ error: 'INVALID_INPUT', message: 'playerId is required.' }, 400, cors);
+        }
+        const token = extractBearerToken(request, body);
+        const res = await getMatchmakerStub().tournamentJoinMatch(
+          body.playerId,
+          token,
+          parts[0],
+          parts[2],
+          typeof body.sessionId === 'string' ? body.sessionId : null,
+        );
+        if (!res.ok) {
+          return jsonResponse({ error: res.code, message: res.message }, res.status, cors);
+        }
+        return jsonResponse(res, 200, cors);
+      }
     }
 
     if (url.pathname === '/') {

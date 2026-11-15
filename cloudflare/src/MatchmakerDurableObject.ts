@@ -13,6 +13,7 @@ import type {
   OnlineAvatarId,
   OnlineRoomInfo,
   OnlineRoomStatus,
+  OnlineRoomTournamentContext,
   ServerToClientMessage,
 } from '../../src/multiplayer/shared/protocol';
 import {
@@ -45,12 +46,20 @@ import {
 import { createDurableObjectSqlDb, D1ProgressionService } from './D1ProgressionService';
 import { EconomyService } from './EconomyService';
 import { SocialService, type SocialError } from './SocialService';
+import { TournamentService, type TournamentServiceError } from './TournamentService';
+import type {
+  CreateTournamentInput,
+  TournamentMatch,
+  TournamentMatchResolutionType,
+  TournamentRecord,
+} from '../../src/multiplayer/shared/tournaments';
 
 const ROOM_CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 
 interface LobbySocketAttachment {
   sessionId: string | null;
   playerId: string | null;
+  subscribedTournamentId?: string | null;
 }
 
 interface SessionRow {
@@ -777,6 +786,52 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
         break;
       }
 
+      case 'tournament:subscribe': {
+        if (typeof msg.tournamentId === 'string' && msg.tournamentId.trim()) {
+          const tid = msg.tournamentId.trim();
+          const currentAtt = this.getAttachment(ws);
+          ws.serializeAttachment({
+            ...currentAtt,
+            subscribedTournamentId: tid,
+          } satisfies LobbySocketAttachment);
+          const detail = await this.getTournamentService().getTournamentDetail(tid, {
+            viewerId: playerId,
+          });
+          if (detail) {
+            this.sendSocket(ws, {
+              type: 'tournament:updated',
+              tournament: detail.tournament,
+              matches: detail.matches,
+            });
+          }
+        }
+        break;
+      }
+
+      case 'tournament:unsubscribe': {
+        const currentAtt = this.getAttachment(ws);
+        ws.serializeAttachment({
+          ...currentAtt,
+          subscribedTournamentId: null,
+        } satisfies LobbySocketAttachment);
+        break;
+      }
+
+      case 'tournament:join_match': {
+        const res = await this.handleJoinTournamentMatch(
+          playerId,
+          session.session_id,
+          msg.tournamentId,
+          msg.bracketMatchId,
+        );
+        if (!res.ok) {
+          this.sendError(ws, res.code as MultiplayerErrorCode, res.message);
+          return;
+        }
+        this.sendSocket(ws, { type: 'room:updated', room: res.room });
+        break;
+      }
+
       default:
         this.sendError(ws, 'INVALID_INPUT', 'Connect to your room socket for match actions.');
     }
@@ -815,6 +870,7 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
     await this.processQueue();
     await this.pruneExpiredWaitingRooms();
     await this.pruneExpiredSocialState();
+    await this.processTournamentTimersInternal();
     await this.scheduleNextAlarm();
   }
 
@@ -1087,6 +1143,13 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
       return new EconomyService(this.env.DB);
     }
     return new EconomyService(createDurableObjectSqlDb(this.ctx.storage.sql));
+  }
+
+  private getTournamentService(): TournamentService {
+    if (this.env.DB) {
+      return new TournamentService(this.env.DB);
+    }
+    return new TournamentService(createDurableObjectSqlDb(this.ctx.storage.sql));
   }
 
   private async authenticateRestPlayer(
@@ -1509,6 +1572,685 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
         // Ignore if room already closed
       }
     }
+  }
+
+  // ===== Phase 9 Global Tournaments & Championships RPC Methods =====
+
+  public async tournamentList(params?: {
+    viewerId?: string | null;
+    type?: string | null;
+    status?: string | null;
+    includePrivateForAdmin?: boolean;
+  }) {
+    this.ensureSchema();
+    const svc = this.getTournamentService();
+    await svc.processDueTimers();
+    return svc.listTournaments(params);
+  }
+
+  public async tournamentDetail(
+    tournamentId: string,
+    opts?: { viewerId?: string | null; isAdmin?: boolean },
+  ) {
+    this.ensureSchema();
+    const svc = this.getTournamentService();
+    await svc.processDueTimers(Date.now(), tournamentId);
+    return svc.getTournamentDetail(tournamentId, opts);
+  }
+
+  public async tournamentLeaderboard(params?: {
+    seasonKey?: string | null;
+    limit?: number;
+  }) {
+    this.ensureSchema();
+    return this.getTournamentService().getTournamentLeaderboard(params);
+  }
+
+  public async tournamentPlayerStats(playerId: string) {
+    this.ensureSchema();
+    return this.getTournamentService().getPlayerTournamentStats(playerId);
+  }
+
+  public async tournamentCreatePrivate(
+    playerId: string,
+    playerToken: string,
+    input: Partial<CreateTournamentInput>,
+  ) {
+    this.ensureSchema();
+    const auth = await this.authenticateRestPlayer(playerId, playerToken);
+    if (!auth.ok) return auth;
+    const profile = await this.getProgressionService().getPublicProfile(auth.playerId);
+    const res = await this.getTournamentService().createTournament(
+      { ...input, type: 'private', isPrivate: true },
+      {
+        actorPlayerId: auth.playerId,
+        actorName: profile?.displayName ?? 'Host',
+        isAdmin: false,
+      },
+    );
+    if (!res.ok) return res;
+    await this.scheduleNextAlarm();
+    return res;
+  }
+
+  public async tournamentAdminCreate(input: Partial<CreateTournamentInput>) {
+    this.ensureSchema();
+    const res = await this.getTournamentService().createTournament(input, {
+      actorPlayerId: null,
+      actorName: 'Tournament Admin',
+      isAdmin: true,
+    });
+    if (!res.ok) return res;
+    await this.scheduleNextAlarm();
+    return res;
+  }
+
+  public async tournamentRegister(
+    playerId: string,
+    playerToken: string,
+    tournamentId: string,
+    inviteCode?: string,
+  ) {
+    this.ensureSchema();
+    const auth = await this.authenticateRestPlayer(playerId, playerToken);
+    if (!auth.ok) return auth;
+    const svc = this.getTournamentService();
+    const res = await svc.registerPlayer({
+      tournamentId,
+      playerId: auth.playerId,
+      inviteCode,
+    });
+    if (!res.ok) return res;
+
+    if (res.shouldAutoStart) {
+      const started = await svc.startTournamentBracket(tournamentId, { isAdmin: true });
+      if (started.ok) {
+        const provisioned = await this.notifyReadyTournamentMatches(
+          started.tournament,
+          started.readyMatches,
+        );
+        await this.broadcastTournamentState(started.tournament.tournamentId, provisioned);
+        await this.scheduleNextAlarm();
+        return {
+          ok: true as const,
+          tournament: started.tournament,
+          participant: res.participant,
+          autoStarted: true,
+        };
+      }
+    }
+
+    await this.broadcastTournamentState(tournamentId);
+    await this.scheduleNextAlarm();
+    return {
+      ok: true as const,
+      tournament: res.tournament,
+      participant: res.participant,
+      autoStarted: false,
+    };
+  }
+
+  public async tournamentJoinByCode(
+    playerId: string,
+    playerToken: string,
+    inviteCode: string,
+  ) {
+    this.ensureSchema();
+    const auth = await this.authenticateRestPlayer(playerId, playerToken);
+    if (!auth.ok) return auth;
+    const svc = this.getTournamentService();
+    const res = await svc.registerByInviteCode({
+      inviteCode,
+      playerId: auth.playerId,
+    });
+    if (!res.ok) return res;
+
+    if (res.shouldAutoStart) {
+      const started = await svc.startTournamentBracket(res.tournament.tournamentId, {
+        isAdmin: true,
+      });
+      if (started.ok) {
+        await this.notifyReadyTournamentMatches(started.tournament, started.readyMatches);
+        await this.broadcastTournamentState(started.tournament.tournamentId);
+        await this.scheduleNextAlarm();
+        return {
+          ok: true as const,
+          tournament: started.tournament,
+          participant: res.participant,
+          autoStarted: true,
+        };
+      }
+    }
+
+    await this.broadcastTournamentState(res.tournament.tournamentId);
+    await this.scheduleNextAlarm();
+    return {
+      ok: true as const,
+      tournament: res.tournament,
+      participant: res.participant,
+      autoStarted: false,
+    };
+  }
+
+  public async tournamentWithdraw(
+    playerId: string,
+    playerToken: string,
+    tournamentId: string,
+  ) {
+    this.ensureSchema();
+    const auth = await this.authenticateRestPlayer(playerId, playerToken);
+    if (!auth.ok) return auth;
+    const res = await this.getTournamentService().withdrawPlayer({
+      tournamentId,
+      playerId: auth.playerId,
+    });
+    if (!res.ok) return res;
+
+    for (const roomId of res.roomIdsToClose) {
+      await this.closeRoomFromTournament(roomId, 'Match forfeited due to player withdrawal.');
+    }
+    if (res.newlyReadyMatches.length > 0) {
+      await this.notifyReadyTournamentMatches(res.tournament, res.newlyReadyMatches);
+    }
+    await this.broadcastTournamentState(tournamentId);
+    await this.scheduleNextAlarm();
+    return res;
+  }
+
+  public async tournamentStart(
+    tournamentId: string,
+    opts: { playerId?: string | null; playerToken?: string | null; isAdmin?: boolean },
+  ) {
+    this.ensureSchema();
+    let actorId: string | null = null;
+    if (!opts.isAdmin) {
+      const auth = await this.authenticateRestPlayer(opts.playerId, opts.playerToken);
+      if (!auth.ok) return auth;
+      actorId = auth.playerId;
+    }
+
+    const res = await this.getTournamentService().startTournamentBracket(tournamentId, {
+      actorPlayerId: actorId,
+      isAdmin: Boolean(opts.isAdmin),
+    });
+    if (!res.ok) return res;
+
+    if (!res.cancelledInsufficient) {
+      await this.notifyReadyTournamentMatches(res.tournament, res.readyMatches);
+    }
+    await this.broadcastTournamentState(tournamentId);
+    await this.scheduleNextAlarm();
+    return res;
+  }
+
+  public async tournamentCancel(
+    tournamentId: string,
+    opts: {
+      playerId?: string | null;
+      playerToken?: string | null;
+      isAdmin?: boolean;
+      reason?: string;
+    },
+  ) {
+    this.ensureSchema();
+    let actorId: string | null = null;
+    if (!opts.isAdmin) {
+      const auth = await this.authenticateRestPlayer(opts.playerId, opts.playerToken);
+      if (!auth.ok) return auth;
+      actorId = auth.playerId;
+    }
+
+    const res = await this.getTournamentService().cancelTournament({
+      tournamentId,
+      actorPlayerId: actorId,
+      isAdmin: Boolean(opts.isAdmin),
+      reason: opts.reason,
+    });
+    if (!res.ok) return res;
+
+    for (const roomId of res.roomIdsToClose) {
+      await this.closeRoomFromTournament(roomId, 'Tournament cancelled.');
+    }
+    await this.broadcastTournamentState(tournamentId);
+    await this.scheduleNextAlarm();
+    return res;
+  }
+
+  public async tournamentJoinMatch(
+    playerId: string,
+    playerToken: string,
+    tournamentId: string,
+    bracketMatchId: string,
+    sessionId?: string | null,
+  ) {
+    this.ensureSchema();
+    const auth = await this.authenticateRestPlayer(playerId, playerToken);
+    if (!auth.ok) return auth;
+    return this.handleJoinTournamentMatch(
+      auth.playerId,
+      sessionId ?? null,
+      tournamentId,
+      bracketMatchId,
+    );
+  }
+
+  public async tournamentAdminResolveMatch(
+    tournamentId: string,
+    bracketMatchId: string,
+    input: {
+      winnerId: string;
+      resolutionType?: TournamentMatchResolutionType;
+      reason?: string;
+    },
+  ) {
+    this.ensureSchema();
+    const res = await this.getTournamentService().completeBracketMatch({
+      tournamentId,
+      bracketMatchId,
+      winnerId: input.winnerId,
+      resolutionType: input.resolutionType ?? 'admin_resolved',
+      reason: input.reason ?? 'Resolved by tournament administrator.',
+      adminOverride: true,
+    });
+    if (!res.ok) return res;
+
+    if (res.roomIdToClose) {
+      await this.closeRoomFromTournament(res.roomIdToClose, 'Match resolved by tournament administrator.');
+    }
+    if (res.newlyReadyMatches.length > 0) {
+      await this.notifyReadyTournamentMatches(res.tournament, res.newlyReadyMatches);
+    }
+    await this.broadcastTournamentState(tournamentId);
+    await this.scheduleNextAlarm();
+    return res;
+  }
+
+  public async tournamentProcessTimers(tournamentId?: string) {
+    this.ensureSchema();
+    return this.processTournamentTimersInternal(tournamentId);
+  }
+
+  public async onTournamentMatchStarted(
+    tournamentId: string,
+    bracketMatchId: string,
+  ): Promise<void> {
+    this.ensureSchema();
+    await this.getTournamentService().markMatchInProgress(tournamentId, bracketMatchId);
+    await this.broadcastTournamentState(tournamentId);
+  }
+
+  public async onTournamentMatchCompleted(input: {
+    tournamentId: string;
+    bracketMatchId: string;
+    roomId: string;
+    matchId: string;
+    winnerPlayerId: string;
+    resolutionType?: 'played' | 'forfeit';
+    reason: string;
+    completedAtMs: number;
+  }): Promise<void> {
+    this.ensureSchema();
+    const res = await this.getTournamentService().completeBracketMatch({
+      tournamentId: input.tournamentId,
+      bracketMatchId: input.bracketMatchId,
+      winnerId: input.winnerPlayerId,
+      matchId: input.matchId,
+      resolutionType: input.resolutionType ?? 'played',
+      reason: input.reason,
+      nowMs: input.completedAtMs,
+    });
+    if (!res.ok) return;
+
+    if (res.newlyReadyMatches.length > 0) {
+      await this.notifyReadyTournamentMatches(res.tournament, res.newlyReadyMatches);
+    }
+    await this.broadcastTournamentState(input.tournamentId);
+    await this.scheduleNextAlarm();
+  }
+
+  private async handleJoinTournamentMatch(
+    playerId: string,
+    preferredSessionId: string | null,
+    tournamentId: string,
+    bracketMatchId: string,
+  ): Promise<
+    | {
+        ok: true;
+        tournament: TournamentRecord;
+        match: TournamentMatch;
+        room: OnlineRoomInfo;
+        roomSession: { sessionId: string; reconnectToken: string };
+      }
+    | TournamentServiceError
+  > {
+    const svc = this.getTournamentService();
+    const detail = await svc.getTournamentDetail(tournamentId, { viewerId: playerId });
+    if (!detail) {
+      return { ok: false, status: 404, code: 'NOT_FOUND', message: 'Tournament not found.' };
+    }
+    const targetMatch = detail.matches.find((m) => m.bracketMatchId === bracketMatchId);
+    if (!targetMatch) {
+      return { ok: false, status: 404, code: 'NOT_FOUND', message: 'Bracket match not found.' };
+    }
+    if (targetMatch.player1Id !== playerId && targetMatch.player2Id !== playerId) {
+      return {
+        ok: false,
+        status: 403,
+        code: 'UNAUTHORIZED',
+        message: 'You are not assigned to this tournament match.',
+      };
+    }
+
+    let sess =
+      (preferredSessionId ? this.getSession(preferredSessionId) : null) ??
+      this.findLatestConnectedSessionByPlayerId(playerId) ??
+      this.findLatestSessionByPlayerId(playerId);
+
+    if (!sess) {
+      const prof = await this.getProgressionService().getPublicProfile(playerId);
+      sess = this.createSession(
+        prof?.displayName ?? 'Player',
+        sanitizeAvatarId(prof?.avatarId),
+        35,
+        playerId,
+      );
+    }
+
+    if (sess.in_matchmaking === 1) {
+      return {
+        ok: false,
+        status: 409,
+        code: 'ALREADY_IN_MATCH',
+        message: 'Leave matchmaking before entering a tournament match.',
+      };
+    }
+
+    if (sess.active_room_id && sess.active_room_id !== targetMatch.roomId) {
+      const activeRoomRows = this.ctx.storage.sql
+        .exec<{ status: string }>(
+          'SELECT status FROM rooms WHERE room_id = ? LIMIT 1',
+          sess.active_room_id,
+        )
+        .toArray();
+      const activeStatus = activeRoomRows[0]?.status;
+      if (activeStatus === 'playing') {
+        return {
+          ok: false,
+          status: 409,
+          code: 'ALREADY_IN_MATCH',
+          message: 'Finish your current active match before entering another tournament match.',
+        };
+      }
+      // Clear stale or finished room pointer so player can enter the next round seamlessly
+      this.ctx.storage.sql.exec(
+        'UPDATE sessions SET active_room_id = NULL WHERE session_id = ?',
+        sess.session_id,
+      );
+      sess.active_room_id = null;
+    }
+
+    const joined = await svc.markPlayerJoinedMatch({
+      tournamentId,
+      bracketMatchId,
+      playerId,
+    });
+    if (!joined.ok) return joined;
+
+    const provisioned = await this.ensureMatchRoomProvisioned(joined.tournament, joined.match);
+    const joinCosmetics = await this.getEconomyService().getEquippedCosmetics(playerId);
+    const roomStub = this.env.POOL_ROOM.get(this.env.POOL_ROOM.idFromName(provisioned.room.roomId));
+    const prep = await roomStub.prepareTournamentPlayerSession(playerId, {
+      sessionId: sess.session_id,
+      playerId,
+      reconnectToken: sess.reconnect_token,
+      displayName: sess.display_name,
+      avatarId: sanitizeAvatarId(sess.avatar_id),
+      equippedCosmetics: joinCosmetics,
+      latencyMs: sess.latency_ms,
+    });
+
+    if (!prep.ok) {
+      return {
+        ok: false,
+        status: 409,
+        code: prep.code,
+        message: prep.message,
+      };
+    }
+
+    this.ctx.storage.sql.exec(
+      'UPDATE sessions SET active_room_id = ?, in_matchmaking = 0 WHERE session_id = ?',
+      provisioned.room.roomId,
+      sess.session_id,
+    );
+
+    await this.broadcastTournamentState(tournamentId);
+    await this.scheduleNextAlarm();
+
+    return {
+      ok: true,
+      tournament: joined.tournament,
+      match: provisioned.match,
+      room: prep.room,
+      roomSession: {
+        sessionId: sess.session_id,
+        reconnectToken: sess.reconnect_token,
+      },
+    };
+  }
+
+  private async ensureMatchRoomProvisioned(
+    tournament: TournamentRecord,
+    match: TournamentMatch,
+  ): Promise<{ match: TournamentMatch; room: OnlineRoomInfo }> {
+    const svc = this.getTournamentService();
+    if (match.roomId) {
+      const existingStub = this.env.POOL_ROOM.get(this.env.POOL_ROOM.idFromName(match.roomId));
+      const resume = await existingStub.getResumeData();
+      if (resume) {
+        return { match, room: resume.room };
+      }
+    }
+
+    const p1Id = match.player1Id!;
+    const p2Id = match.player2Id!;
+    const now = Date.now();
+    const roomId = `room_${crypto.randomUUID().replace(/-/g, '').slice(0, 12)}`;
+    const roomCode = this.generateUniqueCode();
+    const expiresAtMs = Math.max(
+      now + this.config.roomTtlMs + 60_000,
+      (match.readyDeadlineMs ?? now) + 120_000,
+    );
+
+    const p1Sess = this.findLatestSessionByPlayerId(p1Id);
+    const p2Sess = this.findLatestSessionByPlayerId(p2Id);
+    const [p1Cosmetics, p2Cosmetics] = await Promise.all([
+      this.getEconomyService().getEquippedCosmetics(p1Id),
+      this.getEconomyService().getEquippedCosmetics(p2Id),
+    ]);
+
+    const p1SessionId = p1Sess?.session_id ?? `ply_${crypto.randomUUID().replace(/-/g, '').slice(0, 16)}`;
+    const p2SessionId = p2Sess?.session_id ?? `ply_${crypto.randomUUID().replace(/-/g, '').slice(0, 16)}`;
+    const p1Reconnect = p1Sess?.reconnect_token ?? randomHexToken(24);
+    const p2Reconnect = p2Sess?.reconnect_token ?? randomHexToken(24);
+
+    this.ctx.storage.sql.exec(
+      `INSERT INTO rooms (
+        room_id, room_code, host_session_id, is_private, rule_profile_id,
+        called_shots_enabled, status, created_at_ms, expires_at_ms
+      ) VALUES (?, ?, ?, 0, ?, ?, 'waiting', ?, ?)`,
+      roomId,
+      roomCode,
+      p1SessionId,
+      tournament.ruleProfileId,
+      tournament.calledShotsEnabled ? 1 : 0,
+      now,
+      expiresAtMs,
+    );
+
+    const tourneyContext: OnlineRoomTournamentContext = {
+      tournamentId: tournament.tournamentId,
+      tournamentTitle: tournament.title,
+      bracketMatchId: match.bracketMatchId,
+      roundNumber: match.roundNumber,
+      roundLabel: match.roundLabel,
+      readyDeadlineMs: match.readyDeadlineMs,
+    };
+
+    const roomStub = this.env.POOL_ROOM.get(this.env.POOL_ROOM.idFromName(roomId));
+    const roomInfo = await roomStub.initTournamentRoom({
+      roomId,
+      roomCode,
+      ruleProfileId: tournament.ruleProfileId,
+      calledShotsEnabled: tournament.calledShotsEnabled,
+      tournament: tourneyContext,
+      createdAtMs: now,
+      expiresAtMs,
+      player1: {
+        sessionId: p1SessionId,
+        playerId: p1Id,
+        reconnectToken: p1Reconnect,
+        displayName: match.player1Name ?? p1Sess?.display_name ?? 'Player 1',
+        avatarId: sanitizeAvatarId(match.player1Avatar ?? p1Sess?.avatar_id),
+        equippedCosmetics: p1Cosmetics,
+        latencyMs: p1Sess?.latency_ms ?? 35,
+      },
+      player2: {
+        sessionId: p2SessionId,
+        playerId: p2Id,
+        reconnectToken: p2Reconnect,
+        displayName: match.player2Name ?? p2Sess?.display_name ?? 'Player 2',
+        avatarId: sanitizeAvatarId(match.player2Avatar ?? p2Sess?.avatar_id),
+        equippedCosmetics: p2Cosmetics,
+        latencyMs: p2Sess?.latency_ms ?? 35,
+      },
+    });
+
+    await svc.attachRoomToMatch({
+      tournamentId: tournament.tournamentId,
+      bracketMatchId: match.bracketMatchId,
+      roomId,
+      roomCode,
+      readyDeadlineMs: match.readyDeadlineMs ?? undefined,
+    });
+
+    const updatedMatch: TournamentMatch = {
+      ...match,
+      roomId,
+      roomCode,
+    };
+    return { match: updatedMatch, room: roomInfo };
+  }
+
+  private async notifyReadyTournamentMatches(
+    tournament: TournamentRecord,
+    readyMatches: TournamentMatch[],
+  ): Promise<TournamentMatch[]> {
+    const out: TournamentMatch[] = [];
+    for (const m of readyMatches) {
+      if (!m.player1Id || !m.player2Id) continue;
+      try {
+        const provisioned = await this.ensureMatchRoomProvisioned(tournament, m);
+        out.push(provisioned.match);
+        const msg: ServerToClientMessage = {
+          type: 'tournament:match_ready',
+          tournamentId: tournament.tournamentId,
+          tournamentTitle: tournament.title,
+          match: provisioned.match,
+          room: provisioned.room,
+        };
+        this.sendToPlayer(m.player1Id, msg);
+        this.sendToPlayer(m.player2Id, msg);
+      } catch {
+        out.push(m);
+      }
+    }
+    return out;
+  }
+
+  private async closeRoomFromTournament(roomId: string, reason: string): Promise<void> {
+    this.ctx.storage.sql.exec('DELETE FROM rooms WHERE room_id = ?', roomId);
+    this.ctx.storage.sql.exec(
+      'UPDATE sessions SET active_room_id = NULL WHERE active_room_id = ?',
+      roomId,
+    );
+    try {
+      const roomStub = this.env.POOL_ROOM.get(this.env.POOL_ROOM.idFromName(roomId));
+      await roomStub.forceCloseTournamentRoom(reason);
+    } catch {
+      // Room already inactive
+    }
+  }
+
+  private async broadcastTournamentState(
+    tournamentId: string,
+    overrideMatches?: TournamentMatch[],
+  ): Promise<void> {
+    const detail = await this.getTournamentService().getTournamentDetail(tournamentId, {
+      isAdmin: true,
+    });
+    if (!detail) return;
+    const participantIds = new Set(detail.participants.map((p) => p.playerId));
+    const matches =
+      overrideMatches && overrideMatches.length > 0 && detail.matches.length === 0
+        ? overrideMatches
+        : detail.matches;
+
+    const updatedEncoded = JSON.stringify({
+      type: 'tournament:updated',
+      tournament: detail.tournament,
+      matches,
+    } satisfies ServerToClientMessage);
+    const completedEncoded =
+      detail.tournament.status === 'completed'
+        ? JSON.stringify({
+            type: 'tournament:completed',
+            tournament: detail.tournament,
+          } satisfies ServerToClientMessage)
+        : null;
+
+    for (const ws of this.ctx.getWebSockets()) {
+      const att = this.getAttachment(ws);
+      const isSubscriber = att.subscribedTournamentId === tournamentId;
+      const isParticipant = Boolean(att.playerId && participantIds.has(att.playerId));
+      if (!isSubscriber && !isParticipant) continue;
+      try {
+        ws.send(updatedEncoded);
+        if (completedEncoded) {
+          ws.send(completedEncoded);
+        }
+      } catch {
+        // Ignore closed socket
+      }
+    }
+  }
+
+  private async processTournamentTimersInternal(targetTournamentId?: string) {
+    const svc = this.getTournamentService();
+    const res = await svc.processDueTimers(Date.now(), targetTournamentId);
+
+    for (const st of res.startedTournaments) {
+      if (st.readyMatches.length > 0) {
+        await this.notifyReadyTournamentMatches(st.tournament, st.readyMatches);
+      }
+      await this.broadcastTournamentState(st.tournament.tournamentId);
+    }
+
+    for (const rm of res.resolvedMatches) {
+      if (rm.roomIdToClose) {
+        await this.closeRoomFromTournament(
+          rm.roomIdToClose,
+          rm.resolvedMatch.reason ?? 'Tournament match closed.',
+        );
+      }
+      const detail = await svc.getTournamentDetail(rm.tournamentId, { isAdmin: true });
+      if (detail && rm.newlyReadyMatches.length > 0) {
+        await this.notifyReadyTournamentMatches(detail.tournament, rm.newlyReadyMatches);
+      }
+      await this.broadcastTournamentState(rm.tournamentId);
+    }
+
+    return res;
   }
 
   // ===== Internal Social Handlers (shared between WS & REST) =====
@@ -2256,12 +2998,18 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
   }
 
   private bindSocketToSession(ws: WebSocket, sessionId: string, playerId: string): void {
+    let preservedSubscription: string | null = null;
+    const prevSelf = this.getAttachment(ws);
+    if (prevSelf.subscribedTournamentId) {
+      preservedSubscription = prevSelf.subscribedTournamentId;
+    }
     for (const existing of this.ctx.getWebSockets()) {
       if (existing === ws) continue;
       const att = this.getAttachment(existing);
       if (att.sessionId === sessionId) {
         att.sessionId = null;
         att.playerId = null;
+        att.subscribedTournamentId = null;
         existing.serializeAttachment(att);
         try {
           existing.close(4001, 'Replaced by resumed session');
@@ -2270,7 +3018,11 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
         }
       }
     }
-    ws.serializeAttachment({ sessionId, playerId } satisfies LobbySocketAttachment);
+    ws.serializeAttachment({
+      sessionId,
+      playerId,
+      subscribedTournamentId: preservedSubscription,
+    } satisfies LobbySocketAttachment);
   }
 
   private findSocketBySession(sessionId: string): WebSocket | null {
@@ -2557,6 +3309,15 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
       // Ignore if social schema not yet ready
     }
 
+    try {
+      const tourneyDue = await this.getTournamentService().getEarliestDueTimestampMs();
+      if (tourneyDue !== null) {
+        candidates.push(Math.max(now + 250, tourneyDue));
+      }
+    } catch {
+      // Ignore if tournament schema not yet ready
+    }
+
     if (candidates.length === 0) {
       await this.ctx.storage.deleteAlarm();
       return;
@@ -2610,7 +3371,13 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
 
   private getAttachment(ws: WebSocket): LobbySocketAttachment {
     const raw = ws.deserializeAttachment() as LobbySocketAttachment | null;
-    return raw ? { sessionId: raw.sessionId ?? null, playerId: raw.playerId ?? null } : { sessionId: null, playerId: null };
+    return raw
+      ? {
+          sessionId: raw.sessionId ?? null,
+          playerId: raw.playerId ?? null,
+          subscribedTournamentId: raw.subscribedTournamentId ?? null,
+        }
+      : { sessionId: null, playerId: null, subscribedTournamentId: null };
   }
 
   private sendSocket(ws: WebSocket, msg: ServerToClientMessage): void {

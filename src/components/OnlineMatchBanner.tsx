@@ -1,4 +1,4 @@
-import { LogOut, RefreshCw, Wifi, WifiOff } from 'lucide-react';
+import { Crown, LogOut, RefreshCw, Wifi, WifiOff } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { multiplayerManager } from '../multiplayer/MultiplayerManager';
 import { getAvatarVisualMeta } from '../multiplayer/shared/economy';
@@ -47,6 +47,14 @@ export function OnlineMatchBanner() {
 
   return (
     <div className="pointer-events-none fixed left-2.5 sm:left-4 top-[54px] sm:top-[58px] z-10 flex flex-col items-start gap-1.5 max-w-[92vw]">
+      {onlineRoom?.tournament && (
+        <div className="pointer-events-auto inline-flex items-center gap-1.5 rounded-lg border border-amber-400/40 bg-[#141109]/92 px-2.5 py-1 text-[10px] font-extrabold uppercase tracking-wider text-amber-200 shadow-md">
+          <Crown className="h-3 w-3 text-amber-400 shrink-0" />
+          <span className="truncate max-w-[200px]">{onlineRoom.tournament.tournamentTitle}</span>
+          <span className="text-amber-500">·</span>
+          <span className="text-amber-300 shrink-0">{onlineRoom.tournament.roundLabel}</span>
+        </div>
+      )}
       <div className="pointer-events-auto inline-flex items-center gap-2 rounded-lg border border-white/12 bg-[#0b1017]/88 px-2.5 py-1 shadow-md">
         {opponentProfile && (
           <div className="flex items-center gap-1.5">

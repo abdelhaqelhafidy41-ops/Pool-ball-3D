@@ -1,6 +1,7 @@
 import {
   Check,
   Copy,
+  Crown,
   Globe,
   History,
   KeyRound,
@@ -51,6 +52,7 @@ export function OnlineLobbyUI() {
   const ownProfile = useGameStore((s) => s.ownProfile);
   const openProgressionModal = useGameStore((s) => s.openProgressionModal);
   const openSocialModal = useGameStore((s) => s.openSocialModal);
+  const openTournamentModal = useGameStore((s) => s.openTournamentModal);
   const friends = useGameStore((s) => s.friends);
   const incomingRequests = useGameStore((s) => s.incomingRequests);
   const incomingInvitations = useGameStore((s) => s.incomingInvitations);
@@ -202,6 +204,18 @@ export function OnlineLobbyUI() {
               type="button"
               onClick={() => {
                 soundEngine.playUiClick();
+                closeOnlineLobby();
+                openTournamentModal('discover');
+              }}
+              className="inline-flex items-center gap-1 rounded-lg border border-amber-400/35 bg-amber-500/10 px-2.5 py-1 text-[11px] font-bold text-amber-200 hover:bg-amber-500/20 cursor-pointer whitespace-nowrap"
+            >
+              <Crown className="h-3.5 w-3.5 text-amber-400" />
+              <span className="hidden sm:inline">Tournaments</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                soundEngine.playUiClick();
                 openProgressionModal('leaderboard');
               }}
               className="inline-flex items-center gap-1 rounded-lg border border-white/12 bg-white/5 px-2.5 py-1 text-[11px] font-bold text-slate-200 hover:bg-white/10 cursor-pointer whitespace-nowrap"
@@ -325,33 +339,43 @@ export function OnlineLobbyUI() {
             <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-amber-400/35 bg-amber-500/10 px-3.5 py-2.5">
               <div>
                 <div className="text-[10px] font-bold uppercase tracking-wider text-amber-300">
-                  {onlineRoom.isPrivate ? 'Private Room Code' : 'Matched Room'}
+                  {onlineRoom.tournament
+                    ? `${onlineRoom.tournament.tournamentTitle} · ${onlineRoom.tournament.roundLabel}`
+                    : onlineRoom.isPrivate
+                      ? 'Private Room Code'
+                      : 'Matched Room'}
                 </div>
-                <div className="mt-0.5 flex items-center gap-2">
-                  <span
-                    data-testid="online-room-code"
-                    className="font-mono text-xl font-black tracking-[0.22em] text-white"
-                  >
-                    {onlineRoom.roomCode}
-                  </span>
-                  <button
-                    type="button"
-                    onClick={handleCopyCode}
-                    className="inline-flex items-center gap-1 rounded-lg border border-white/15 bg-black/35 px-2 py-1 text-[11px] font-semibold text-slate-200 hover:bg-black/55 cursor-pointer"
-                  >
-                    {copiedCode ? (
-                      <>
-                        <Check className="h-3 w-3 text-emerald-400" />
-                        Copied
-                      </>
-                    ) : (
-                      <>
-                        <Copy className="h-3 w-3 text-amber-400" />
-                        Invite / Copy
-                      </>
-                    )}
-                  </button>
-                </div>
+                {onlineRoom.tournament ? (
+                  <div className="mt-0.5 text-xs font-extrabold text-white">
+                    Official Tournament Match · Auto-starts when both players confirm ready
+                  </div>
+                ) : (
+                  <div className="mt-0.5 flex items-center gap-2">
+                    <span
+                      data-testid="online-room-code"
+                      className="font-mono text-xl font-black tracking-[0.22em] text-white"
+                    >
+                      {onlineRoom.roomCode}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={handleCopyCode}
+                      className="inline-flex items-center gap-1 rounded-lg border border-white/15 bg-black/35 px-2 py-1 text-[11px] font-semibold text-slate-200 hover:bg-black/55 cursor-pointer"
+                    >
+                      {copiedCode ? (
+                        <>
+                          <Check className="h-3 w-3 text-emerald-400" />
+                          Copied
+                        </>
+                      ) : (
+                        <>
+                          <Copy className="h-3 w-3 text-amber-400" />
+                          Invite / Copy
+                        </>
+                      )}
+                    </button>
+                  </div>
+                )}
               </div>
 
               <div className="text-right">
@@ -382,17 +406,19 @@ export function OnlineLobbyUI() {
                       className="flex flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-white/15 bg-black/25 p-3.5 text-xs font-medium text-slate-400"
                     >
                       <span>Waiting for opponent to join...</span>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          soundEngine.playUiClick();
-                          openSocialModal('friends');
-                        }}
-                        className="inline-flex items-center gap-1 rounded-lg border border-amber-400/35 bg-amber-500/12 px-2.5 py-1 text-[11px] font-bold text-amber-200 hover:bg-amber-500/20 cursor-pointer"
-                      >
-                        <Swords className="h-3 w-3" />
-                        Invite Friend ({friends.length})
-                      </button>
+                      {!onlineRoom.tournament && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            soundEngine.playUiClick();
+                            openSocialModal('friends');
+                          }}
+                          className="inline-flex items-center gap-1 rounded-lg border border-amber-400/35 bg-amber-500/12 px-2.5 py-1 text-[11px] font-bold text-amber-200 hover:bg-amber-500/20 cursor-pointer"
+                        >
+                          <Swords className="h-3 w-3" />
+                          Invite Friend ({friends.length})
+                        </button>
+                      )}
                     </div>
                   );
                 }
@@ -483,7 +509,7 @@ export function OnlineLobbyUI() {
                 </button>
               )}
 
-              {isHost && (
+              {isHost && !onlineRoom.tournament && (
                 <button
                   type="button"
                   disabled={!bothReady}
@@ -498,20 +524,36 @@ export function OnlineLobbyUI() {
                 </button>
               )}
 
-              <button
-                type="button"
-                onClick={() => {
-                  soundEngine.playUiClick();
-                  if (isHost) {
-                    multiplayerManager.cancelRoom();
-                  } else {
+              {onlineRoom.tournament ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    soundEngine.playUiClick();
+                    const tid = onlineRoom.tournament!.tournamentId;
                     multiplayerManager.leaveMatchOrRoom();
-                  }
-                }}
-                className="inline-flex items-center justify-center rounded-xl border border-rose-500/35 bg-rose-500/10 px-3.5 py-2.5 text-xs font-bold text-rose-200 hover:bg-rose-500/20 transition-colors cursor-pointer whitespace-nowrap"
-              >
-                {isHost ? 'Cancel Room' : 'Leave Room'}
-              </button>
+                    closeOnlineLobby();
+                    openTournamentModal('bracket', tid);
+                  }}
+                  className="inline-flex items-center justify-center rounded-xl border border-white/15 bg-white/5 px-3.5 py-2.5 text-xs font-bold text-slate-200 hover:bg-white/10 transition-colors cursor-pointer whitespace-nowrap"
+                >
+                  Back to Bracket
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => {
+                    soundEngine.playUiClick();
+                    if (isHost) {
+                      multiplayerManager.cancelRoom();
+                    } else {
+                      multiplayerManager.leaveMatchOrRoom();
+                    }
+                  }}
+                  className="inline-flex items-center justify-center rounded-xl border border-rose-500/35 bg-rose-500/10 px-3.5 py-2.5 text-xs font-bold text-rose-200 hover:bg-rose-500/20 transition-colors cursor-pointer whitespace-nowrap"
+                >
+                  {isHost ? 'Cancel Room' : 'Leave Room'}
+                </button>
+              )}
             </div>
           </div>
         ) : (

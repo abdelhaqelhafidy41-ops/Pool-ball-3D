@@ -4,6 +4,7 @@ import {
   Calendar,
   Coins,
   Cpu,
+  Crown,
   Globe,
   History,
   KeyRound,
@@ -67,6 +68,7 @@ export function MainMenu({ onStartMatch, onToggleFullscreen }: MainMenuProps) {
   const equippedCosmetics = useGameStore((s) => s.equippedCosmetics);
   const dailyReward = useGameStore((s) => s.dailyReward);
   const openStoreModal = useGameStore((s) => s.openStoreModal);
+  const openTournamentModal = useGameStore((s) => s.openTournamentModal);
 
   useEffect(() => {
     if (screen === 'menu' && !ownProfile) {
@@ -575,6 +577,27 @@ export function MainMenu({ onStartMatch, onToggleFullscreen }: MainMenuProps) {
                       <span>{dailyReward?.canClaim ? 'Claim Daily' : 'Daily'}</span>
                     </button>
                   </div>
+
+                  {/* Global Tournaments & Championships */}
+                  <button
+                    type="button"
+                    data-testid="open-tournaments-btn"
+                    onClick={() => {
+                      soundEngine.unlock();
+                      soundEngine.playUiClick();
+                      multiplayerManager.ensureConnected();
+                      openTournamentModal('discover');
+                    }}
+                    className="mt-1.5 flex w-full items-center justify-between gap-2 rounded-lg border border-amber-400/45 bg-amber-500/15 px-2.5 py-1.5 text-[11px] font-extrabold text-amber-100 hover:bg-amber-500/25 transition-colors cursor-pointer whitespace-nowrap"
+                  >
+                    <span className="inline-flex items-center gap-1.5">
+                      <Crown className="h-3.5 w-3.5 text-amber-400 shrink-0" />
+                      <span>Global Tournaments & Brackets</span>
+                    </span>
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-amber-300">
+                      Compete
+                    </span>
+                  </button>
                 </div>
               );
             })()}

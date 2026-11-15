@@ -25,6 +25,7 @@ import type {
   RoomChatMessageRecord,
   SocialOverviewPayload,
 } from './social';
+import type { TournamentMatch, TournamentRecord } from './tournaments';
 
 export type ConnectionState = 'disconnected' | 'connecting' | 'connected' | 'reconnecting';
 export type OpponentConnectionState = 'connected' | 'disconnected' | 'reconnected';
@@ -86,6 +87,15 @@ export type OnlineRoomStatus =
   | 'cancelled'
   | 'expired';
 
+export interface OnlineRoomTournamentContext {
+  tournamentId: string;
+  tournamentTitle: string;
+  bracketMatchId: string;
+  roundNumber: number;
+  roundLabel: string;
+  readyDeadlineMs: number | null;
+}
+
 export interface OnlineRoomInfo {
   roomId: string;
   roomCode: string;
@@ -97,6 +107,7 @@ export interface OnlineRoomInfo {
   players: OnlinePlayerProfile[];
   createdAtMs: number;
   expiresAtMs: number;
+  tournament?: OnlineRoomTournamentContext | null;
 }
 
 export interface OnlineBallFrame {
@@ -196,7 +207,11 @@ export type MultiplayerErrorCode =
   | 'SELF_ACTION_FORBIDDEN'
   | 'ALREADY_FRIENDS'
   | 'DUPLICATE_REQUEST'
-  | 'MESSAGE_TOO_LONG';
+  | 'MESSAGE_TOO_LONG'
+  | 'TOURNAMENT_FULL'
+  | 'ALREADY_REGISTERED'
+  | 'TOURNAMENT_CLOSED'
+  | 'MATCH_LOCKED';
 
 export type ClientToServerMessage =
   | {
@@ -354,6 +369,19 @@ export type ClientToServerMessage =
       type: 'chat:room_send';
       body: string;
       clientMessageId?: string;
+    }
+  | {
+      type: 'tournament:subscribe';
+      tournamentId: string;
+    }
+  | {
+      type: 'tournament:unsubscribe';
+      tournamentId?: string;
+    }
+  | {
+      type: 'tournament:join_match';
+      tournamentId: string;
+      bracketMatchId: string;
     };
 
 export type ServerToClientMessage =
@@ -543,4 +571,20 @@ export type ServerToClientMessage =
       roomId: string;
       message: RoomChatMessageRecord;
       clientMessageId?: string;
+    }
+  | {
+      type: 'tournament:updated';
+      tournament: TournamentRecord;
+      matches?: TournamentMatch[];
+    }
+  | {
+      type: 'tournament:match_ready';
+      tournamentId: string;
+      tournamentTitle: string;
+      match: TournamentMatch;
+      room?: OnlineRoomInfo;
+    }
+  | {
+      type: 'tournament:completed';
+      tournament: TournamentRecord;
     };

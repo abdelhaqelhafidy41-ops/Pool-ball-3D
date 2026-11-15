@@ -418,6 +418,14 @@ export class EconomyService {
     if (!item) {
       return { ok: false, status: 404, code: 'ITEM_NOT_FOUND', message: 'Store item not found.' };
     }
+    if (item.isRewardExclusive) {
+      return {
+        ok: false,
+        status: 403,
+        code: 'REWARD_EXCLUSIVE',
+        message: 'This cosmetic is exclusively unlocked via tournament rewards.',
+      };
+    }
     if (item.isStarter || item.price <= 0) {
       return {
         ok: false,
@@ -1010,6 +1018,228 @@ export class EconomyService {
         .bind(params.playerId)
         .first<WalletDbRow>())!;
       return { coinsAwarded: amount, wallet: this.mapWalletSummary(updated) };
+    });
+  }
+
+  public async awardCustomTournamentCoins(params: {
+    tournamentId: string;
+    tournamentTitle?: string;
+    playerId: string;
+    placement: 'champion' | 'runner_up' | 'third_place' | 'participant';
+    amount: number;
+    awardedAtMs?: number;
+  }): Promise<{ coinsAwarded: number; alreadyAwarded: boolean; wallet: WalletSummary }> {
+    const now = params.awardedAtMs ?? Date.now();
+    const amount = Math.max(0, Math.floor(params.amount));
+    return this.withPlayerLock(params.playerId, async () => {
+      const db = await this.ensureSchema();
+      const walletRow = await this.ensurePlayerInitialized(db, params.playerId, now);
+      if (amount <= 0) {
+        return { coinsAwarded: 0, alreadyAwarded: false, wallet: this.mapWalletSummary(walletRow) };
+      }
+      const nextBalance = Number(walletRow.balance) + amount;
+      const idempotencyKey = `tournament:${params.tournamentId}:${params.playerId}:${params.placement}`;
+      const tx = await db
+        .prepare(
+          `INSERT OR IGNORE INTO coin_transactions (
+            tx_id, player_id, amount, balance_after, reason, reference_type, reference_id, idempotency_key, metadata_json, created_at_ms
+          ) VALUES (?, ?, ?, ?, 'tournament_reward', 'tournament', ?, ?, ?, ?)`,
+        )
+        .bind(
+          generateTxId(),
+          params.playerId,
+          amount,
+          nextBalance,
+          params.tournamentId,
+          idempotencyKey,
+          JSON.stringify({
+            label: `${params.tournamentTitle ?? 'Tournament'} (${params.placement.replace('_', ' ')})`,
+            placement: params.placement,
+            tournamentId: params.tournamentId,
+          }),
+          now,
+        )
+        .run();
+
+      if ((tx.meta?.changes ?? 0) === 0) {
+        return { coinsAwarded: 0, alreadyAwarded: true, wallet: this.mapWalletSummary(walletRow) };
+      }
+
+      await db
+        .prepare(
+          `UPDATE player_wallets
+           SET balance = balance + ?, total_earned = total_earned + ?, updated_at_ms = ?
+           WHERE player_id = ?`,
+        )
+        .bind(amount, amount, now, params.playerId)
+        .run();
+
+      const updated = (await db
+        .prepare('SELECT * FROM player_wallets WHERE player_id = ? LIMIT 1')
+        .bind(params.playerId)
+        .first<WalletDbRow>())!;
+      return { coinsAwarded: amount, alreadyAwarded: false, wallet: this.mapWalletSummary(updated) };
+    });
+  }
+
+  public async debitTournamentEntryFee(params: {
+    tournamentId: string;
+    tournamentTitle: string;
+    playerId: string;
+    amount: number;
+    nowMs?: number;
+  }): Promise<{ ok: true; wallet: WalletSummary } | EconomyServiceError> {
+    const now = params.nowMs ?? Date.now();
+    const fee = Math.max(0, Math.floor(params.amount));
+    return this.withPlayerLock(params.playerId, async () => {
+      const db = await this.ensureSchema();
+      const walletRow = await this.ensurePlayerInitialized(db, params.playerId, now);
+      if (fee <= 0) {
+        return { ok: true, wallet: this.mapWalletSummary(walletRow) };
+      }
+
+      const idempotencyKey = `tournament_entry:${params.tournamentId}:${params.playerId}`;
+      const existingTx = await db
+        .prepare('SELECT tx_id FROM coin_transactions WHERE idempotency_key = ? LIMIT 1')
+        .bind(idempotencyKey)
+        .first<{ tx_id: string }>();
+      if (existingTx) {
+        return { ok: true, wallet: this.mapWalletSummary(walletRow) };
+      }
+
+      const debit = await db
+        .prepare(
+          `UPDATE player_wallets
+           SET balance = balance - ?, total_spent = total_spent + ?, updated_at_ms = ?
+           WHERE player_id = ? AND balance >= ?`,
+        )
+        .bind(fee, fee, now, params.playerId, fee)
+        .run();
+
+      if ((debit.meta?.changes ?? 0) === 0) {
+        return {
+          ok: false,
+          status: 402,
+          code: 'INSUFFICIENT_FUNDS',
+          message: `You need ${fee} POOL COINS to enter ${params.tournamentTitle}.`,
+        };
+      }
+
+      const updated = (await db
+        .prepare('SELECT * FROM player_wallets WHERE player_id = ? LIMIT 1')
+        .bind(params.playerId)
+        .first<WalletDbRow>())!;
+
+      await db
+        .prepare(
+          `INSERT OR IGNORE INTO coin_transactions (
+            tx_id, player_id, amount, balance_after, reason, reference_type, reference_id, idempotency_key, metadata_json, created_at_ms
+          ) VALUES (?, ?, ?, ?, 'tournament_entry', 'tournament', ?, ?, ?, ?)`,
+        )
+        .bind(
+          generateTxId(),
+          params.playerId,
+          -fee,
+          Number(updated.balance),
+          params.tournamentId,
+          idempotencyKey,
+          JSON.stringify({ label: `Entry Fee: ${params.tournamentTitle}`, tournamentId: params.tournamentId }),
+          now,
+        )
+        .run();
+
+      return { ok: true, wallet: this.mapWalletSummary(updated) };
+    });
+  }
+
+  public async refundTournamentEntryFee(params: {
+    tournamentId: string;
+    tournamentTitle: string;
+    playerId: string;
+    amount: number;
+    reasonLabel?: string;
+    nowMs?: number;
+  }): Promise<{ refunded: number; wallet: WalletSummary }> {
+    const now = params.nowMs ?? Date.now();
+    const fee = Math.max(0, Math.floor(params.amount));
+    return this.withPlayerLock(params.playerId, async () => {
+      const db = await this.ensureSchema();
+      const walletRow = await this.ensurePlayerInitialized(db, params.playerId, now);
+      if (fee <= 0) {
+        return { refunded: 0, wallet: this.mapWalletSummary(walletRow) };
+      }
+      const entryKey = `tournament_entry:${params.tournamentId}:${params.playerId}`;
+      const hadEntryTx = await db
+        .prepare('SELECT tx_id FROM coin_transactions WHERE idempotency_key = ? LIMIT 1')
+        .bind(entryKey)
+        .first<{ tx_id: string }>();
+      if (!hadEntryTx) {
+        return { refunded: 0, wallet: this.mapWalletSummary(walletRow) };
+      }
+
+      const refundKey = `tournament_refund:${params.tournamentId}:${params.playerId}`;
+      const nextBalance = Number(walletRow.balance) + fee;
+      const tx = await db
+        .prepare(
+          `INSERT OR IGNORE INTO coin_transactions (
+            tx_id, player_id, amount, balance_after, reason, reference_type, reference_id, idempotency_key, metadata_json, created_at_ms
+          ) VALUES (?, ?, ?, ?, 'tournament_refund', 'tournament', ?, ?, ?, ?)`,
+        )
+        .bind(
+          generateTxId(),
+          params.playerId,
+          fee,
+          nextBalance,
+          params.tournamentId,
+          refundKey,
+          JSON.stringify({
+            label: params.reasonLabel ?? `Entry Refund: ${params.tournamentTitle}`,
+            tournamentId: params.tournamentId,
+          }),
+          now,
+        )
+        .run();
+
+      if ((tx.meta?.changes ?? 0) === 0) {
+        return { refunded: 0, wallet: this.mapWalletSummary(walletRow) };
+      }
+
+      await db
+        .prepare(
+          `UPDATE player_wallets
+           SET balance = balance + ?, total_spent = MAX(0, total_spent - ?), updated_at_ms = ?
+           WHERE player_id = ?`,
+        )
+        .bind(fee, fee, now, params.playerId)
+        .run();
+
+      const updated = (await db
+        .prepare('SELECT * FROM player_wallets WHERE player_id = ? LIMIT 1')
+        .bind(params.playerId)
+        .first<WalletDbRow>())!;
+      return { refunded: fee, wallet: this.mapWalletSummary(updated) };
+    });
+  }
+
+  public async grantExclusiveCosmetic(
+    playerId: string,
+    itemId: string,
+    source = 'tournament_reward',
+    nowMs: number = Date.now(),
+  ): Promise<boolean> {
+    const item = COSMETIC_CATALOG_MAP.get(itemId);
+    if (!item) return false;
+    return this.withPlayerLock(playerId, async () => {
+      const db = await this.ensureSchema();
+      await this.ensurePlayerInitialized(db, playerId, nowMs);
+      const res = await db
+        .prepare(
+          `INSERT OR IGNORE INTO player_inventory (player_id, item_id, acquired_at_ms, source)
+           VALUES (?, ?, ?, ?)`,
+        )
+        .bind(playerId, itemId, nowMs, source)
+        .run();
+      return (res.meta?.changes ?? 0) > 0;
     });
   }
 }

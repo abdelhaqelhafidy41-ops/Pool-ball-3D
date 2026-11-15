@@ -16,6 +16,7 @@ export interface Env {
   MAX_LATENCY_SPREAD_MS?: string;
   PRESENCE_TTL_MS?: string;
   INVITE_TTL_MS?: string;
+  TOURNAMENT_ADMIN_SECRET?: string;
 }
 
 export interface WorkerRuntimeConfig {
@@ -116,7 +117,7 @@ export function buildCorsHeaders(
 
   const headers: Record<string, string> = {
     'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type,Authorization',
+    'Access-Control-Allow-Headers': 'Content-Type,Authorization,X-Admin-Key',
   };
 
   if (allowAll) {
@@ -187,4 +188,39 @@ export function constantTimeEqual(a: string, b: string): boolean {
     diff |= ab[i] ^ bb[i];
   }
   return diff === 0;
+}
+
+export function extractAdminSecretHeader(request: Request): string {
+  const direct = request.headers.get('X-Admin-Key')?.trim();
+  if (direct) return direct;
+  const auth = request.headers.get('Authorization') ?? '';
+  if (auth.toLowerCase().startsWith('admin ')) {
+    return auth.slice(6).trim();
+  }
+  return '';
+}
+
+export function verifyTournamentAdmin(
+  request: Request,
+  env: Env,
+): { ok: true } | { ok: false; status: number; code: string; message: string } {
+  const configured = env.TOURNAMENT_ADMIN_SECRET?.trim() ?? '';
+  if (!configured) {
+    return {
+      ok: false,
+      status: 503,
+      code: 'ADMIN_NOT_CONFIGURED',
+      message: 'Tournament admin secret is not configured on this server.',
+    };
+  }
+  const provided = extractAdminSecretHeader(request);
+  if (!provided || !constantTimeEqual(provided, configured)) {
+    return {
+      ok: false,
+      status: 403,
+      code: 'FORBIDDEN',
+      message: 'Valid tournament administrator credentials are required.',
+    };
+  }
+  return { ok: true };
 }

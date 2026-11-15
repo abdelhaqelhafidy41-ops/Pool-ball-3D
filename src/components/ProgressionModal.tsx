@@ -1054,7 +1054,31 @@ export function ProgressionModal() {
               </div>
 
               {ownProfile ? (
-                <ProfileDetailsView profile={ownProfile} isOwn />
+                <>
+                  <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-amber-400/30 bg-amber-500/8 px-3.5 py-2.5">
+                    <div className="text-xs">
+                      <span className="font-extrabold text-amber-200">
+                        Global Tournaments & Trophy Case
+                      </span>
+                      <span className="ml-2 text-slate-300">
+                        View your championship wins, brackets & seasonal standings
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        soundEngine.playUiClick();
+                        closeProgressionModal();
+                        useGameStore.getState().openTournamentModal('career');
+                      }}
+                      className="inline-flex items-center gap-1.5 rounded-lg bg-amber-500 px-3 py-1 text-[11px] font-extrabold text-slate-950 hover:bg-amber-400 cursor-pointer whitespace-nowrap"
+                    >
+                      <Crown className="h-3.5 w-3.5" />
+                      Tournament Career
+                    </button>
+                  </div>
+                  <ProfileDetailsView profile={ownProfile} isOwn />
+                </>
               ) : sessionError ? (
                 <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 py-6 px-4 text-center text-xs text-rose-200 space-y-2">
                   <div>{sessionError}</div>
@@ -1427,7 +1451,11 @@ export function ProgressionModal() {
                           {' · '}
                           {m.ruleProfileId === 'wpa' ? 'Strict WPA' : 'Casual'}
                           {' · '}
-                          {m.matchType === 'private' ? 'Private' : 'Quick'}
+                          {m.matchType === 'tournament'
+                            ? 'Tournament'
+                            : m.matchType === 'private'
+                              ? 'Private'
+                              : 'Quick'}
                           {' · '}
                           {m.reason}
                         </div>

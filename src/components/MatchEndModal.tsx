@@ -1,4 +1,4 @@
-import { Award, Coins, Film, Globe, Home, RotateCcw, ShoppingBag, Trophy } from 'lucide-react';
+import { Award, Coins, Crown, Film, Globe, Home, RotateCcw, ShoppingBag, Trophy } from 'lucide-react';
 import { useEffect, useRef } from 'react';
 import { computeAverageBallsPerTurn } from '../game/rules/MatchStatistics';
 import { soundEngine } from '../game/utils/SoundEngine';
@@ -24,8 +24,10 @@ export function MatchEndModal({ onPlayAgain, onMainMenu, onWatchReplay }: MatchE
   const pocketedNumbers = useGameStore((s) => s.pocketedNumbers);
   const matchStats = useGameStore((s) => s.matchStats);
   const onlineLocalRole = useGameStore((s) => s.onlineLocalRole);
+  const onlineRoom = useGameStore((s) => s.onlineRoom);
   const onlineRematchVotes = useGameStore((s) => s.onlineRematchVotes);
   const openOnlineLobby = useGameStore((s) => s.openOnlineLobby);
+  const openTournamentModal = useGameStore((s) => s.openTournamentModal);
   const lastOnlineMatchProgression = useGameStore((s) => s.lastOnlineMatchProgression);
   const openProgressionModal = useGameStore((s) => s.openProgressionModal);
   const aiMatchClientId = useGameStore((s) => s.aiMatchClientId);
@@ -94,7 +96,11 @@ export function MatchEndModal({ onPlayAgain, onMainMenu, onWatchReplay }: MatchE
           </div>
 
           <p className="mt-3 text-[11px] font-bold uppercase tracking-[0.2em] text-amber-400">
-            {isOnline ? 'Online Match Complete' : 'Match Complete'}
+            {onlineRoom?.tournament
+              ? `${onlineRoom.tournament.tournamentTitle} · ${onlineRoom.tournament.roundLabel}`
+              : isOnline
+                ? 'Online Match Complete'
+                : 'Match Complete'}
           </p>
           <h2 className="mt-1 text-2xl font-extrabold tracking-tight text-white">
             {winnerName} Wins!
@@ -310,22 +316,38 @@ export function MatchEndModal({ onPlayAgain, onMainMenu, onWatchReplay }: MatchE
 
         {isOnline ? (
           <div className="mt-3 space-y-2.5">
-            <button
-              type="button"
-              disabled={hasVotedRematch}
-              onClick={() => {
-                soundEngine.playUiClick();
-                multiplayerManager.requestRematch();
-              }}
-              className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-amber-500 px-4 py-2.5 text-xs font-extrabold uppercase tracking-wider text-slate-950 hover:bg-amber-400 disabled:opacity-60 transition-colors cursor-pointer whitespace-nowrap"
-            >
-              <RotateCcw className="h-4 w-4" />
-              {hasVotedRematch
-                ? 'Waiting for Opponent (1/2)'
-                : opponentVotedRematch
-                  ? 'Accept Rematch (1/2)'
-                  : 'Rematch'}
-            </button>
+            {onlineRoom?.tournament ? (
+              <button
+                type="button"
+                onClick={() => {
+                  soundEngine.playUiClick();
+                  const tid = onlineRoom.tournament!.tournamentId;
+                  multiplayerManager.leaveMatchOrRoom();
+                  openTournamentModal('bracket', tid);
+                }}
+                className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-amber-500 px-4 py-2.5 text-xs font-extrabold uppercase tracking-wider text-slate-950 hover:bg-amber-400 transition-colors cursor-pointer whitespace-nowrap"
+              >
+                <Crown className="h-4 w-4" />
+                View Tournament Bracket
+              </button>
+            ) : (
+              <button
+                type="button"
+                disabled={hasVotedRematch}
+                onClick={() => {
+                  soundEngine.playUiClick();
+                  multiplayerManager.requestRematch();
+                }}
+                className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-amber-500 px-4 py-2.5 text-xs font-extrabold uppercase tracking-wider text-slate-950 hover:bg-amber-400 disabled:opacity-60 transition-colors cursor-pointer whitespace-nowrap"
+              >
+                <RotateCcw className="h-4 w-4" />
+                {hasVotedRematch
+                  ? 'Waiting for Opponent (1/2)'
+                  : opponentVotedRematch
+                    ? 'Accept Rematch (1/2)'
+                    : 'Rematch'}
+              </button>
+            )}
 
             <div className="flex items-center gap-2.5">
               <button

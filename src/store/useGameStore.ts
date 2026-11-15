@@ -52,6 +52,13 @@ import {
   type EquippedCosmetics,
   type WalletSummary,
 } from '../multiplayer/shared/economy';
+import type {
+  PlayerTournamentStats,
+  TournamentDetailPayload,
+  TournamentLeaderboardEntry,
+  TournamentMatch,
+  TournamentRecord,
+} from '../multiplayer/shared/tournaments';
 
 const PROFILE_STORAGE_KEY = 'ultimate_pool_3d_online_profile_v1';
 const COSMETICS_STORAGE_KEY = 'ultimate_pool_3d_cosmetics_v1';
@@ -145,6 +152,14 @@ export type ProgressionTab = 'profile' | 'leaderboard' | 'achievements' | 'histo
 export type SocialTab = 'friends' | 'search' | 'requests' | 'messages' | 'blocked';
 export type StoreTab = 'store' | 'inventory' | 'daily' | 'ledger';
 export type StoreCategoryFilter = 'all' | CosmeticCategory;
+export type TournamentTab = 'discover' | 'bracket' | 'leaderboard' | 'career' | 'admin';
+
+export interface TournamentMatchAlert {
+  tournamentId: string;
+  tournamentTitle: string;
+  match: TournamentMatch;
+  receivedAtMs: number;
+}
 
 export type CanvasInteractionMode = 'smart' | 'aim';
 
@@ -291,6 +306,17 @@ export interface GameState {
   lastAiRewardClaim: AiMatchRewardResponse | null;
   storeNotice: { type: 'ok' | 'err'; text: string } | null;
 
+  // Global Tournaments & Championships (Phase 9)
+  tournamentModalOpen: boolean;
+  tournamentTab: TournamentTab;
+  tournamentsList: TournamentRecord[];
+  selectedTournamentId: string | null;
+  activeTournamentDetail: TournamentDetailPayload | null;
+  tournamentLeaderboard: TournamentLeaderboardEntry[];
+  playerTournamentStats: PlayerTournamentStats | null;
+  tournamentMatchAlert: TournamentMatchAlert | null;
+  tournamentNotice: { type: 'ok' | 'err'; text: string } | null;
+
   // Actions
   setScreen: (screen: GameScreen) => void;
   setSettingsOpen: (open: boolean) => void;
@@ -417,6 +443,23 @@ export interface GameState {
   setCoinTransactions: (transactions: CoinTransactionRecord[]) => void;
   setLastAiRewardClaim: (claim: AiMatchRewardResponse | null) => void;
   setStoreNotice: (notice: { type: 'ok' | 'err'; text: string } | null) => void;
+
+  // Tournament Actions (Phase 9)
+  openTournamentModal: (tab?: TournamentTab, tournamentId?: string | null) => void;
+  closeTournamentModal: () => void;
+  setTournamentTab: (tab: TournamentTab) => void;
+  setTournamentsList: (tournaments: TournamentRecord[]) => void;
+  setSelectedTournamentId: (tournamentId: string | null) => void;
+  setActiveTournamentDetail: (detail: TournamentDetailPayload | null) => void;
+  setTournamentLeaderboard: (entries: TournamentLeaderboardEntry[]) => void;
+  setPlayerTournamentStats: (stats: PlayerTournamentStats | null) => void;
+  setTournamentMatchAlert: (alert: TournamentMatchAlert | null) => void;
+  setTournamentNotice: (notice: { type: 'ok' | 'err'; text: string } | null) => void;
+  applyTournamentLiveUpdate: (
+    tournament: TournamentRecord,
+    matches?: TournamentMatch[],
+  ) => void;
+  applyTournamentCompleted: (tournament: TournamentRecord) => void;
 }
 
 export function canLocalPlayerAct(state: GameState): boolean {
@@ -577,6 +620,16 @@ export const useGameStore = create<GameState>((set) => ({
   aiMatchStartedAtMs: Date.now(),
   lastAiRewardClaim: null,
   storeNotice: null,
+
+  tournamentModalOpen: false,
+  tournamentTab: 'discover',
+  tournamentsList: [],
+  selectedTournamentId: null,
+  activeTournamentDetail: null,
+  tournamentLeaderboard: [],
+  playerTournamentStats: null,
+  tournamentMatchAlert: null,
+  tournamentNotice: null,
 
   setScreen: (screen) => set({ screen }),
   setSettingsOpen: (settingsOpen) => set({ settingsOpen }),
@@ -1112,4 +1165,122 @@ export const useGameStore = create<GameState>((set) => ({
   setCoinTransactions: (coinTransactions) => set({ coinTransactions }),
   setLastAiRewardClaim: (lastAiRewardClaim) => set({ lastAiRewardClaim }),
   setStoreNotice: (storeNotice) => set({ storeNotice }),
+
+  openTournamentModal: (tab, tournamentId) =>
+    set((state) => ({
+      tournamentModalOpen: true,
+      tournamentTab: tab ?? state.tournamentTab,
+      selectedTournamentId:
+        tournamentId !== undefined ? tournamentId : state.selectedTournamentId,
+      tournamentNotice: null,
+    })),
+  closeTournamentModal: () =>
+    set({
+      tournamentModalOpen: false,
+      tournamentNotice: null,
+    }),
+  setTournamentTab: (tournamentTab) => set({ tournamentTab, tournamentNotice: null }),
+  setTournamentsList: (tournamentsList) => set({ tournamentsList }),
+  setSelectedTournamentId: (selectedTournamentId) => set({ selectedTournamentId }),
+  setActiveTournamentDetail: (activeTournamentDetail) =>
+    set((state) => {
+      if (!activeTournamentDetail) return { activeTournamentDetail: null };
+      const idx = state.tournamentsList.findIndex(
+        (t) => t.tournamentId === activeTournamentDetail.tournament.tournamentId,
+      );
+      const nextList =
+        idx >= 0
+          ? state.tournamentsList.map((t, i) =>
+              i === idx ? activeTournamentDetail.tournament : t,
+            )
+          : [activeTournamentDetail.tournament, ...state.tournamentsList];
+      return {
+        activeTournamentDetail,
+        selectedTournamentId: activeTournamentDetail.tournament.tournamentId,
+        tournamentsList: nextList,
+      };
+    }),
+  setTournamentLeaderboard: (tournamentLeaderboard) => set({ tournamentLeaderboard }),
+  setPlayerTournamentStats: (playerTournamentStats) => set({ playerTournamentStats }),
+  setTournamentMatchAlert: (tournamentMatchAlert) => set({ tournamentMatchAlert }),
+  setTournamentNotice: (tournamentNotice) => set({ tournamentNotice }),
+  applyTournamentLiveUpdate: (tournament, matches) =>
+    set((state) => {
+      const idx = state.tournamentsList.findIndex(
+        (t) => t.tournamentId === tournament.tournamentId,
+      );
+      const nextList =
+        idx >= 0
+          ? state.tournamentsList.map((t, i) => (i === idx ? tournament : t))
+          : [tournament, ...state.tournamentsList];
+
+      let nextDetail = state.activeTournamentDetail;
+      if (nextDetail && nextDetail.tournament.tournamentId === tournament.tournamentId) {
+        const nextMatches = matches ?? nextDetail.matches;
+        const selfId = state.ownProfile?.playerId ?? null;
+        const activeMatch =
+          selfId
+            ? (nextMatches.find(
+                (m) =>
+                  (m.status === 'ready' || m.status === 'in_progress') &&
+                  (m.player1Id === selfId || m.player2Id === selfId),
+              ) ?? null)
+            : null;
+        nextDetail = {
+          ...nextDetail,
+          tournament,
+          matches: nextMatches,
+          viewerStatus: {
+            ...nextDetail.viewerStatus,
+            activeMatch,
+          },
+        };
+      }
+
+      const nextAlert =
+        state.tournamentMatchAlert &&
+        state.tournamentMatchAlert.tournamentId === tournament.tournamentId &&
+        matches
+          ? (() => {
+              const updatedM = matches.find(
+                (m) => m.bracketMatchId === state.tournamentMatchAlert!.match.bracketMatchId,
+              );
+              if (updatedM && updatedM.status !== 'ready' && updatedM.status !== 'in_progress') {
+                return null;
+              }
+              return updatedM
+                ? { ...state.tournamentMatchAlert, match: updatedM }
+                : state.tournamentMatchAlert;
+            })()
+          : state.tournamentMatchAlert;
+
+      return {
+        tournamentsList: nextList,
+        activeTournamentDetail: nextDetail,
+        tournamentMatchAlert: nextAlert,
+      };
+    }),
+  applyTournamentCompleted: (tournament) =>
+    set((state) => {
+      const nextList = state.tournamentsList.map((t) =>
+        t.tournamentId === tournament.tournamentId ? tournament : t,
+      );
+      const nextDetail =
+        state.activeTournamentDetail &&
+        state.activeTournamentDetail.tournament.tournamentId === tournament.tournamentId
+          ? { ...state.activeTournamentDetail, tournament }
+          : state.activeTournamentDetail;
+      const championBanner = tournament.championDisplayName
+        ? `${tournament.title} completed — Champion: ${tournament.championDisplayName}!`
+        : `${tournament.title} completed.`;
+      return {
+        tournamentsList: nextList,
+        activeTournamentDetail: nextDetail,
+        tournamentMatchAlert:
+          state.tournamentMatchAlert?.tournamentId === tournament.tournamentId
+            ? null
+            : state.tournamentMatchAlert,
+        tournamentNotice: { type: 'ok', text: championBanner },
+      };
+    }),
 }));

@@ -4,6 +4,7 @@ import { useGameStore } from '../store/useGameStore';
 import { NetworkManager, resolveHttpBaseUrl } from './NetworkManager';
 import { progressionClient } from './ProgressionClient';
 import { StateSynchronizer } from './StateSynchronizer';
+import { tournamentClient } from './TournamentClient';
 import type {
   MatchHistoryRecord,
   OnlineBallFrame,
@@ -319,6 +320,61 @@ class MultiplayerManagerImpl {
     });
   }
 
+  public subscribeTournamentWs(tournamentId: string): void {
+    this.ensureConnected();
+    this.network.send({
+      type: 'tournament:subscribe',
+      tournamentId,
+    });
+  }
+
+  public unsubscribeTournamentWs(tournamentId?: string): void {
+    this.network.send({
+      type: 'tournament:unsubscribe',
+      tournamentId,
+    });
+  }
+
+  public async joinTournamentMatch(
+    tournamentId: string,
+    bracketMatchId: string,
+  ): Promise<{ ok: boolean; error?: string }> {
+    this.ensureConnected();
+    const store = useGameStore.getState();
+    const res = await tournamentClient.joinMatch(
+      tournamentId,
+      bracketMatchId,
+      store.onlineSessionId,
+    );
+    if (!res.ok || !res.data) {
+      const msg = res.error ?? 'Unable to enter tournament match room.';
+      store.setTournamentNotice({ type: 'err', text: msg });
+      store.setOnlineError({ code: res.code ?? 'INVALID_ROOM', message: msg });
+      return { ok: false, error: msg };
+    }
+
+    this.network.saveSessionCredentials(
+      res.data.roomSession.sessionId,
+      res.data.roomSession.reconnectToken,
+    );
+    store.setOnlineSessionId(res.data.roomSession.sessionId);
+    this.network.bindRoomSocket(res.data.room.roomId);
+    store.setOnlineRoom(res.data.room);
+    store.setOnlineError(null);
+    if (
+      store.tournamentMatchAlert &&
+      store.tournamentMatchAlert.match.bracketMatchId === bracketMatchId
+    ) {
+      store.setTournamentMatchAlert(null);
+    }
+    store.closeTournamentModal();
+    if (store.screen !== 'playing') {
+      store.openOnlineLobby('quick');
+    }
+    soundEngine.playUiClick();
+    return { ok: true };
+  }
+
   private resolveLocalRole(room: OnlineRoomInfo | null): PlayerId | null {
     const sid = useGameStore.getState().onlineSessionId;
     if (!room || !sid) return useGameStore.getState().onlineLocalRole;
@@ -628,6 +684,39 @@ class MultiplayerManagerImpl {
       case 'chat:room_message': {
         const selfId = store.ownProfile?.playerId ?? null;
         store.appendRoomChatMessage(msg.message, selfId);
+        break;
+      }
+
+      case 'tournament:updated': {
+        store.applyTournamentLiveUpdate(msg.tournament, msg.matches);
+        if (store.tournamentModalOpen && store.selectedTournamentId === msg.tournament.tournamentId) {
+          void tournamentClient.fetchTournamentDetail(msg.tournament.tournamentId);
+        }
+        break;
+      }
+
+      case 'tournament:match_ready': {
+        store.setTournamentMatchAlert({
+          tournamentId: msg.tournamentId,
+          tournamentTitle: msg.tournamentTitle,
+          match: msg.match,
+          receivedAtMs: Date.now(),
+        });
+        soundEngine.playUiClick();
+        if (store.tournamentModalOpen && store.selectedTournamentId === msg.tournamentId) {
+          void tournamentClient.fetchTournamentDetail(msg.tournamentId);
+        }
+        break;
+      }
+
+      case 'tournament:completed': {
+        store.applyTournamentCompleted(msg.tournament);
+        void progressionClient.refreshOwnProfile();
+        void import('./EconomyClient').then(({ economyClient }) => economyClient.refreshWallet());
+        void tournamentClient.fetchPlayerStats();
+        if (store.tournamentModalOpen && store.selectedTournamentId === msg.tournament.tournamentId) {
+          void tournamentClient.fetchTournamentDetail(msg.tournament.tournamentId);
+        }
         break;
       }
     }

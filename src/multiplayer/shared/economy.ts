@@ -24,6 +24,7 @@ export interface CosmeticItemDef {
   description: string;
   previewColors: [string, string, string];
   glyph?: string;
+  isRewardExclusive?: boolean;
 }
 
 export interface EquippedCosmetics {
@@ -69,6 +70,8 @@ export type CoinTransactionReason =
   | 'ai_match_win'
   | 'daily_login'
   | 'tournament_reward'
+  | 'tournament_entry'
+  | 'tournament_refund'
   | 'store_purchase'
   | 'purchase_refund';
 
@@ -554,6 +557,45 @@ export const COSMETIC_CATALOG: CosmeticItemDef[] = [
     previewColors: ['#f59e0b', '#2b1b06', '#fef08a'],
     glyph: '♛',
   },
+  {
+    id: 'badge_tournament_contender',
+    name: 'Tournament Podium',
+    category: 'badge',
+    subCategory: 'Tournament Reward',
+    rarity: 'rare',
+    price: 0,
+    isStarter: false,
+    isRewardExclusive: true,
+    description: 'Earned exclusively by finishing on the podium of an official tournament.',
+    previewColors: ['#38bdf8', '#0c2335', '#bae6fd'],
+    glyph: '🎖',
+  },
+  {
+    id: 'badge_tournament_finalist',
+    name: 'Championship Finalist',
+    category: 'badge',
+    subCategory: 'Tournament Reward',
+    rarity: 'epic',
+    price: 0,
+    isStarter: false,
+    isRewardExclusive: true,
+    description: 'Earned exclusively by reaching a Grand Final in an official tournament.',
+    previewColors: ['#c084fc', '#1f1035', '#e9d5ff'],
+    glyph: '🥈',
+  },
+  {
+    id: 'badge_tournament_champion',
+    name: 'World Champion',
+    category: 'badge',
+    subCategory: 'Tournament Reward',
+    rarity: 'legendary',
+    price: 0,
+    isStarter: false,
+    isRewardExclusive: true,
+    description: 'Prestigious championship trophy badge awarded only to tournament champions.',
+    previewColors: ['#fbbf24', '#2b1b06', '#fef08a'],
+    glyph: '🏆',
+  },
 
   // D4. Victory Animations
   {
@@ -977,6 +1019,27 @@ export function getBadgeVisualMeta(badgeId: string | null | undefined): {
         shortLabel: 'VIP',
         glyph: '♛',
         className: 'border-amber-400/65 bg-amber-500/20 text-amber-200',
+      };
+    case 'badge_tournament_contender':
+      return {
+        id: badgeId,
+        shortLabel: 'PODIUM',
+        glyph: '🎖',
+        className: 'border-sky-400/55 bg-sky-500/15 text-sky-200',
+      };
+    case 'badge_tournament_finalist':
+      return {
+        id: badgeId,
+        shortLabel: 'FINALIST',
+        glyph: '🥈',
+        className: 'border-purple-400/60 bg-purple-500/20 text-purple-200',
+      };
+    case 'badge_tournament_champion':
+      return {
+        id: badgeId,
+        shortLabel: 'CHAMP',
+        glyph: '🏆',
+        className: 'border-amber-400/80 bg-amber-500/25 text-amber-200',
       };
     default:
       return null;

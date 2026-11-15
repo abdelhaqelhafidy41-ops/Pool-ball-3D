@@ -932,7 +932,12 @@ export class D1ProgressionService {
       winnerName: String(r.winner_name),
       winnerRole: r.winner_role === 'player2' ? 'player2' : 'player1',
       ruleProfileId: r.rule_profile_id === 'wpa' ? 'wpa' : 'casual',
-      matchType: r.match_type === 'private' ? 'private' : 'quick',
+      matchType:
+        r.match_type === 'tournament'
+          ? 'tournament'
+          : r.match_type === 'private'
+            ? 'private'
+            : 'quick',
       completionType: String(r.completion_type) as MatchHistoryRecord['completionType'],
       rankedApplied: Number(r.ranked_applied) === 1,
       p1EloDelta: Number(r.p1_elo_delta),

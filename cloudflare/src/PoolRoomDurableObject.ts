@@ -10,6 +10,7 @@ import type {
   OnlinePlayerProfile,
   OnlineRoomInfo,
   OnlineRoomStatus,
+  OnlineRoomTournamentContext,
   ServerToClientMessage,
 } from '../../src/multiplayer/shared/protocol';
 import {
@@ -62,6 +63,7 @@ interface StoredRoomState {
   createdAtMs: number;
   expiresAtMs: number;
   players: StoredPlayerRecord[];
+  tournament?: OnlineRoomTournamentContext | null;
 }
 
 export interface InitRoomPlayerInput {
@@ -103,7 +105,8 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
         called_shots_enabled INTEGER NOT NULL,
         status TEXT NOT NULL,
         created_at_ms INTEGER NOT NULL,
-        expires_at_ms INTEGER NOT NULL
+        expires_at_ms INTEGER NOT NULL,
+        tournament_json TEXT
       );
       CREATE TABLE IF NOT EXISTS room_players (
         session_id TEXT PRIMARY KEY,
@@ -140,6 +143,11 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
       );
     `);
     try {
+      sql.exec('ALTER TABLE room_meta ADD COLUMN tournament_json TEXT');
+    } catch {
+      // Already present
+    }
+    try {
       sql.exec('ALTER TABLE room_players ADD COLUMN player_id TEXT');
     } catch {
       // Already present
@@ -167,6 +175,15 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
         .exec<Record<string, SqlStorageValue>>('SELECT * FROM room_players ORDER BY role ASC')
         .toArray();
 
+      let parsedTournament: OnlineRoomTournamentContext | null = null;
+      if (typeof m.tournament_json === 'string' && m.tournament_json.length > 0) {
+        try {
+          parsedTournament = JSON.parse(m.tournament_json) as OnlineRoomTournamentContext;
+        } catch {
+          parsedTournament = null;
+        }
+      }
+
       this.room = {
         roomId: String(m.room_id),
         roomCode: String(m.room_code),
@@ -177,6 +194,7 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
         status: String(m.status) as OnlineRoomStatus,
         createdAtMs: Number(m.created_at_ms),
         expiresAtMs: Number(m.expires_at_ms),
+        tournament: parsedTournament,
         players: playerRows.map((p) => {
           let equipped: EquippedCosmetics = { ...DEFAULT_EQUIPPED_COSMETICS };
           if (typeof p.cosmetics_json === 'string' && p.cosmetics_json.length > 0) {
@@ -239,8 +257,8 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
     sql.exec(
       `INSERT OR REPLACE INTO room_meta (
         id, room_id, room_code, host_session_id, is_private,
-        rule_profile_id, called_shots_enabled, status, created_at_ms, expires_at_ms
-      ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        rule_profile_id, called_shots_enabled, status, created_at_ms, expires_at_ms, tournament_json
+      ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       this.room.roomId,
       this.room.roomCode,
       this.room.hostSessionId,
@@ -250,6 +268,7 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
       this.room.status,
       this.room.createdAtMs,
       this.room.expiresAtMs,
+      this.room.tournament ? JSON.stringify(this.room.tournament) : null,
     );
 
     sql.exec('DELETE FROM room_players');
@@ -425,6 +444,115 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
       match: started.match,
       balls: started.balls,
     };
+  }
+
+  public async initTournamentRoom(params: {
+    roomId: string;
+    roomCode: string;
+    ruleProfileId: RuleProfileId;
+    calledShotsEnabled: boolean;
+    tournament: OnlineRoomTournamentContext;
+    player1: InitRoomPlayerInput;
+    player2: InitRoomPlayerInput;
+    createdAtMs: number;
+    expiresAtMs: number;
+  }): Promise<OnlineRoomInfo> {
+    await this.ensureHydrated();
+    this.match?.dispose();
+    this.match = null;
+    this.ctx.storage.sql.exec('DELETE FROM match_state');
+    this.ctx.storage.sql.exec('DELETE FROM used_shot_tokens');
+    this.ctx.storage.sql.exec('DELETE FROM room_chat_messages');
+
+    this.room = {
+      roomId: params.roomId,
+      roomCode: params.roomCode,
+      hostSessionId: params.player1.sessionId,
+      isPrivate: false,
+      ruleProfileId: params.ruleProfileId,
+      calledShotsEnabled: params.calledShotsEnabled,
+      status: 'waiting',
+      createdAtMs: params.createdAtMs,
+      expiresAtMs: params.expiresAtMs,
+      tournament: params.tournament,
+      players: [
+        {
+          sessionId: params.player1.sessionId,
+          playerId: params.player1.playerId ?? params.player1.sessionId,
+          reconnectToken: params.player1.reconnectToken,
+          displayName: sanitizeDisplayName(params.player1.displayName),
+          avatarId: sanitizeAvatarId(params.player1.avatarId),
+          equippedCosmetics: sanitizeEquippedCosmetics(params.player1.equippedCosmetics),
+          role: 'player1',
+          connected: false,
+          ready: false,
+          latencyMs: clampLatency(params.player1.latencyMs),
+          disconnectedAtMs: null,
+          reconnectDeadlineMs: null,
+          rematchRequested: false,
+        },
+        {
+          sessionId: params.player2.sessionId,
+          playerId: params.player2.playerId ?? params.player2.sessionId,
+          reconnectToken: params.player2.reconnectToken,
+          displayName: sanitizeDisplayName(params.player2.displayName),
+          avatarId: sanitizeAvatarId(params.player2.avatarId),
+          equippedCosmetics: sanitizeEquippedCosmetics(params.player2.equippedCosmetics),
+          role: 'player2',
+          connected: false,
+          ready: false,
+          latencyMs: clampLatency(params.player2.latencyMs),
+          disconnectedAtMs: null,
+          reconnectDeadlineMs: null,
+          rematchRequested: false,
+        },
+      ],
+    };
+
+    this.persistRoomState();
+    await this.scheduleNextAlarm();
+    return this.toRoomInfo(this.room);
+  }
+
+  public async prepareTournamentPlayerSession(
+    playerId: string,
+    input: InitRoomPlayerInput,
+  ): Promise<
+    | { ok: true; room: OnlineRoomInfo }
+    | { ok: false; code: MultiplayerErrorCode; message: string }
+  > {
+    await this.ensureHydrated();
+    if (!this.room || !this.room.tournament) {
+      return { ok: false, code: 'INVALID_ROOM', message: 'Tournament match room no longer exists.' };
+    }
+    const existing = this.room.players.find((p) => p.playerId === playerId);
+    if (!existing) {
+      return {
+        ok: false,
+        code: 'UNAUTHORIZED',
+        message: 'You are not an assigned competitor in this tournament match.',
+      };
+    }
+
+    existing.sessionId = input.sessionId;
+    existing.reconnectToken = input.reconnectToken;
+    existing.displayName = sanitizeDisplayName(input.displayName);
+    existing.avatarId = sanitizeAvatarId(input.avatarId);
+    if (input.equippedCosmetics) {
+      existing.equippedCosmetics = sanitizeEquippedCosmetics(input.equippedCosmetics);
+    }
+    existing.latencyMs = clampLatency(input.latencyMs);
+    if (existing.role === 'player1') {
+      this.room.hostSessionId = existing.sessionId;
+    }
+
+    this.persistRoomState();
+    return { ok: true, room: this.toRoomInfo(this.room) };
+  }
+
+  public async forceCloseTournamentRoom(reason: string): Promise<void> {
+    await this.ensureHydrated();
+    await this.destroyRoom(reason);
   }
 
   public async joinRoom(
@@ -673,11 +801,23 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
         this.updateWaitingStatus(this.room);
         this.persistRoomState();
         this.broadcastRoomUpdate(this.room);
+        if (
+          this.room.tournament &&
+          this.room.players.length === 2 &&
+          this.room.players.every((p) => p.ready && p.connected)
+        ) {
+          await this.initializeAndStartMatch(this.room);
+          await this.getMatchmakerStub().onTournamentMatchStarted(
+            this.room.tournament.tournamentId,
+            this.room.tournament.bracketMatchId,
+          );
+          await this.scheduleNextAlarm();
+        }
         break;
       }
 
       case 'room:start': {
-        if (this.room.hostSessionId !== player.sessionId) {
+        if (this.room.hostSessionId !== player.sessionId && !this.room.tournament) {
           this.sendError(ws, 'UNAUTHORIZED', 'Only the room host can start the match.');
           return;
         }
@@ -694,11 +834,25 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
           return;
         }
         await this.initializeAndStartMatch(this.room);
+        if (this.room.tournament) {
+          await this.getMatchmakerStub().onTournamentMatchStarted(
+            this.room.tournament.tournamentId,
+            this.room.tournament.bracketMatchId,
+          );
+        }
         await this.scheduleNextAlarm();
         break;
       }
 
       case 'room:cancel': {
+        if (this.room.tournament) {
+          this.sendError(
+            ws,
+            'UNAUTHORIZED',
+            'Tournament rooms cannot be cancelled manually. Withdraw or forfeit instead.',
+          );
+          return;
+        }
         if (this.room.hostSessionId !== player.sessionId) {
           this.sendError(ws, 'UNAUTHORIZED', 'Only the host can cancel this room.');
           return;
@@ -721,6 +875,14 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
       }
 
       case 'room:rematch': {
+        if (this.room.tournament) {
+          this.sendError(
+            ws,
+            'INVALID_INPUT',
+            'Rematches are disabled in single-elimination tournament matches.',
+          );
+          return;
+        }
         if (!this.match || this.match.getPhase() !== 'GAME_OVER') {
           this.sendError(
             ws,
@@ -1264,6 +1426,12 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
       this.persistMatchState();
     }
 
+    const matchType = params.roomSnapshot.tournament
+      ? ('tournament' as const)
+      : params.roomSnapshot.isPrivate
+        ? ('private' as const)
+        : ('quick' as const);
+
     const enrichedRecord: MatchHistoryRecord = {
       ...params.historyRecord,
       player1Id: params.p1.playerId,
@@ -1274,7 +1442,7 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
         params.historyRecord.winnerRole === 'player1'
           ? params.p1.playerId
           : params.p2.playerId,
-      matchType: params.roomSnapshot.isPrivate ? 'private' : 'quick',
+      matchType,
       ruleProfileId: params.roomSnapshot.ruleProfileId,
     };
 
@@ -1284,7 +1452,7 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
       roomId: params.roomSnapshot.roomId,
       roomCode: params.roomSnapshot.roomCode,
       ruleProfileId: params.roomSnapshot.ruleProfileId,
-      matchType: (params.roomSnapshot.isPrivate ? 'private' : 'quick') as 'private' | 'quick',
+      matchType,
       winnerRole: enrichedRecord.winnerRole,
       reason: enrichedRecord.reason,
       totalShots: enrichedRecord.totalShots,
@@ -1310,6 +1478,30 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
       this.notifyMatchmakerRoomStatus('finished'),
       this.notifyMatchmakerHistory(enrichedRecord),
     ]);
+
+    if (params.roomSnapshot.tournament) {
+      const winnerPlayerId =
+        enrichedRecord.winnerRole === 'player1' ? params.p1.playerId : params.p2.playerId;
+      const resolutionType =
+        params.telemetrySummary.completionType === 'forfeit' ||
+        params.telemetrySummary.completionType === 'disconnect_forfeit'
+          ? ('forfeit' as const)
+          : ('played' as const);
+      try {
+        await this.getMatchmakerStub().onTournamentMatchCompleted({
+          tournamentId: params.roomSnapshot.tournament.tournamentId,
+          bracketMatchId: params.roomSnapshot.tournament.bracketMatchId,
+          roomId: params.roomSnapshot.roomId,
+          matchId: enrichedRecord.matchId,
+          winnerPlayerId,
+          resolutionType,
+          reason: enrichedRecord.reason,
+          completedAtMs: enrichedRecord.endedAtMs,
+        });
+      } catch {
+        // Non-blocking fallback
+      }
+    }
 
     const currentRoom = this.room ?? params.roomSnapshot;
     currentRoom.status = 'finished';
@@ -1413,6 +1605,7 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
       })),
       createdAtMs: room.createdAtMs,
       expiresAtMs: room.expiresAtMs,
+      tournament: room.tournament ?? null,
     };
   }
 
