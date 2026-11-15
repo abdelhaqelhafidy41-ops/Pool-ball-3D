@@ -1,6 +1,8 @@
 import {
   Award,
   BarChart3,
+  Calendar,
+  Coins,
   Cpu,
   Globe,
   History,
@@ -11,6 +13,7 @@ import {
   PlusCircle,
   Search,
   Settings,
+  ShoppingBag,
   Trophy,
   User,
   UserPlus,
@@ -25,7 +28,12 @@ import type { AiDifficulty } from '../game/rules/types';
 import { soundEngine } from '../game/utils/SoundEngine';
 import { multiplayerManager } from '../multiplayer/MultiplayerManager';
 import { progressionClient } from '../multiplayer/ProgressionClient';
-import { ONLINE_AVATARS, type OnlineModeIntent } from '../multiplayer/shared/protocol';
+import {
+  getAvatarVisualMeta,
+  getBadgeVisualMeta,
+  getNameplateVisualClass,
+} from '../multiplayer/shared/economy';
+import type { OnlineModeIntent } from '../multiplayer/shared/protocol';
 import { useGameStore } from '../store/useGameStore';
 import { FpsCounter } from './FpsCounter';
 import { presenceDotClass, presenceLabel } from './SocialModal';
@@ -55,6 +63,10 @@ export function MainMenu({ onStartMatch, onToggleFullscreen }: MainMenuProps) {
   const incomingRequests = useGameStore((s) => s.incomingRequests);
   const incomingInvitations = useGameStore((s) => s.incomingInvitations);
   const totalUnreadDmCount = useGameStore((s) => s.totalUnreadDmCount);
+  const wallet = useGameStore((s) => s.wallet);
+  const equippedCosmetics = useGameStore((s) => s.equippedCosmetics);
+  const dailyReward = useGameStore((s) => s.dailyReward);
+  const openStoreModal = useGameStore((s) => s.openStoreModal);
 
   useEffect(() => {
     if (screen === 'menu' && !ownProfile) {
@@ -387,17 +399,23 @@ export function MainMenu({ onStartMatch, onToggleFullscreen }: MainMenuProps) {
               </button>
             </div>
 
-            {/* Competitive Identity & Progression Strip */}
+            {/* Competitive Identity, Progression & Economy Strip */}
             {(() => {
-              const activeAvatarId = ownProfile?.avatarId ?? onlineProfile.avatarId;
-              const av = ONLINE_AVATARS.find((a) => a.id === activeAvatarId) ?? ONLINE_AVATARS[0];
+              const activeAvatarId =
+                ownProfile?.avatarId ?? equippedCosmetics.avatarId ?? onlineProfile.avatarId;
+              const av = getAvatarVisualMeta(activeAvatarId);
+              const nameplateStyle = getNameplateVisualClass(equippedCosmetics.nameplateId);
+              const badgeMeta = getBadgeVisualMeta(equippedCosmetics.badgeId);
               const displayName = ownProfile?.displayName ?? onlineProfile.displayName;
               const elo = ownProfile?.elo ?? 1200;
               const level = ownProfile?.level ?? 1;
               const xpRatio = ownProfile ? Math.round(ownProfile.levelProgress.progressRatio * 100) : 0;
+              const coinBalance = wallet?.balance ?? 0;
 
               return (
-                <div className="mt-2.5 rounded-xl border border-white/10 bg-black/35 p-2.5">
+                <div
+                  className={`mt-2.5 rounded-xl border p-2.5 ${nameplateStyle.borderClass} ${nameplateStyle.bgClass}`}
+                >
                   <div className="flex items-center justify-between gap-2">
                     <button
                       type="button"
@@ -419,7 +437,15 @@ export function MainMenu({ onStartMatch, onToggleFullscreen }: MainMenuProps) {
                           <span className="truncate text-xs font-extrabold text-white">
                             {displayName}
                           </span>
-                          <span className="rounded border border-amber-400/35 bg-amber-500/12 px-1 py-0.2 text-[9px] font-mono font-bold text-amber-300">
+                          {badgeMeta && (
+                            <span
+                              className={`inline-flex items-center gap-0.5 rounded border px-1 py-0.2 text-[9px] font-extrabold shrink-0 ${badgeMeta.className}`}
+                            >
+                              <span>{badgeMeta.glyph}</span>
+                              <span>{badgeMeta.shortLabel}</span>
+                            </span>
+                          )}
+                          <span className="rounded border border-amber-400/35 bg-amber-500/12 px-1 py-0.2 text-[9px] font-mono font-bold text-amber-300 shrink-0">
                             Lv {level}
                           </span>
                         </div>
@@ -504,6 +530,51 @@ export function MainMenu({ onStartMatch, onToggleFullscreen }: MainMenuProps) {
                       </button>
                     );
                   })()}
+
+                  {/* Store, Inventory & Daily Pool Coins Bar */}
+                  <div className="mt-1.5 grid grid-cols-[1fr_auto] gap-1.5">
+                    <button
+                      type="button"
+                      data-testid="open-store-btn"
+                      onClick={() => {
+                        soundEngine.unlock();
+                        soundEngine.playUiClick();
+                        openStoreModal('store');
+                      }}
+                      className="flex items-center justify-between gap-2 rounded-lg border border-amber-400/35 bg-amber-500/12 px-2.5 py-1.5 text-[11px] font-bold text-amber-100 hover:bg-amber-500/20 transition-colors cursor-pointer whitespace-nowrap"
+                    >
+                      <span className="inline-flex items-center gap-1.5">
+                        <ShoppingBag className="h-3.5 w-3.5 text-amber-400 shrink-0" />
+                        <span>Store & Inventory</span>
+                      </span>
+                      <span className="inline-flex items-center gap-1 font-mono font-extrabold tabular-nums text-amber-300">
+                        <Coins className="h-3 w-3 text-amber-400 shrink-0" />
+                        {coinBalance.toLocaleString()}
+                      </span>
+                    </button>
+
+                    <button
+                      type="button"
+                      data-testid="open-daily-btn"
+                      onClick={() => {
+                        soundEngine.unlock();
+                        soundEngine.playUiClick();
+                        openStoreModal('daily');
+                      }}
+                      className={`inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-[11px] font-bold transition-colors cursor-pointer whitespace-nowrap ${
+                        dailyReward?.canClaim
+                          ? 'border-emerald-400/50 bg-emerald-500/15 text-emerald-200 hover:bg-emerald-500/25'
+                          : 'border-white/10 bg-white/5 text-slate-300 hover:bg-white/10'
+                      }`}
+                    >
+                      <Calendar
+                        className={`h-3.5 w-3.5 shrink-0 ${
+                          dailyReward?.canClaim ? 'text-emerald-400' : 'text-amber-400'
+                        }`}
+                      />
+                      <span>{dailyReward?.canClaim ? 'Claim Daily' : 'Daily'}</span>
+                    </button>
+                  </div>
                 </div>
               );
             })()}

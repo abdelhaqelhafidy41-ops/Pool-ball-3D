@@ -10,9 +10,11 @@ import { ProgressionModal } from './components/ProgressionModal';
 import { ReplayOverlay } from './components/ReplayOverlay';
 import { SettingsModal } from './components/SettingsModal';
 import { SocialModal } from './components/SocialModal';
+import { StoreModal } from './components/StoreModal';
 import type { ReplaySpeed } from './game/replay/types';
 import type { PocketId } from './game/rules/types';
 import { soundEngine } from './game/utils/SoundEngine';
+import { economyClient } from './multiplayer/EconomyClient';
 import { multiplayerManager } from './multiplayer/MultiplayerManager';
 import { socialClient } from './multiplayer/SocialClient';
 import { useGameStore } from './store/useGameStore';
@@ -47,6 +49,7 @@ export default function App() {
     if (!ownPlayerId) return;
     multiplayerManager.ensureConnected();
     void socialClient.fetchOverview();
+    void economyClient.refreshWallet();
   }, [ownPlayerId]);
 
   const handleStartMatch = useCallback(() => {
@@ -171,6 +174,7 @@ export default function App() {
         <OnlineLobbyUI />
         <ProgressionModal />
         <SocialModal />
+        <StoreModal />
         <InviteNotificationBanner />
       </main>
     </ErrorBoundary>

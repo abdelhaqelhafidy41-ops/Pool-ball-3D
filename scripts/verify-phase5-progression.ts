@@ -498,7 +498,9 @@ async function runSuite3LocalServerIntegration(): Promise<void> {
     ws2.send({ type: 'room:join', roomCode: created1.room.roomCode });
     await ws2.waitFor((m) => m.type === 'room:updated');
     ws2.send({ type: 'room:ready', ready: true });
-    await ws1.waitFor((m) => m.type === 'room:updated' && m.room.players.every((p) => p.ready));
+    await ws1.waitFor(
+      (m) => m.type === 'room:updated' && m.room.players.length === 2 && m.room.players.every((p) => p.ready),
+    );
     ws1.send({ type: 'room:start' });
     await ws1.waitFor((m) => m.type === 'match:started');
     await ws2.waitFor((m) => m.type === 'match:started');
@@ -745,7 +747,9 @@ async function runSuite4CloudflareD1Integration(): Promise<void> {
     await c2.resumeInRoom(created.room.roomId);
 
     c2.send({ type: 'room:ready', ready: true });
-    await c1.waitFor((m) => m.type === 'room:updated' && m.room.players.every((p) => p.ready));
+    await c1.waitFor(
+      (m) => m.type === 'room:updated' && m.room.players.length === 2 && m.room.players.every((p) => p.ready),
+    );
     c1.send({ type: 'room:start' });
     await c1.waitFor((m) => m.type === 'match:started');
     await c2.waitFor((m) => m.type === 'match:started');

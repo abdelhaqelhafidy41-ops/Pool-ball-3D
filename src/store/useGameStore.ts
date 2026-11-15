@@ -39,8 +39,52 @@ import type {
   RoomChatMessageRecord,
   SocialOverviewPayload,
 } from '../multiplayer/shared/social';
+import {
+  COSMETIC_CATALOG,
+  DEFAULT_EQUIPPED_COSMETICS,
+  STARTER_COSMETIC_IDS,
+  sanitizeEquippedCosmetics,
+  type AiMatchRewardResponse,
+  type CoinTransactionRecord,
+  type CosmeticCategory,
+  type CosmeticItemDef,
+  type DailyRewardStatus,
+  type EquippedCosmetics,
+  type WalletSummary,
+} from '../multiplayer/shared/economy';
 
 const PROFILE_STORAGE_KEY = 'ultimate_pool_3d_online_profile_v1';
+const COSMETICS_STORAGE_KEY = 'ultimate_pool_3d_cosmetics_v1';
+
+function makeClientMatchId(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return `ai_${crypto.randomUUID()}`;
+  }
+  return `ai_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function loadSavedEquippedCosmetics(): EquippedCosmetics {
+  try {
+    if (typeof window === 'undefined' || !window.localStorage) {
+      return { ...DEFAULT_EQUIPPED_COSMETICS };
+    }
+    const raw = window.localStorage.getItem(COSMETICS_STORAGE_KEY);
+    if (!raw) return { ...DEFAULT_EQUIPPED_COSMETICS };
+    return sanitizeEquippedCosmetics(JSON.parse(raw) as Partial<EquippedCosmetics>);
+  } catch {
+    return { ...DEFAULT_EQUIPPED_COSMETICS };
+  }
+}
+
+function persistEquippedCosmetics(equipped: EquippedCosmetics): void {
+  try {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      window.localStorage.setItem(COSMETICS_STORAGE_KEY, JSON.stringify(equipped));
+    }
+  } catch {
+    // Ignore storage restriction
+  }
+}
 
 function loadSavedOnlineProfile(): { displayName: string; avatarId: OnlineAvatarId } {
   try {
@@ -99,6 +143,8 @@ export type CameraPreset = 'threeQuarter' | 'topDown' | 'cueAim' | 'sideView';
 export type FeltTheme = 'tournamentGreen' | 'championshipBlue' | 'burgundyClub';
 export type ProgressionTab = 'profile' | 'leaderboard' | 'achievements' | 'history';
 export type SocialTab = 'friends' | 'search' | 'requests' | 'messages' | 'blocked';
+export type StoreTab = 'store' | 'inventory' | 'daily' | 'ledger';
+export type StoreCategoryFilter = 'all' | CosmeticCategory;
 
 export type CanvasInteractionMode = 'smart' | 'aim';
 
@@ -230,6 +276,21 @@ export interface GameState {
   roomChatUnreadCount: number;
   socialNotice: { type: 'ok' | 'err'; text: string } | null;
 
+  // Economy, Store & Cosmetic Inventory (Phase 8)
+  wallet: WalletSummary | null;
+  inventoryIds: string[];
+  equippedCosmetics: EquippedCosmetics;
+  dailyReward: DailyRewardStatus | null;
+  coinTransactions: CoinTransactionRecord[];
+  storeModalOpen: boolean;
+  storeTab: StoreTab;
+  storeCategory: StoreCategoryFilter;
+  storeCatalog: CosmeticItemDef[];
+  aiMatchClientId: string;
+  aiMatchStartedAtMs: number;
+  lastAiRewardClaim: AiMatchRewardResponse | null;
+  storeNotice: { type: 'ok' | 'err'; text: string } | null;
+
   // Actions
   setScreen: (screen: GameScreen) => void;
   setSettingsOpen: (open: boolean) => void;
@@ -340,6 +401,22 @@ export interface GameState {
   setRoomChatOpen: (open: boolean) => void;
   clearRoomChat: () => void;
   resetSocialState: () => void;
+
+  // Economy & Store Actions (Phase 8)
+  openStoreModal: (tab?: StoreTab, category?: StoreCategoryFilter) => void;
+  closeStoreModal: () => void;
+  setStoreTab: (tab: StoreTab) => void;
+  setStoreCategory: (category: StoreCategoryFilter) => void;
+  setStoreCatalog: (catalog: CosmeticItemDef[]) => void;
+  applyEconomySnapshot: (snapshot: {
+    wallet?: WalletSummary;
+    inventoryIds?: string[];
+    equipped?: EquippedCosmetics;
+    dailyReward?: DailyRewardStatus;
+  }) => void;
+  setCoinTransactions: (transactions: CoinTransactionRecord[]) => void;
+  setLastAiRewardClaim: (claim: AiMatchRewardResponse | null) => void;
+  setStoreNotice: (notice: { type: 'ok' | 'err'; text: string } | null) => void;
 }
 
 export function canLocalPlayerAct(state: GameState): boolean {
@@ -487,6 +564,20 @@ export const useGameStore = create<GameState>((set) => ({
   roomChatUnreadCount: 0,
   socialNotice: null,
 
+  wallet: null,
+  inventoryIds: [...STARTER_COSMETIC_IDS],
+  equippedCosmetics: loadSavedEquippedCosmetics(),
+  dailyReward: null,
+  coinTransactions: [],
+  storeModalOpen: false,
+  storeTab: 'store',
+  storeCategory: 'all',
+  storeCatalog: COSMETIC_CATALOG,
+  aiMatchClientId: makeClientMatchId(),
+  aiMatchStartedAtMs: Date.now(),
+  lastAiRewardClaim: null,
+  storeNotice: null,
+
   setScreen: (screen) => set({ screen }),
   setSettingsOpen: (settingsOpen) => set({ settingsOpen }),
   setLoading: (isLoading) => set({ isLoading }),
@@ -546,6 +637,9 @@ export const useGameStore = create<GameState>((set) => ({
       replayTimeSec: 0,
       replayDurationSec: 0,
       replayActiveCollisionLabel: null,
+      aiMatchClientId: makeClientMatchId(),
+      aiMatchStartedAtMs: Date.now(),
+      lastAiRewardClaim: null,
     }),
   updateSettings: (partial) =>
     set((state) => ({
@@ -988,4 +1082,34 @@ export const useGameStore = create<GameState>((set) => ({
       roomChatUnreadCount: 0,
       socialNotice: null,
     }),
+
+  openStoreModal: (tab, category) =>
+    set((state) => ({
+      storeModalOpen: true,
+      storeTab: tab ?? state.storeTab,
+      storeCategory: category ?? state.storeCategory,
+      storeNotice: null,
+    })),
+  closeStoreModal: () => set({ storeModalOpen: false, storeNotice: null }),
+  setStoreTab: (storeTab) => set({ storeTab, storeNotice: null }),
+  setStoreCategory: (storeCategory) => set({ storeCategory }),
+  setStoreCatalog: (storeCatalog) => set({ storeCatalog }),
+  applyEconomySnapshot: (snapshot) =>
+    set((state) => {
+      const nextEquipped = snapshot.equipped
+        ? sanitizeEquippedCosmetics(snapshot.equipped)
+        : state.equippedCosmetics;
+      if (snapshot.equipped) {
+        persistEquippedCosmetics(nextEquipped);
+      }
+      return {
+        wallet: snapshot.wallet ?? state.wallet,
+        inventoryIds: snapshot.inventoryIds ?? state.inventoryIds,
+        equippedCosmetics: nextEquipped,
+        dailyReward: snapshot.dailyReward ?? state.dailyReward,
+      };
+    }),
+  setCoinTransactions: (coinTransactions) => set({ coinTransactions }),
+  setLastAiRewardClaim: (lastAiRewardClaim) => set({ lastAiRewardClaim }),
+  setStoreNotice: (storeNotice) => set({ storeNotice }),
 }));

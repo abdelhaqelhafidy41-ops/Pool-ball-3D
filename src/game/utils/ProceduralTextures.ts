@@ -7,21 +7,120 @@ export interface FeltTextureSet {
   bumpMap: THREE.CanvasTexture;
 }
 
-export function createFeltTextures(
-  theme: FeltTheme,
+export type TableWoodFinish = 'walnut' | 'walnut_dark' | 'ebony' | 'rosewood' | 'obsidian_neon';
+export type TableTrimMetal = 'brass' | 'steel' | 'gold' | 'cyan_chrome';
+
+export interface TableSkinVisualSpec {
+  id: string;
+  clothBase: string;
+  clothHighlight: string;
+  clothShadow: string;
+  cushionHex: number;
+  markingColor: string;
+  spotColor: string;
+  woodFinish: TableWoodFinish;
+  trimMetal: TableTrimMetal;
+}
+
+const TABLE_SKIN_SPECS: Record<string, TableSkinVisualSpec> = {
+  table_classic_green: {
+    id: 'table_classic_green',
+    clothBase: '#0f5c3a',
+    clothHighlight: '#167449',
+    clothShadow: '#093e26',
+    cushionHex: 0x0f5c3a,
+    markingColor: 'rgba(240, 244, 238, 0.42)',
+    spotColor: 'rgba(240, 244, 238, 0.65)',
+    woodFinish: 'walnut',
+    trimMetal: 'brass',
+  },
+  table_blue_tournament: {
+    id: 'table_blue_tournament',
+    clothBase: '#124e78',
+    clothHighlight: '#1a659a',
+    clothShadow: '#0a3351',
+    cushionHex: 0x124e78,
+    markingColor: 'rgba(240, 244, 238, 0.45)',
+    spotColor: 'rgba(240, 244, 238, 0.72)',
+    woodFinish: 'walnut_dark',
+    trimMetal: 'steel',
+  },
+  table_luxury_dark: {
+    id: 'table_luxury_dark',
+    clothBase: '#202832',
+    clothHighlight: '#2c3745',
+    clothShadow: '#13171d',
+    cushionHex: 0x202832,
+    markingColor: 'rgba(226, 184, 87, 0.46)',
+    spotColor: 'rgba(226, 184, 87, 0.78)',
+    woodFinish: 'ebony',
+    trimMetal: 'gold',
+  },
+  table_royal_crimson: {
+    id: 'table_royal_crimson',
+    clothBase: '#681827',
+    clothHighlight: '#842033',
+    clothShadow: '#470f19',
+    cushionHex: 0x681827,
+    markingColor: 'rgba(247, 226, 182, 0.46)',
+    spotColor: 'rgba(247, 226, 182, 0.74)',
+    woodFinish: 'rosewood',
+    trimMetal: 'gold',
+  },
+  table_neon_arena: {
+    id: 'table_neon_arena',
+    clothBase: '#0b1e28',
+    clothHighlight: '#112f3d',
+    clothShadow: '#061118',
+    cushionHex: 0x0b1e28,
+    markingColor: 'rgba(34, 211, 238, 0.62)',
+    spotColor: 'rgba(103, 232, 249, 0.85)',
+    woodFinish: 'obsidian_neon',
+    trimMetal: 'cyan_chrome',
+  },
+};
+
+export function getTableSkinVisualSpec(
+  tableSkinId: string,
+  fallbackTheme?: FeltTheme,
+): TableSkinVisualSpec {
+  if (tableSkinId !== 'table_classic_green' && TABLE_SKIN_SPECS[tableSkinId]) {
+    return TABLE_SKIN_SPECS[tableSkinId];
+  }
+  if (fallbackTheme && fallbackTheme !== 'tournamentGreen') {
+    const pal = FELT_PALETTES[fallbackTheme];
+    return {
+      id: 'table_classic_green',
+      clothBase: pal.base,
+      clothHighlight: pal.highlight,
+      clothShadow: pal.shadow,
+      cushionHex:
+        fallbackTheme === 'championshipBlue'
+          ? 0x124e78
+          : fallbackTheme === 'burgundyClub'
+            ? 0x681827
+            : 0x0f5c3a,
+      markingColor: 'rgba(240, 244, 238, 0.42)',
+      spotColor: 'rgba(240, 244, 238, 0.65)',
+      woodFinish: 'walnut',
+      trimMetal: 'brass',
+    };
+  }
+  return TABLE_SKIN_SPECS.table_classic_green;
+}
+
+function buildFeltTextureSetFromSpec(
+  spec: TableSkinVisualSpec,
   maxAnisotropy: number,
 ): FeltTextureSet {
-  const palette = FELT_PALETTES[theme];
   const width = 1024;
   const height = 512;
 
-  // 1. Albedo Map
   const colorCanvas = document.createElement('canvas');
   colorCanvas.width = width;
   colorCanvas.height = height;
   const ctx = colorCanvas.getContext('2d')!;
 
-  // Base radial studio light falloff across the cloth
   const grad = ctx.createRadialGradient(
     width * 0.5,
     height * 0.5,
@@ -30,9 +129,9 @@ export function createFeltTextures(
     height * 0.5,
     width * 0.62,
   );
-  grad.addColorStop(0, palette.highlight);
-  grad.addColorStop(0.65, palette.base);
-  grad.addColorStop(1, palette.shadow);
+  grad.addColorStop(0, spec.clothHighlight);
+  grad.addColorStop(0.65, spec.clothBase);
+  grad.addColorStop(1, spec.clothShadow);
   ctx.fillStyle = grad;
   ctx.fillRect(0, 0, width, height);
 
@@ -42,10 +141,9 @@ export function createFeltTextures(
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
       const idx = (y * width + x) * 4;
-      // Diagonal worsted twill pattern + deterministic subtle noise
-      const twill = ((x + y * 2) % 4 === 0 ? 3 : -2);
+      const twill = (x + y * 2) % 4 === 0 ? 3 : -2;
       const hash = Math.sin(x * 12.9898 + y * 78.233) * 43758.5453;
-      const noise = ((hash - Math.floor(hash)) - 0.5) * 9;
+      const noise = (hash - Math.floor(hash) - 0.5) * 9;
       const delta = twill + noise;
       data[idx] = Math.max(0, Math.min(255, data[idx] + delta));
       data[idx + 1] = Math.max(0, Math.min(255, data[idx + 1] + delta));
@@ -53,6 +151,12 @@ export function createFeltTextures(
     }
   }
   ctx.putImageData(imgData, 0, 0);
+
+  if (spec.id === 'table_neon_arena') {
+    ctx.strokeStyle = 'rgba(34, 211, 238, 0.14)';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(18, 18, width - 36, height - 36);
+  }
 
   // Subtle rail-edge cloth shadow
   const edgeGradTop = ctx.createLinearGradient(0, 0, 0, 26);
@@ -67,31 +171,31 @@ export function createFeltTextures(
   ctx.fillStyle = edgeGradBot;
   ctx.fillRect(0, height - 26, width, 26);
 
-  // Tournament markings: Headstring (baulk line at x = 25% of playing surface)
-  ctx.strokeStyle = 'rgba(240, 244, 238, 0.42)';
+  // Headstring
+  ctx.strokeStyle = spec.markingColor;
   ctx.lineWidth = 2;
   ctx.beginPath();
   ctx.moveTo(width * 0.25, 16);
   ctx.lineTo(width * 0.25, height - 16);
   ctx.stroke();
 
-  // Head spot (x = 25%)
-  ctx.fillStyle = 'rgba(240, 244, 238, 0.65)';
+  // Head spot
+  ctx.fillStyle = spec.spotColor;
   ctx.beginPath();
   ctx.arc(width * 0.25, height * 0.5, 4.5, 0, Math.PI * 2);
   ctx.fill();
 
-  // Center spot (x = 50%)
+  // Center spot
   ctx.beginPath();
   ctx.arc(width * 0.5, height * 0.5, 3.5, 0, Math.PI * 2);
   ctx.fill();
 
-  // Foot spot (x = 75%) with black tournament sticker ring
+  // Foot spot
   ctx.fillStyle = 'rgba(18, 22, 20, 0.72)';
   ctx.beginPath();
   ctx.arc(width * 0.75, height * 0.5, 7.5, 0, Math.PI * 2);
   ctx.fill();
-  ctx.fillStyle = 'rgba(240, 244, 238, 0.85)';
+  ctx.fillStyle = spec.spotColor;
   ctx.beginPath();
   ctx.arc(width * 0.75, height * 0.5, 2.5, 0, Math.PI * 2);
   ctx.fill();
@@ -101,7 +205,6 @@ export function createFeltTextures(
   map.anisotropy = maxAnisotropy;
   map.needsUpdate = true;
 
-  // 2. Bump Map (Linear space - NoColorSpace)
   const bumpCanvas = document.createElement('canvas');
   bumpCanvas.width = 512;
   bumpCanvas.height = 256;
@@ -111,9 +214,9 @@ export function createFeltTextures(
   for (let y = 0; y < 256; y++) {
     for (let x = 0; x < 512; x++) {
       const idx = (y * 512 + x) * 4;
-      const weave = ((x + y) % 2 === 0 ? 140 : 115);
+      const weave = (x + y) % 2 === 0 ? 140 : 115;
       const hash = Math.sin(x * 19.13 + y * 91.7) * 43758.5453;
-      const n = ((hash - Math.floor(hash)) - 0.5) * 30;
+      const n = (hash - Math.floor(hash) - 0.5) * 30;
       const val = Math.max(0, Math.min(255, weave + n));
       bData[idx] = val;
       bData[idx + 1] = val;
@@ -133,7 +236,27 @@ export function createFeltTextures(
   return { map, bumpMap };
 }
 
-export function createWoodTextures(maxAnisotropy: number): {
+export function createFeltTextures(
+  theme: FeltTheme,
+  maxAnisotropy: number,
+): FeltTextureSet {
+  const spec = getTableSkinVisualSpec('table_classic_green', theme);
+  return buildFeltTextureSetFromSpec(spec, maxAnisotropy);
+}
+
+export function createFeltTexturesByTableSkin(
+  tableSkinId: string,
+  maxAnisotropy: number,
+  fallbackTheme?: FeltTheme,
+): FeltTextureSet {
+  const spec = getTableSkinVisualSpec(tableSkinId, fallbackTheme);
+  return buildFeltTextureSetFromSpec(spec, maxAnisotropy);
+}
+
+export function createWoodTextures(
+  maxAnisotropy: number,
+  finish: TableWoodFinish = 'walnut',
+): {
   map: THREE.CanvasTexture;
   roughnessMap: THREE.CanvasTexture;
 } {
@@ -143,22 +266,31 @@ export function createWoodTextures(maxAnisotropy: number): {
   canvas.height = size;
   const ctx = canvas.getContext('2d')!;
 
-  ctx.fillStyle = '#472515';
+  const palette =
+    finish === 'obsidian_neon'
+      ? { base: '#0c1016', r: 16, g: 20, b: 28, amp: 5, pore: 'rgba(6, 10, 15, 0.35)' }
+      : finish === 'ebony'
+        ? { base: '#15171c', r: 24, g: 26, b: 32, amp: 7, pore: 'rgba(5, 6, 8, 0.35)' }
+        : finish === 'rosewood'
+          ? { base: '#341318', r: 58, g: 21, b: 26, amp: 14, pore: 'rgba(18, 5, 8, 0.28)' }
+          : finish === 'walnut_dark'
+            ? { base: '#361f14', r: 58, g: 34, b: 22, amp: 14, pore: 'rgba(16, 8, 4, 0.28)' }
+            : { base: '#472515', r: 72, g: 38, b: 22, amp: 18, pore: 'rgba(22, 10, 5, 0.24)' };
+
+  ctx.fillStyle = palette.base;
   ctx.fillRect(0, 0, size, size);
 
-  // Rich American walnut wood grain streaks
   for (let y = 0; y < size; y++) {
     const wave = Math.sin(y * 0.045) * 14 + Math.cos(y * 0.018) * 22;
     const tone = Math.sin((y + wave) * 0.14);
-    const r = Math.floor(72 + tone * 18);
-    const g = Math.floor(38 + tone * 11);
-    const b = Math.floor(22 + tone * 7);
+    const r = Math.max(0, Math.min(255, Math.floor(palette.r + tone * palette.amp)));
+    const g = Math.max(0, Math.min(255, Math.floor(palette.g + tone * palette.amp * 0.65)));
+    const b = Math.max(0, Math.min(255, Math.floor(palette.b + tone * palette.amp * 0.45)));
     ctx.fillStyle = `rgb(${r},${g},${b})`;
     ctx.fillRect(0, y, size, 1);
   }
 
-  // Fine dark wood pores
-  ctx.fillStyle = 'rgba(22, 10, 5, 0.24)';
+  ctx.fillStyle = palette.pore;
   for (let i = 0; i < 420; i++) {
     const x = (Math.sin(i * 78.233) * 0.5 + 0.5) * size;
     const y = (Math.cos(i * 45.164) * 0.5 + 0.5) * size;
@@ -173,15 +305,14 @@ export function createWoodTextures(maxAnisotropy: number): {
   map.anisotropy = maxAnisotropy;
   map.needsUpdate = true;
 
-  // Subtle roughness map in linear space
   const rCanvas = document.createElement('canvas');
   rCanvas.width = 256;
   rCanvas.height = 256;
   const rCtx = rCanvas.getContext('2d')!;
-  rCtx.fillStyle = '#555555';
+  rCtx.fillStyle = finish === 'obsidian_neon' ? '#6a6a6a' : '#555555';
   rCtx.fillRect(0, 0, 256, 256);
   for (let y = 0; y < 256; y += 2) {
-    const v = 72 + Math.floor(Math.sin(y * 0.18) * 18);
+    const v = (finish === 'obsidian_neon' ? 96 : 72) + Math.floor(Math.sin(y * 0.18) * 18);
     rCtx.fillStyle = `rgb(${v},${v},${v})`;
     rCtx.fillRect(0, y, 256, 2);
   }
@@ -193,9 +324,38 @@ export function createWoodTextures(maxAnisotropy: number): {
   return { map, roughnessMap };
 }
 
+function drawMarbleVeins(
+  ctx: CanvasRenderingContext2D,
+  width: number,
+  height: number,
+  baseHex: string,
+  veinColorA: string,
+  veinColorB: string,
+  seed: number,
+) {
+  ctx.fillStyle = baseHex;
+  ctx.fillRect(0, 0, width, height);
+
+  for (let i = 0; i < 22; i++) {
+    ctx.beginPath();
+    const yStart = ((Math.sin(seed * 13.7 + i * 2.13) * 0.5 + 0.5) * height) | 0;
+    ctx.moveTo(0, yStart);
+    for (let x = 0; x <= width; x += 24) {
+      const wave =
+        Math.sin(x * 0.014 + i * 1.3 + seed) * 44 +
+        Math.cos(x * 0.031 - i * 0.9 + seed * 0.7) * 20;
+      ctx.lineTo(x, (yStart + wave + height) % height);
+    }
+    ctx.strokeStyle = i % 2 === 0 ? veinColorA : veinColorB;
+    ctx.lineWidth = 1.5 + ((i * 7 + seed) % 5);
+    ctx.stroke();
+  }
+}
+
 export function createBallTexture(
   def: BallDefinition,
   maxAnisotropy: number,
+  ballSkinId = 'ball_classic',
 ): THREE.CanvasTexture {
   const width = 1024;
   const height = 512;
@@ -205,46 +365,168 @@ export function createBallTexture(
   const ctx = canvas.getContext('2d')!;
 
   const ivory = '#f5f1e3';
+  const isNeon = ballSkinId === 'ball_neon_pulse';
+  const isMarble = ballSkinId === 'ball_artisan_marble';
+  const isMetallic = ballSkinId === 'ball_brushed_metallic';
+  const isAurora = ballSkinId === 'ball_aurora_chroma';
 
   if (def.number === 0) {
-    // Pro-Cup style cue ball with subtle ivory base + 6 faint red dots for visible spin
-    ctx.fillStyle = ivory;
-    ctx.fillRect(0, 0, width, height);
-
-    ctx.fillStyle = '#b91c1c';
-    const dotRadius = 11;
-    // 4 equatorial dots
-    for (const uFrac of [0.125, 0.375, 0.625, 0.875]) {
-      ctx.beginPath();
-      ctx.arc(width * uFrac, height * 0.5, dotRadius, 0, Math.PI * 2);
-      ctx.fill();
+    if (isNeon) {
+      ctx.fillStyle = '#0e1726';
+      ctx.fillRect(0, 0, width, height);
+      ctx.strokeStyle = '#22d3ee';
+      ctx.lineWidth = 5;
+      ctx.strokeRect(0, height * 0.5 - 6, width, 12);
+      ctx.fillStyle = '#22d3ee';
+      for (const uFrac of [0.125, 0.375, 0.625, 0.875]) {
+        ctx.beginPath();
+        ctx.arc(width * uFrac, height * 0.5, 13, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    } else if (isMarble) {
+      drawMarbleVeins(
+        ctx,
+        width,
+        height,
+        '#ece7db',
+        'rgba(68, 64, 60, 0.25)',
+        'rgba(212, 168, 79, 0.3)',
+        99,
+      );
+      ctx.fillStyle = '#b91c1c';
+      for (const uFrac of [0.125, 0.375, 0.625, 0.875]) {
+        ctx.beginPath();
+        ctx.arc(width * uFrac, height * 0.5, 11, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.fillRect(0, 0, width, 14);
+      ctx.fillRect(0, height - 14, width, 14);
+    } else if (isAurora) {
+      const grad = ctx.createLinearGradient(0, 0, width, height);
+      grad.addColorStop(0, '#eef2ff');
+      grad.addColorStop(0.5, '#d1fae5');
+      grad.addColorStop(1, '#fce7f3');
+      ctx.fillStyle = grad;
+      ctx.fillRect(0, 0, width, height);
+      ctx.fillStyle = '#7c3aed';
+      for (const uFrac of [0.125, 0.375, 0.625, 0.875]) {
+        ctx.beginPath();
+        ctx.arc(width * uFrac, height * 0.5, 11, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    } else {
+      ctx.fillStyle = isMetallic ? '#e2e8f0' : ivory;
+      ctx.fillRect(0, 0, width, height);
+      ctx.fillStyle = '#b91c1c';
+      for (const uFrac of [0.125, 0.375, 0.625, 0.875]) {
+        ctx.beginPath();
+        ctx.arc(width * uFrac, height * 0.5, 11, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.fillRect(0, 0, width, 16);
+      ctx.fillRect(0, height - 16, width, 16);
     }
-    // 2 polar dots (stretched horizontally in equirectangular projection)
-    ctx.fillRect(0, 0, width, 16);
-    ctx.fillRect(0, height - 16, width, 16);
-  } else if (def.isStripe) {
-    // Striped balls 9 - 15
-    ctx.fillStyle = ivory;
-    ctx.fillRect(0, 0, width, height);
-
-    const bandHalfHeight = 112;
-    ctx.fillStyle = def.color;
-    ctx.fillRect(0, height * 0.5 - bandHalfHeight, width, bandHalfHeight * 2);
-
-    // Subtle crisp trim lines along stripe border
-    ctx.fillStyle = 'rgba(0,0,0,0.16)';
-    ctx.fillRect(0, height * 0.5 - bandHalfHeight, width, 2);
-    ctx.fillRect(0, height * 0.5 + bandHalfHeight - 2, width, 2);
-
-    drawBallMedallion(ctx, width * 0.25, height * 0.5, def.number);
-    drawBallMedallion(ctx, width * 0.75, height * 0.5, def.number);
   } else {
-    // Solid balls 1 - 8
-    ctx.fillStyle = def.color;
+    // Object balls 1..15
+    const baseFill = isNeon ? '#0a0f1a' : isMetallic ? '#d8e0ea' : ivory;
+    ctx.fillStyle = baseFill;
     ctx.fillRect(0, 0, width, height);
 
-    drawBallMedallion(ctx, width * 0.25, height * 0.5, def.number);
-    drawBallMedallion(ctx, width * 0.75, height * 0.5, def.number);
+    if (def.isStripe) {
+      if (isMarble) {
+        drawMarbleVeins(
+          ctx,
+          width,
+          height,
+          '#e8e2d5',
+          'rgba(25, 28, 34, 0.34)',
+          'rgba(212, 168, 79, 0.24)',
+          def.number,
+        );
+      }
+      const bandHalfHeight = 112;
+      ctx.fillStyle = def.color;
+      ctx.fillRect(0, height * 0.5 - bandHalfHeight, width, bandHalfHeight * 2);
+
+      if (isMarble) {
+        drawMarbleVeins(
+          ctx,
+          width,
+          bandHalfHeight * 2,
+          def.color,
+          'rgba(12, 14, 18, 0.44)',
+          'rgba(248, 244, 232, 0.22)',
+          def.number + 31,
+        );
+        // Re-clip marble onto stripe region cleanly
+        ctx.fillStyle = '#e8e2d5';
+        ctx.fillRect(0, 0, width, height * 0.5 - bandHalfHeight);
+        ctx.fillRect(0, height * 0.5 + bandHalfHeight, width, height);
+      } else if (isNeon) {
+        ctx.fillStyle = '#090e18';
+        ctx.fillRect(0, height * 0.5 - bandHalfHeight + 10, width, bandHalfHeight * 2 - 20);
+        ctx.fillStyle = def.color;
+        ctx.fillRect(0, height * 0.5 - bandHalfHeight, width, 8);
+        ctx.fillRect(0, height * 0.5 + bandHalfHeight - 8, width, 8);
+      } else if (isAurora) {
+        const g = ctx.createLinearGradient(0, height * 0.5 - bandHalfHeight, width, height * 0.5 + bandHalfHeight);
+        g.addColorStop(0, def.color);
+        g.addColorStop(0.5, '#38bdf8');
+        g.addColorStop(1, '#c084fc');
+        ctx.fillStyle = g;
+        ctx.fillRect(0, height * 0.5 - bandHalfHeight, width, bandHalfHeight * 2);
+      }
+
+      ctx.fillStyle = 'rgba(0,0,0,0.16)';
+      ctx.fillRect(0, height * 0.5 - bandHalfHeight, width, 2);
+      ctx.fillRect(0, height * 0.5 + bandHalfHeight - 2, width, 2);
+    } else {
+      // Solid balls 1..8
+      if (isMarble) {
+        drawMarbleVeins(
+          ctx,
+          width,
+          height,
+          def.color,
+          'rgba(14, 15, 18, 0.42)',
+          'rgba(248, 245, 235, 0.24)',
+          def.number,
+        );
+      } else if (isNeon) {
+        ctx.fillStyle = '#090d16';
+        ctx.fillRect(0, 0, width, height);
+        ctx.fillStyle = def.color;
+        ctx.fillRect(0, height * 0.5 - 12, width, 24);
+      } else if (isAurora) {
+        const g = ctx.createLinearGradient(0, 0, width, height);
+        g.addColorStop(0, def.color);
+        g.addColorStop(0.55, def.number === 8 ? '#312e81' : '#34d399');
+        g.addColorStop(1, '#f472b6');
+        ctx.fillStyle = g;
+        ctx.fillRect(0, 0, width, height);
+      } else {
+        ctx.fillStyle = def.color;
+        ctx.fillRect(0, 0, width, height);
+      }
+    }
+
+    if (isMetallic) {
+      ctx.fillStyle = 'rgba(255,255,255,0.08)';
+      for (let y = 0; y < height; y += 3) {
+        ctx.fillRect(0, y, width, 1);
+      }
+    }
+
+    drawBallMedallion(ctx, width * 0.25, height * 0.5, def.number, {
+      isNeon,
+      isMarble,
+      accentColor: def.color,
+    });
+    drawBallMedallion(ctx, width * 0.75, height * 0.5, def.number, {
+      isNeon,
+      isMarble,
+      accentColor: def.color,
+    });
   }
 
   const texture = new THREE.CanvasTexture(canvas);
@@ -259,47 +541,49 @@ function drawBallMedallion(
   cx: number,
   cy: number,
   num: number,
+  style: { isNeon: boolean; isMarble: boolean; accentColor: string },
 ) {
   const radius = 64;
 
-  // Soft outer rim
-  ctx.fillStyle = 'rgba(0, 0, 0, 0.22)';
+  ctx.fillStyle = style.isNeon ? style.accentColor : style.isMarble ? '#d4a84f' : 'rgba(0, 0, 0, 0.22)';
   ctx.beginPath();
-  ctx.arc(cx, cy, radius + 3, 0, Math.PI * 2);
+  ctx.arc(cx, cy, radius + 4, 0, Math.PI * 2);
   ctx.fill();
 
-  // Ivory white number circle
-  ctx.fillStyle = '#f8f5eb';
+  ctx.fillStyle = style.isNeon ? '#0a0f1a' : '#f8f5eb';
   ctx.beginPath();
   ctx.arc(cx, cy, radius, 0, Math.PI * 2);
   ctx.fill();
 
-  // Crisp inner ring
-  ctx.strokeStyle = 'rgba(20, 20, 24, 0.25)';
-  ctx.lineWidth = 2.5;
+  ctx.strokeStyle = style.isNeon ? style.accentColor : 'rgba(20, 20, 24, 0.28)';
+  ctx.lineWidth = 3;
   ctx.beginPath();
   ctx.arc(cx, cy, radius - 5, 0, Math.PI * 2);
   ctx.stroke();
 
-  // Ball number
-  ctx.fillStyle = '#111318';
+  ctx.fillStyle = style.isNeon ? '#f8fafc' : '#111318';
   ctx.font = '800 66px "Inter", "Segoe UI", system-ui, sans-serif';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   const yOffset = num === 6 || num === 9 ? -2 : 2;
   ctx.fillText(String(num), cx, cy + yOffset);
 
-  // Underline for 6 and 9
   if (num === 6 || num === 9) {
     ctx.fillRect(cx - 20, cy + 32, 40, 5);
   }
 }
 
-export function createAllBallTextures(maxAnisotropy: number): THREE.CanvasTexture[] {
-  return BALL_DEFINITIONS.map((def) => createBallTexture(def, maxAnisotropy));
+export function createAllBallTextures(
+  maxAnisotropy: number,
+  ballSkinId = 'ball_classic',
+): THREE.CanvasTexture[] {
+  return BALL_DEFINITIONS.map((def) => createBallTexture(def, maxAnisotropy, ballSkinId));
 }
 
-export function createCueButtTexture(maxAnisotropy: number): THREE.CanvasTexture {
+export function createCueButtTexture(
+  maxAnisotropy: number,
+  cueSkinId = 'cue_classic_maple',
+): THREE.CanvasTexture {
   const width = 512;
   const height = 512;
   const canvas = document.createElement('canvas');
@@ -307,64 +591,222 @@ export function createCueButtTexture(maxAnisotropy: number): THREE.CanvasTexture
   canvas.height = height;
   const ctx = canvas.getContext('2d')!;
 
-  // Rich ebony base
-  ctx.fillStyle = '#1b1412';
-  ctx.fillRect(0, 0, width, height);
+  if (cueSkinId === 'cue_carbon_stealth') {
+    ctx.fillStyle = '#11151b';
+    ctx.fillRect(0, 0, width, height);
+    for (let y = 0; y < height; y += 8) {
+      for (let x = 0; x < width; x += 8) {
+        ctx.fillStyle = (x + y) % 16 === 0 ? '#1d242e' : '#0b0e12';
+        ctx.fillRect(x, y, 7, 7);
+      }
+    }
+    ctx.fillStyle = '#38bdf8';
+    ctx.fillRect(0, 198, width, 10);
+    ctx.fillRect(0, 410, width, 10);
+    ctx.fillStyle = '#090c10';
+    ctx.fillRect(0, 212, width, 194);
+  } else if (cueSkinId === 'cue_gold_imperial') {
+    ctx.fillStyle = '#120f0b';
+    ctx.fillRect(0, 0, width, height);
+    ctx.fillStyle = '#f59e0b';
+    for (let i = 0; i < 4; i++) {
+      const cx = (i + 0.5) * (width / 4);
+      ctx.beginPath();
+      ctx.moveTo(cx - 42, 0);
+      ctx.lineTo(cx, 188);
+      ctx.lineTo(cx + 42, 0);
+      ctx.closePath();
+      ctx.fill();
+    }
+    ctx.fillStyle = '#fde68a';
+    ctx.fillRect(0, 198, width, 14);
+    ctx.fillStyle = '#171411';
+    ctx.fillRect(0, 212, width, 196);
+    for (let y = 216; y < 404; y += 6) {
+      ctx.fillStyle = 'rgba(245,158,11,0.16)';
+      ctx.fillRect(0, y, width, 2);
+    }
+    ctx.fillStyle = '#fde68a';
+    ctx.fillRect(0, 408, width, 14);
+  } else if (cueSkinId === 'cue_platinum_apex') {
+    const grad = ctx.createLinearGradient(0, 0, width, 0);
+    grad.addColorStop(0, '#94a3b8');
+    grad.addColorStop(0.5, '#e2e8f0');
+    grad.addColorStop(1, '#64748b');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, width, 200);
+    ctx.fillStyle = '#1e293b';
+    ctx.fillRect(0, 200, width, 210);
+    ctx.fillStyle = '#38bdf8';
+    ctx.fillRect(0, 198, width, 10);
+    ctx.fillRect(0, 408, width, 10);
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 418, width, 94);
+  } else if (cueSkinId === 'cue_neon_cosmic') {
+    ctx.fillStyle = '#090b14';
+    ctx.fillRect(0, 0, width, height);
+    const neb = ctx.createLinearGradient(0, 0, width, 200);
+    neb.addColorStop(0, '#ec4899');
+    neb.addColorStop(0.5, '#6366f1');
+    neb.addColorStop(1, '#22d3ee');
+    ctx.fillStyle = neb;
+    for (let i = 0; i < 6; i++) {
+      const cx = (i + 0.5) * (width / 6);
+      ctx.beginPath();
+      ctx.moveTo(cx - 28, 0);
+      ctx.lineTo(cx, 192);
+      ctx.lineTo(cx + 28, 0);
+      ctx.closePath();
+      ctx.fill();
+    }
+    ctx.fillStyle = '#22d3ee';
+    ctx.fillRect(0, 196, width, 10);
+    ctx.fillStyle = '#0c101d';
+    ctx.fillRect(0, 206, width, 202);
+    ctx.fillStyle = '#ec4899';
+    ctx.fillRect(0, 408, width, 10);
+    ctx.fillStyle = neb;
+    ctx.fillRect(0, 424, width, 88);
+    ctx.fillStyle = 'rgba(10, 12, 22, 0.55)';
+    for (let i = 0; i < 4; i++) {
+      ctx.fillRect(i * 128 + 18, 434, 92, 68);
+    }
+  } else if (cueSkinId === 'cue_dragon_sovereign') {
+    ctx.fillStyle = '#22080c';
+    ctx.fillRect(0, 0, width, height);
+    ctx.fillStyle = '#dc2626';
+    for (let i = 0; i < 4; i++) {
+      const cx = (i + 0.5) * (width / 4);
+      ctx.beginPath();
+      ctx.moveTo(cx - 46, 0);
+      ctx.lineTo(cx, 194);
+      ctx.lineTo(cx + 46, 0);
+      ctx.closePath();
+      ctx.fill();
+    }
+    ctx.fillStyle = '#fbbf24';
+    ctx.fillRect(0, 198, width, 14);
+    ctx.fillStyle = '#14080a';
+    ctx.fillRect(0, 212, width, 196);
+    ctx.fillStyle = '#fbbf24';
+    ctx.fillRect(0, 408, width, 14);
+    ctx.fillStyle = '#7f1d1d';
+    ctx.fillRect(0, 422, width, 90);
+    ctx.fillStyle = '#fbbf24';
+    for (let i = 0; i < 4; i++) {
+      const cx = (i + 0.5) * (width / 4);
+      ctx.beginPath();
+      ctx.moveTo(cx, 436);
+      ctx.lineTo(cx + 16, 466);
+      ctx.lineTo(cx, 496);
+      ctx.lineTo(cx - 16, 466);
+      ctx.closePath();
+      ctx.fill();
+    }
+  } else {
+    // Classic Maple or Walnut Heritage
+    const isWalnut = cueSkinId === 'cue_walnut_heritage';
+    ctx.fillStyle = isWalnut ? '#2b160d' : '#1b1412';
+    ctx.fillRect(0, 0, width, height);
 
-  // Maple & Rosewood decorative forearm splice points (V = 0..0.42)
-  ctx.fillStyle = '#c89b62';
-  for (let i = 0; i < 4; i++) {
-    const cx = (i + 0.5) * (width / 4);
-    ctx.beginPath();
-    ctx.moveTo(cx - 44, 0);
-    ctx.lineTo(cx, 190);
-    ctx.lineTo(cx + 44, 0);
-    ctx.closePath();
-    ctx.fill();
+    ctx.fillStyle = isWalnut ? '#b57b4c' : '#c89b62';
+    for (let i = 0; i < 4; i++) {
+      const cx = (i + 0.5) * (width / 4);
+      ctx.beginPath();
+      ctx.moveTo(cx - 44, 0);
+      ctx.lineTo(cx, 190);
+      ctx.lineTo(cx + 44, 0);
+      ctx.closePath();
+      ctx.fill();
 
-    ctx.fillStyle = '#6e2318';
-    ctx.beginPath();
-    ctx.moveTo(cx - 28, 0);
-    ctx.lineTo(cx, 145);
-    ctx.lineTo(cx + 28, 0);
-    ctx.closePath();
-    ctx.fill();
-    ctx.fillStyle = '#c89b62';
-  }
+      ctx.fillStyle = isWalnut ? '#5b2a18' : '#6e2318';
+      ctx.beginPath();
+      ctx.moveTo(cx - 28, 0);
+      ctx.lineTo(cx, 145);
+      ctx.lineTo(cx + 28, 0);
+      ctx.closePath();
+      ctx.fill();
+      ctx.fillStyle = isWalnut ? '#b57b4c' : '#c89b62';
+    }
 
-  // Gold/Brass accent ring
-  ctx.fillStyle = '#d4af37';
-  ctx.fillRect(0, 200, width, 12);
+    ctx.fillStyle = '#d4af37';
+    ctx.fillRect(0, 200, width, 12);
 
-  // Black & silver Irish linen wrap grip (middle section)
-  ctx.fillStyle = '#15171c';
-  ctx.fillRect(0, 212, width, 195);
-  for (let y = 214; y < 405; y += 3) {
-    ctx.fillStyle = y % 6 === 0 ? 'rgba(220,220,225,0.14)' : 'rgba(0,0,0,0.45)';
-    ctx.fillRect(0, y, width, 1.5);
-  }
+    ctx.fillStyle = isWalnut ? '#23140e' : '#15171c';
+    ctx.fillRect(0, 212, width, 195);
+    for (let y = 214; y < 405; y += 3) {
+      ctx.fillStyle = y % 6 === 0 ? 'rgba(220,220,225,0.14)' : 'rgba(0,0,0,0.45)';
+      ctx.fillRect(0, y, width, 1.5);
+    }
 
-  // Lower brass ring & ebony butt sleeve
-  ctx.fillStyle = '#d4af37';
-  ctx.fillRect(0, 407, width, 12);
-  ctx.fillStyle = '#1f1613';
-  ctx.fillRect(0, 419, width, 93);
+    ctx.fillStyle = '#d4af37';
+    ctx.fillRect(0, 407, width, 12);
+    ctx.fillStyle = isWalnut ? '#311a10' : '#1f1613';
+    ctx.fillRect(0, 419, width, 93);
 
-  // Diamond mother-of-pearl inlays on butt sleeve
-  ctx.fillStyle = '#ebe6d8';
-  for (let i = 0; i < 4; i++) {
-    const cx = (i + 0.5) * (width / 4);
-    ctx.beginPath();
-    ctx.moveTo(cx, 438);
-    ctx.lineTo(cx + 14, 464);
-    ctx.lineTo(cx, 490);
-    ctx.lineTo(cx - 14, 464);
-    ctx.closePath();
-    ctx.fill();
+    ctx.fillStyle = '#ebe6d8';
+    for (let i = 0; i < 4; i++) {
+      const cx = (i + 0.5) * (width / 4);
+      ctx.beginPath();
+      ctx.moveTo(cx, 438);
+      ctx.lineTo(cx + 14, 464);
+      ctx.lineTo(cx, 490);
+      ctx.lineTo(cx - 14, 464);
+      ctx.closePath();
+      ctx.fill();
+    }
   }
 
   const tex = new THREE.CanvasTexture(canvas);
   tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = maxAnisotropy;
+  tex.needsUpdate = true;
+  return tex;
+}
+
+export function createCueShaftTexture(
+  maxAnisotropy: number,
+  cueSkinId: string,
+): THREE.CanvasTexture | null {
+  if (cueSkinId !== 'cue_carbon_stealth' && cueSkinId !== 'cue_neon_cosmic') {
+    return null;
+  }
+  const size = 256;
+  const canvas = document.createElement('canvas');
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext('2d')!;
+
+  if (cueSkinId === 'cue_carbon_stealth') {
+    ctx.fillStyle = '#181e26';
+    ctx.fillRect(0, 0, size, size);
+    for (let y = 0; y < size; y += 8) {
+      for (let x = 0; x < size; x += 8) {
+        ctx.fillStyle = (x + y) % 16 === 0 ? '#242c37' : '#10141a';
+        ctx.fillRect(x, y, 6, 6);
+      }
+    }
+  } else {
+    const grad = ctx.createLinearGradient(0, 0, 0, size);
+    grad.addColorStop(0, '#1e1b4b');
+    grad.addColorStop(0.5, '#701a75');
+    grad.addColorStop(1, '#0e7490');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, size, size);
+    ctx.fillStyle = 'rgba(34, 211, 238, 0.35)';
+    for (let i = 0; i < 18; i++) {
+      const x = (i * 47) % size;
+      const y = (i * 73) % size;
+      ctx.beginPath();
+      ctx.arc(x, y, 4 + (i % 5), 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.wrapS = THREE.RepeatWrapping;
+  tex.wrapT = THREE.RepeatWrapping;
   tex.anisotropy = maxAnisotropy;
   tex.needsUpdate = true;
   return tex;
@@ -380,7 +822,6 @@ export function createStudioFloorTexture(maxAnisotropy: number): THREE.CanvasTex
   ctx.fillStyle = '#12151b';
   ctx.fillRect(0, 0, size, size);
 
-  // Subtle dark parquet planks
   const plankH = 64;
   const plankW = 256;
   for (let row = 0; row < size / plankH; row++) {

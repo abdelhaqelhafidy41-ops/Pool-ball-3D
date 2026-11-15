@@ -21,6 +21,11 @@ import type { RuleProfileId } from '../game/rules/types';
 import { soundEngine } from '../game/utils/SoundEngine';
 import { multiplayerManager } from '../multiplayer/MultiplayerManager';
 import {
+  getAvatarVisualMeta,
+  getBadgeVisualMeta,
+  getNameplateVisualClass,
+} from '../multiplayer/shared/economy';
+import {
   ONLINE_AVATARS,
   type OnlineAvatarId,
   type OnlineModeIntent,
@@ -240,7 +245,7 @@ export function OnlineLobbyUI() {
               <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1">
                 Avatar
               </div>
-              <div className="flex items-center gap-1">
+              <div className="flex flex-wrap items-center gap-1">
                 {ONLINE_AVATARS.map((av) => {
                   const selected = onlineProfile.avatarId === av.id;
                   return (
@@ -263,6 +268,24 @@ export function OnlineLobbyUI() {
                     </button>
                   );
                 })}
+                {!ONLINE_AVATARS.some((a) => a.id === onlineProfile.avatarId) &&
+                  (() => {
+                    const customAv = getAvatarVisualMeta(onlineProfile.avatarId);
+                    return (
+                      <button
+                        type="button"
+                        title={`${customAv.label} (Store)`}
+                        onClick={() => {
+                          soundEngine.playUiClick();
+                          commitProfile(nameInput, onlineProfile.avatarId);
+                        }}
+                        className="inline-flex h-7 w-7 items-center justify-center rounded-lg border border-amber-400 scale-105 bg-amber-500/15 text-xs font-bold cursor-pointer"
+                        style={{ color: customAv.accent }}
+                      >
+                        {customAv.glyph}
+                      </button>
+                    );
+                  })()}
               </div>
             </div>
           </div>
@@ -373,7 +396,9 @@ export function OnlineLobbyUI() {
                     </div>
                   );
                 }
-                const av = ONLINE_AVATARS.find((a) => a.id === p.avatarId) ?? ONLINE_AVATARS[0];
+                const av = getAvatarVisualMeta(p.avatarId);
+                const np = getNameplateVisualClass(p.equippedCosmetics?.nameplateId);
+                const badge = getBadgeVisualMeta(p.equippedCosmetics?.badgeId);
                 const isYou = p.sessionId === onlineSessionId;
                 return (
                   <div
@@ -381,7 +406,7 @@ export function OnlineLobbyUI() {
                     className={`rounded-xl border p-3 ${
                       p.ready
                         ? 'border-emerald-400/50 bg-emerald-500/8'
-                        : 'border-white/12 bg-white/5'
+                        : `${np.borderClass} ${np.bgClass}`
                     }`}
                   >
                     <div className="flex items-center justify-between gap-2">
@@ -393,19 +418,28 @@ export function OnlineLobbyUI() {
                           {av.glyph}
                         </span>
                         <div className="min-w-0">
-                          <button
-                            type="button"
-                            disabled={!p.playerId}
-                            onClick={() => {
-                              if (p.playerId) {
-                                soundEngine.playUiClick();
-                                openProgressionModal('profile', p.playerId);
-                              }
-                            }}
-                            className="truncate text-left text-xs font-bold text-white hover:underline disabled:no-underline cursor-pointer disabled:cursor-default"
-                          >
-                            {p.displayName} {isYou ? '(You)' : ''}
-                          </button>
+                          <div className="flex items-center gap-1.5 min-w-0">
+                            <button
+                              type="button"
+                              disabled={!p.playerId}
+                              onClick={() => {
+                                if (p.playerId) {
+                                  soundEngine.playUiClick();
+                                  openProgressionModal('profile', p.playerId);
+                                }
+                              }}
+                              className="truncate text-left text-xs font-bold text-white hover:underline disabled:no-underline cursor-pointer disabled:cursor-default"
+                            >
+                              {p.displayName} {isYou ? '(You)' : ''}
+                            </button>
+                            {badge && (
+                              <span
+                                className={`inline-flex items-center gap-0.5 rounded border px-1 py-0.2 text-[9px] font-extrabold shrink-0 ${badge.className}`}
+                              >
+                                {badge.glyph} {badge.shortLabel}
+                              </span>
+                            )}
+                          </div>
                           <div className="text-[10px] text-slate-400">
                             {p.sessionId === onlineRoom.hostSessionId ? 'Host' : 'Challenger'} ·{' '}
                             {p.connected ? `${p.latencyMs}ms` : 'Offline'}
@@ -415,7 +449,7 @@ export function OnlineLobbyUI() {
                       </div>
 
                       <span
-                        className={`rounded-md px-2 py-0.5 text-[10px] font-extrabold uppercase tracking-wider ${
+                        className={`rounded-md px-2 py-0.5 text-[10px] font-extrabold uppercase tracking-wider shrink-0 ${
                           p.ready
                             ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-400/40'
                             : 'bg-white/5 text-slate-400 border border-white/10'

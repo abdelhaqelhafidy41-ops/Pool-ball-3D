@@ -31,6 +31,7 @@ import {
   type UnlockedAchievement,
 } from '../../src/multiplayer/shared/progression';
 import type { MatchHistoryRecord, OnlineAvatarId } from '../../src/multiplayer/shared/protocol';
+import { EconomyService } from './EconomyService';
 
 interface PlayerDbRow {
   player_id: string;
@@ -1248,6 +1249,17 @@ export class D1ProgressionService {
         )
         .run();
 
+      const economySvc = new EconomyService(this.db);
+      const coinAward = await economySvc.awardOnlineMatchCoins({
+        matchId: input.matchId,
+        playerId: row.player_id,
+        won,
+        ruleProfileId: input.ruleProfileId,
+        validCompetitiveMatch: true,
+        unlockedAchievementIds: unlockedList.map((a) => a.id),
+        endedAtMs: input.endedAtMs,
+      });
+
       return {
         playerId: row.player_id,
         role,
@@ -1260,6 +1272,8 @@ export class D1ProgressionService {
         levelBefore,
         levelAfter,
         unlockedAchievements: unlockedList,
+        coinsEarned: coinAward.totalCoins,
+        coinBreakdown: coinAward.breakdown,
       };
     };
 

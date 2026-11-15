@@ -3,7 +3,7 @@ import { useEffect, useState } from 'react';
 import { soundEngine } from '../game/utils/SoundEngine';
 import { multiplayerManager } from '../multiplayer/MultiplayerManager';
 import { socialClient } from '../multiplayer/SocialClient';
-import { ONLINE_AVATARS } from '../multiplayer/shared/protocol';
+import { getAvatarVisualMeta } from '../multiplayer/shared/economy';
 import { useGameStore } from '../store/useGameStore';
 
 export function InviteNotificationBanner() {
@@ -30,8 +30,7 @@ export function InviteNotificationBanner() {
 
   const topInvite = activeInvites[0];
   const remainingSec = Math.max(0, Math.ceil((topInvite.expiresAtMs - nowMs) / 1000));
-  const av =
-    ONLINE_AVATARS.find((a) => a.id === topInvite.senderAvatar) ?? ONLINE_AVATARS[0];
+  const av = getAvatarVisualMeta(topInvite.senderAvatar);
 
   const handleRespond = async (action: 'accept' | 'reject') => {
     soundEngine.unlock();

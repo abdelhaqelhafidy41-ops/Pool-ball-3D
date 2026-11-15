@@ -7,6 +7,11 @@ import {
 } from '../game/rules/BallGroupManager';
 import type { BallGroup, PlayerId } from '../game/rules/types';
 import { BALL_DEFINITIONS } from '../game/utils/constants';
+import {
+  getAvatarVisualMeta,
+  getBadgeVisualMeta,
+  getNameplateVisualClass,
+} from '../multiplayer/shared/economy';
 import { useGameStore } from '../store/useGameStore';
 
 function MiniBallBadge({
@@ -60,6 +65,9 @@ function PlayerScoreCard({
   tableOpen,
   pocketedSet,
   align,
+  avatarId,
+  nameplateId,
+  badgeId,
 }: {
   playerId: PlayerId;
   name: string;
@@ -69,6 +77,9 @@ function PlayerScoreCard({
   tableOpen: boolean;
   pocketedSet: Set<number>;
   align: 'left' | 'right';
+  avatarId?: string | null;
+  nameplateId?: string | null;
+  badgeId?: string | null;
 }) {
   const remaining = group ? getRemainingBallsForGroup(pocketedSet, group) : [];
   const onEight = group ? canTargetEightBall(pocketedSet, group) : false;
@@ -87,13 +98,19 @@ function PlayerScoreCard({
         ? 'STRIPES 9–15'
         : 'OPEN';
 
+  const nameplate = getNameplateVisualClass(nameplateId);
+  const badgeMeta = getBadgeVisualMeta(badgeId);
+  const avatarMeta = avatarId ? getAvatarVisualMeta(avatarId) : null;
+
   return (
     <div
       data-testid={`player-card-${playerId}`}
-      className={`flex flex-col gap-1 rounded-xl border px-2.5 py-1.5 min-w-[140px] sm:min-w-[186px] transition-colors ${
+      className={`flex flex-col gap-1 rounded-xl border px-2.5 py-1.5 min-w-[140px] sm:min-w-[196px] transition-colors ${
         isActive
           ? 'border-amber-400/80 bg-[#131d29]/95 shadow-[0_0_16px_rgba(245,158,11,0.16)]'
-          : 'border-white/10 bg-[#0c1219]/92'
+          : nameplateId && nameplateId !== 'nameplate_standard'
+            ? `${nameplate.borderClass} ${nameplate.bgClass}`
+            : 'border-white/10 bg-[#0c1219]/92'
       } ${align === 'right' ? 'items-end text-right' : 'items-start text-left'}`}
     >
       <div
@@ -101,15 +118,34 @@ function PlayerScoreCard({
           align === 'right' ? 'flex-row-reverse' : ''
         }`}
       >
-        <div className="flex items-center gap-1.5 min-w-0">
+        <div
+          className={`flex items-center gap-1.5 min-w-0 ${
+            align === 'right' ? 'flex-row-reverse' : ''
+          }`}
+        >
           {isAi ? (
             <Cpu className={`h-3.5 w-3.5 shrink-0 ${isActive ? 'text-amber-400' : 'text-slate-400'}`} />
+          ) : avatarMeta ? (
+            <span
+              className="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded border border-white/15 text-[10px] font-bold"
+              style={{ backgroundColor: `${avatarMeta.accent}22`, color: avatarMeta.accent }}
+            >
+              {avatarMeta.glyph}
+            </span>
           ) : (
             <User className={`h-3.5 w-3.5 shrink-0 ${isActive ? 'text-amber-400' : 'text-slate-400'}`} />
           )}
-          <span className="truncate text-xs font-bold text-white max-w-[92px] sm:max-w-[120px]">
+          <span className="truncate text-xs font-bold text-white max-w-[88px] sm:max-w-[110px]">
             {name}
           </span>
+          {badgeMeta && (
+            <span
+              className={`hidden sm:inline-flex items-center rounded border px-1 py-0.2 text-[8px] font-extrabold shrink-0 ${badgeMeta.className}`}
+              title={badgeMeta.shortLabel}
+            >
+              {badgeMeta.glyph}
+            </span>
+          )}
         </div>
 
         <span
@@ -181,6 +217,8 @@ export function MatchScoreboard() {
   const shotCount = useGameStore((s) => s.shotCount);
   const isAiThinking = useGameStore((s) => s.isAiThinking);
   const cueBallPocketed = useGameStore((s) => s.cueBallPocketed);
+  const equippedCosmetics = useGameStore((s) => s.equippedCosmetics);
+  const onlineRoom = useGameStore((s) => s.onlineRoom);
   void isAiThinking;
 
   if (screen !== 'playing') return null;
@@ -206,6 +244,14 @@ export function MatchScoreboard() {
       ? matchConfig.player2Name.trim() || 'CPU Pro'
       : matchConfig.player2Name.trim() || 'Player 2';
 
+  const isOnline = matchConfig.opponentType === 'online';
+  const onlineP1 = isOnline
+    ? onlineRoom?.players.find((p) => p.role === 'player1') ?? null
+    : null;
+  const onlineP2 = isOnline
+    ? onlineRoom?.players.find((p) => p.role === 'player2') ?? null
+    : null;
+
   const statusText = statusHeadline;
 
   return (
@@ -219,6 +265,9 @@ export function MatchScoreboard() {
         tableOpen={tableOpen}
         pocketedSet={pocketedSet}
         align="left"
+        avatarId={isOnline ? onlineP1?.avatarId : equippedCosmetics.avatarId}
+        nameplateId={isOnline ? onlineP1?.equippedCosmetics?.nameplateId : equippedCosmetics.nameplateId}
+        badgeId={isOnline ? onlineP1?.equippedCosmetics?.badgeId : equippedCosmetics.badgeId}
       />
 
       {/* Center Match Status Box */}
@@ -245,6 +294,9 @@ export function MatchScoreboard() {
         tableOpen={tableOpen}
         pocketedSet={pocketedSet}
         align="right"
+        avatarId={isOnline ? onlineP2?.avatarId : null}
+        nameplateId={isOnline ? onlineP2?.equippedCosmetics?.nameplateId : null}
+        badgeId={isOnline ? onlineP2?.equippedCosmetics?.badgeId : null}
       />
     </div>
   );

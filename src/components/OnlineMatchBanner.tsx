@@ -1,7 +1,7 @@
 import { LogOut, RefreshCw, Wifi, WifiOff } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { multiplayerManager } from '../multiplayer/MultiplayerManager';
-import { ONLINE_AVATARS } from '../multiplayer/shared/protocol';
+import { getAvatarVisualMeta } from '../multiplayer/shared/economy';
 import { useGameStore } from '../store/useGameStore';
 
 export function OnlineMatchBanner() {
@@ -31,8 +31,9 @@ export function OnlineMatchBanner() {
   }
 
   const opponentProfile = onlineRoom?.players.find((p) => p.sessionId !== onlineSessionId) ?? null;
-  const avatarMeta =
-    ONLINE_AVATARS.find((a) => a.id === opponentProfile?.avatarId) ?? ONLINE_AVATARS[1];
+  const avatarMeta = opponentProfile
+    ? getAvatarVisualMeta(opponentProfile.avatarId)
+    : getAvatarVisualMeta('eight_obsidian');
 
   const graceRemainingSec =
     onlineOpponentStatus.state === 'disconnected' && onlineOpponentStatus.graceDeadlineMs

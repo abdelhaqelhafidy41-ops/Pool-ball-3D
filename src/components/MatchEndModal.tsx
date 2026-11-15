@@ -1,6 +1,8 @@
-import { Award, Film, Globe, Home, RotateCcw, Trophy } from 'lucide-react';
+import { Award, Coins, Film, Globe, Home, RotateCcw, ShoppingBag, Trophy } from 'lucide-react';
+import { useEffect, useRef } from 'react';
 import { computeAverageBallsPerTurn } from '../game/rules/MatchStatistics';
 import { soundEngine } from '../game/utils/SoundEngine';
+import { economyClient } from '../multiplayer/EconomyClient';
 import { multiplayerManager } from '../multiplayer/MultiplayerManager';
 import { useGameStore } from '../store/useGameStore';
 
@@ -26,6 +28,41 @@ export function MatchEndModal({ onPlayAgain, onMainMenu, onWatchReplay }: MatchE
   const openOnlineLobby = useGameStore((s) => s.openOnlineLobby);
   const lastOnlineMatchProgression = useGameStore((s) => s.lastOnlineMatchProgression);
   const openProgressionModal = useGameStore((s) => s.openProgressionModal);
+  const aiMatchClientId = useGameStore((s) => s.aiMatchClientId);
+  const aiMatchStartedAtMs = useGameStore((s) => s.aiMatchStartedAtMs);
+  const lastAiRewardClaim = useGameStore((s) => s.lastAiRewardClaim);
+  const openStoreModal = useGameStore((s) => s.openStoreModal);
+  const claimedAiMatchIdsRef = useRef<Set<string>>(new Set());
+
+  const isEligibleAiWin =
+    screen === 'playing' &&
+    matchPhase === 'GAME_OVER' &&
+    winner === 'player1' &&
+    !replayActive &&
+    matchConfig.opponentType === 'ai' &&
+    matchConfig.gameMode === 'eightBall';
+
+  useEffect(() => {
+    if (!isEligibleAiWin) return;
+    if (!aiMatchClientId || claimedAiMatchIdsRef.current.has(aiMatchClientId)) return;
+    claimedAiMatchIdsRef.current.add(aiMatchClientId);
+    const durationSec = Math.max(0, Math.round((Date.now() - aiMatchStartedAtMs) / 1000));
+    void economyClient.claimAiMatchReward({
+      clientMatchId: aiMatchClientId,
+      difficulty: matchConfig.aiDifficulty,
+      won: true,
+      totalShots: shotCount,
+      ballsPocketed: pocketedNumbers.length,
+      durationSec,
+    });
+  }, [
+    isEligibleAiWin,
+    aiMatchClientId,
+    aiMatchStartedAtMs,
+    matchConfig.aiDifficulty,
+    shotCount,
+    pocketedNumbers.length,
+  ]);
 
   if (screen !== 'playing' || matchPhase !== 'GAME_OVER' || !winner || replayActive) {
     return null;
@@ -158,6 +195,30 @@ export function MatchEndModal({ onPlayAgain, onMainMenu, onWatchReplay }: MatchE
                       </div>
                     </div>
 
+                    {myDelta.coinsEarned !== undefined && myDelta.coinsEarned > 0 && (
+                      <div className="rounded-lg border border-amber-400/35 bg-black/35 px-2.5 py-2 space-y-1">
+                        <div className="flex items-center justify-between text-xs font-extrabold text-amber-300">
+                          <span className="inline-flex items-center gap-1.5">
+                            <Coins className="h-3.5 w-3.5 text-amber-400" />
+                            POOL COINS Earned
+                          </span>
+                          <span className="font-mono tabular-nums">+{myDelta.coinsEarned}</span>
+                        </div>
+                        {myDelta.coinBreakdown && myDelta.coinBreakdown.length > 0 && (
+                          <div className="space-y-0.5 text-[10px] text-slate-300">
+                            {myDelta.coinBreakdown.map((entry, idx) => (
+                              <div key={`${entry.label}_${idx}`} className="flex justify-between">
+                                <span>{entry.label}</span>
+                                <span className="font-mono tabular-nums text-amber-200">
+                                  +{entry.amount}
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    )}
+
                     {myDelta.unlockedAchievements.length > 0 && (
                       <div className="space-y-1 pt-1">
                         {myDelta.unlockedAchievements.map((ach) => (
@@ -187,19 +248,65 @@ export function MatchEndModal({ onPlayAgain, onMainMenu, onWatchReplay }: MatchE
           })()
         )}
 
-        {replayShots.length > 0 && (
+        {/* AI Match Pool Coins Reward */}
+        {!isOnline &&
+          matchConfig.opponentType === 'ai' &&
+          matchConfig.gameMode === 'eightBall' &&
+          winner === 'player1' &&
+          lastAiRewardClaim && (
+            <div className="mt-3.5 rounded-xl border border-amber-400/35 bg-amber-500/10 p-3">
+              <div className="flex items-center justify-between gap-2 text-xs">
+                <span className="inline-flex items-center gap-1.5 font-bold text-amber-200">
+                  <Coins className="h-3.5 w-3.5 text-amber-400" />
+                  AI Victory Reward ({matchConfig.aiDifficulty.toUpperCase()})
+                </span>
+                <span className="font-mono font-extrabold tabular-nums text-amber-300">
+                  {lastAiRewardClaim.coinsAwarded > 0
+                    ? `+${lastAiRewardClaim.coinsAwarded} POOL COINS`
+                    : '0 POOL COINS'}
+                </span>
+              </div>
+              <div className="mt-1 flex items-center justify-between text-[10px] text-slate-300 font-mono tabular-nums">
+                <span>
+                  {lastAiRewardClaim.dailyCapReached
+                    ? 'Daily AI coin cap reached'
+                    : lastAiRewardClaim.coinsAwarded === 0
+                      ? 'Minimum match requirements not met'
+                      : 'Credited to wallet'}
+                </span>
+                <span>
+                  Daily {lastAiRewardClaim.dailyEarned}/{lastAiRewardClaim.dailyCap}
+                </span>
+              </div>
+            </div>
+          )}
+
+        <div className="mt-4 flex flex-wrap items-center gap-2">
+          {replayShots.length > 0 && (
+            <button
+              type="button"
+              onClick={() => {
+                soundEngine.playUiClick();
+                onWatchReplay();
+              }}
+              className="inline-flex flex-1 items-center justify-center gap-2 rounded-xl border border-amber-400/35 bg-amber-500/10 px-4 py-2 text-xs font-bold uppercase tracking-wider text-amber-300 hover:bg-amber-500/20 transition-colors cursor-pointer whitespace-nowrap"
+            >
+              <Film className="h-4 w-4 text-amber-400" />
+              Watch Replay
+            </button>
+          )}
           <button
             type="button"
             onClick={() => {
               soundEngine.playUiClick();
-              onWatchReplay();
+              openStoreModal('store');
             }}
-            className="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-xl border border-amber-400/35 bg-amber-500/10 px-4 py-2 text-xs font-bold uppercase tracking-wider text-amber-300 hover:bg-amber-500/20 transition-colors cursor-pointer whitespace-nowrap"
+            className="inline-flex flex-1 items-center justify-center gap-2 rounded-xl border border-white/15 bg-white/5 px-4 py-2 text-xs font-bold uppercase tracking-wider text-slate-200 hover:bg-white/10 transition-colors cursor-pointer whitespace-nowrap"
           >
-            <Film className="h-4 w-4 text-amber-400" />
-            Watch Last Shot Replay
+            <ShoppingBag className="h-4 w-4 text-amber-400" />
+            Store
           </button>
-        )}
+        </div>
 
         {isOnline ? (
           <div className="mt-3 space-y-2.5">

@@ -41,6 +41,7 @@ import {
   type LeaderboardScope,
   type PublicPlayerProfile,
 } from '../multiplayer/shared/progression';
+import { getAvatarVisualMeta } from '../multiplayer/shared/economy';
 import {
   ONLINE_AVATARS,
   type MatchHistoryRecord,
@@ -102,7 +103,7 @@ function ProfileDetailsView({
   profile: PublicPlayerProfile;
   isOwn: boolean;
 }) {
-  const avatar = ONLINE_AVATARS.find((a) => a.id === profile.avatarId) ?? ONLINE_AVATARS[0];
+  const avatar = getAvatarVisualMeta(profile.avatarId);
   const { stats, levelProgress } = profile;
 
   const friends = useGameStore((s) => s.friends);
@@ -851,6 +852,24 @@ export function ProgressionModal() {
                           </button>
                         );
                       })}
+                      {!ONLINE_AVATARS.some((a) => a.id === selectedAvatar) &&
+                        (() => {
+                          const customAv = getAvatarVisualMeta(selectedAvatar);
+                          return (
+                            <button
+                              type="button"
+                              title={`${customAv.label} (Store)`}
+                              onClick={() => {
+                                soundEngine.playUiClick();
+                                setSelectedAvatar(selectedAvatar);
+                              }}
+                              className="inline-flex h-7 w-7 items-center justify-center rounded-lg border border-amber-400 bg-amber-500/15 scale-105 text-xs font-bold cursor-pointer"
+                              style={{ color: customAv.accent }}
+                            >
+                              {customAv.glyph}
+                            </button>
+                          );
+                        })()}
                     </div>
                   </div>
 
@@ -1155,8 +1174,7 @@ export function ProgressionModal() {
                       </tr>
                     ) : (
                       lbData.items.map((row) => {
-                        const av =
-                          ONLINE_AVATARS.find((a) => a.id === row.avatarId) ?? ONLINE_AVATARS[0];
+                        const av = getAvatarVisualMeta(row.avatarId);
                         const isSelf = ownProfile?.playerId === row.playerId;
                         return (
                           <tr

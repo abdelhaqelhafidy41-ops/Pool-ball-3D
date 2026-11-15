@@ -31,7 +31,12 @@ export interface WorkerRuntimeConfig {
   inviteTtlMs: number;
 }
 
-const VALID_AVATARS = new Set<OnlineAvatarId>(ONLINE_AVATARS.map((a) => a.id));
+const VALID_AVATARS = new Set<OnlineAvatarId>([
+  ...ONLINE_AVATARS.map((a) => a.id),
+  'avatar_neon_phoenix',
+  'avatar_golden_crown',
+  'avatar_void_samurai',
+]);
 
 function readIntVar(raw: string | undefined, fallback: number, min = 1): number {
   if (!raw) return fallback;

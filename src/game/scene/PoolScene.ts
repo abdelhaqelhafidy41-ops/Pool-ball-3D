@@ -3,12 +3,14 @@ import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { RectAreaLightUniformsLib } from 'three/addons/lights/RectAreaLightUniformsLib.js';
 import { useGameStore, canLocalPlayerAct, type CueSpin } from '../../store/useGameStore';
 import { multiplayerManager } from '../../multiplayer/MultiplayerManager';
+import { DEFAULT_EQUIPPED_COSMETICS } from '../../multiplayer/shared/economy';
 import type { OnlineBallFrame } from '../../multiplayer/shared/protocol';
 import { CameraController } from '../camera/CameraController';
 import { InputManager } from '../controls/InputManager';
 import { BilliardBalls } from '../objects/BilliardBalls';
 import { CueStick } from '../objects/CueStick';
 import { PoolTable } from '../objects/PoolTable';
+import { VictoryEffects } from '../objects/VictoryEffects';
 import { PhysicsWorld, type BallPhysicsSnapshot } from '../physics/PhysicsWorld';
 import { AITurnController } from '../ai/AITurnController';
 import { ReplayAnalysisOverlay } from '../replay/ReplayAnalysisOverlay';
@@ -60,6 +62,7 @@ export class PoolScene {
   private poolTable!: PoolTable;
   private billiardBalls!: BilliardBalls;
   private cueStick!: CueStick;
+  private victoryEffects = new VictoryEffects();
   private physics!: PhysicsWorld;
   private cameraController!: CameraController;
   private inputManager!: InputManager;
@@ -149,6 +152,11 @@ export class PoolScene {
   private lastSentSpinY = useGameStore.getState().cueSpin.y;
   private lastRemoteShotSeqAnim = -1;
   private wasBallsMoving = false;
+  private lastAppliedCueId = DEFAULT_EQUIPPED_COSMETICS.cueId;
+  private lastAppliedBallId = DEFAULT_EQUIPPED_COSMETICS.ballId;
+  private lastAppliedTableId = DEFAULT_EQUIPPED_COSMETICS.tableId;
+  private lastAppliedDecorId = DEFAULT_EQUIPPED_COSMETICS.decorationId;
+  private lastMatchPhaseForVictory = useGameStore.getState().matchPhase;
 
   private resizeObserver: ResizeObserver | null = null;
   private resizeRafId = 0;
@@ -245,6 +253,9 @@ export class PoolScene {
       this.cueStick = new CueStick(maxAnisotropy);
       this.scene.add(this.cueStick.group);
 
+      this.scene.add(this.victoryEffects.group);
+      this.syncCosmeticsFromStore(store, true);
+
       this.scene.add(this.replayAnalysisOverlay.group);
 
       this.setupMatchOverlays();
@@ -298,6 +309,7 @@ export class PoolScene {
         },
         onOnlineMatchEntered: (snapshot, balls) => {
           this.aiTurnController?.cancel();
+          this.victoryEffects.stop();
           if (this.replayController.isActive()) {
             this.exitReplay();
           }
@@ -310,6 +322,7 @@ export class PoolScene {
           this.strikeAnim.impulseApplied = false;
           this.wasBallsMoving = false;
           this.lastRemoteShotSeqAnim = -1;
+          this.syncCosmeticsFromStore(useGameStore.getState());
           this.physics.syncAllFromServerFrames(balls);
           for (const b of balls) {
             this.billiardBalls.syncFromTransform(
@@ -411,6 +424,7 @@ export class PoolScene {
           }
         },
         onOnlineMatchExited: () => {
+          this.victoryEffects.stop();
           if (this.replayController.isActive()) {
             this.exitReplay();
           }
@@ -419,6 +433,7 @@ export class PoolScene {
           this.strikeAnim.active = false;
           this.wasBallsMoving = false;
           this.physics.resetRack(generateOfficialEightBallRack());
+          this.syncCosmeticsFromStore(useGameStore.getState());
         },
       });
 
@@ -435,7 +450,9 @@ export class PoolScene {
         }
         if (state.settings.feltTheme !== this.lastFeltTheme) {
           this.lastFeltTheme = state.settings.feltTheme;
-          this.poolTable.setFeltTheme(state.settings.feltTheme);
+          this.syncCosmeticsFromStore(state, true);
+        } else {
+          this.syncCosmeticsFromStore(state);
         }
         if (state.settings.shadowsEnabled !== this.lastShadowsEnabled) {
           this.lastShadowsEnabled = state.settings.shadowsEnabled;
@@ -451,6 +468,7 @@ export class PoolScene {
         if (state.screen !== this.lastScreen) {
           this.lastScreen = state.screen;
           if (state.screen === 'menu') {
+            this.victoryEffects.stop();
             if (this.replayController.isActive()) {
               this.exitReplay();
             }
@@ -458,6 +476,24 @@ export class PoolScene {
             this.shotRecorder.cancelActiveRecording();
             this.aiTurnController?.cancel();
             this.matchManager.enterMenu();
+          }
+        }
+        if (state.matchPhase !== this.lastMatchPhaseForVictory) {
+          const prevPhase = this.lastMatchPhaseForVictory;
+          this.lastMatchPhaseForVictory = state.matchPhase;
+          if (
+            state.matchPhase === 'GAME_OVER' &&
+            state.screen === 'playing' &&
+            prevPhase !== 'GAME_OVER'
+          ) {
+            let victoryId = state.equippedCosmetics.victoryId;
+            if (state.matchConfig.opponentType === 'online' && state.onlineRoom && state.winner) {
+              const winnerPlayer = state.onlineRoom.players.find((p) => p.role === state.winner);
+              victoryId = winnerPlayer?.equippedCosmetics?.victoryId ?? victoryId;
+            }
+            this.victoryEffects.play(victoryId);
+          } else if (state.matchPhase !== 'GAME_OVER') {
+            this.victoryEffects.stop();
           }
         }
         if (state.matchConfig !== this.lastMatchConfig) {
@@ -920,6 +956,7 @@ export class PoolScene {
     }
 
     this.aiTurnController?.cancel();
+    this.victoryEffects.stop();
     if (this.replayController.isActive()) {
       this.replayController.exitReplay();
       this.replayAnalysisOverlay.clear();
@@ -1452,8 +1489,10 @@ export class PoolScene {
       this.fpsTimer = 0;
     }
 
-    // 2. Continuous keyboard aiming input
+    // 2. Continuous keyboard aiming input & animated cosmetics
     this.inputManager.update(dt);
+    this.billiardBalls.update(this.clock.elapsedTime);
+    this.victoryEffects.update(dt);
 
     // 3. Synchronized forward cue strike animation & exact-contact physics impulse with spin
     if (this.strikeAnim.active) {
@@ -1837,6 +1876,8 @@ export class PoolScene {
     this.shotRecorder.clearMatchShots();
     this.replayController.exitReplay();
     this.replayAnalysisOverlay.dispose();
+    this.cueStick?.dispose();
+    this.victoryEffects?.dispose();
 
     if (this.scene) {
       disposeObject3D(this.scene);
@@ -1847,6 +1888,53 @@ export class PoolScene {
       if (this.renderer.domElement.parentElement === this.container) {
         this.container.removeChild(this.renderer.domElement);
       }
+    }
+  }
+
+  private syncCosmeticsFromStore(
+    state = useGameStore.getState(),
+    forceTableRefresh = false,
+  ) {
+    if (!this.cueStick || !this.billiardBalls || !this.poolTable) return;
+
+    let cueId = state.equippedCosmetics.cueId;
+    let ballId = state.equippedCosmetics.ballId;
+    let tableId = state.equippedCosmetics.tableId;
+    let decorId = state.equippedCosmetics.decorationId;
+
+    if (state.screen === 'playing' && state.matchConfig.opponentType === 'online' && state.onlineRoom) {
+      const hostPlayer =
+        state.onlineRoom.players.find((p) => p.sessionId === state.onlineRoom?.hostSessionId) ??
+        state.onlineRoom.players[0];
+      const hostCosmetics = hostPlayer?.equippedCosmetics;
+      if (hostCosmetics) {
+        tableId = hostCosmetics.tableId;
+        ballId = hostCosmetics.ballId;
+        decorId = hostCosmetics.decorationId;
+      }
+
+      const activePlayer = state.onlineRoom.players.find((p) => p.role === state.activePlayer);
+      if (activePlayer?.equippedCosmetics?.cueId) {
+        cueId = activePlayer.equippedCosmetics.cueId;
+      }
+    }
+
+    if (cueId !== this.lastAppliedCueId) {
+      this.lastAppliedCueId = cueId;
+      this.cueStick.applyCueSkin(cueId);
+    }
+    if (ballId !== this.lastAppliedBallId) {
+      this.lastAppliedBallId = ballId;
+      this.billiardBalls.applyBallSkin(ballId);
+    }
+    if (
+      forceTableRefresh ||
+      tableId !== this.lastAppliedTableId ||
+      decorId !== this.lastAppliedDecorId
+    ) {
+      this.lastAppliedTableId = tableId;
+      this.lastAppliedDecorId = decorId;
+      this.poolTable.applyTableCosmetics(tableId, decorId, state.settings.feltTheme);
     }
   }
 }

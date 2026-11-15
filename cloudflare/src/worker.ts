@@ -5,8 +5,15 @@ import {
   type Env,
 } from './config';
 import { D1ProgressionService } from './D1ProgressionService';
+import { EconomyService } from './EconomyService';
 import { MatchmakerDurableObject } from './MatchmakerDurableObject';
 import { PoolRoomDurableObject } from './PoolRoomDurableObject';
+import {
+  COSMETIC_CATALOG,
+  DAILY_LOGIN_SCHEDULE,
+  ECONOMY_CONFIG,
+  type AiMatchRewardRequest,
+} from '../../src/multiplayer/shared/economy';
 import { ACHIEVEMENTS_CATALOG, type LeaderboardScope } from '../../src/multiplayer/shared/progression';
 import type { FriendRequestAction, MatchInviteAction } from '../../src/multiplayer/shared/social';
 
@@ -579,6 +586,215 @@ export default {
         details: body.details,
         excerpt: body.excerpt,
       });
+      if (!res.ok) {
+        return jsonResponse({ error: res.code, message: res.message }, res.status, cors);
+      }
+      return jsonResponse(res, 200, cors);
+    }
+
+    // ===== Phase 8 In-Game Store, Currency & Cosmetic Inventory API =====
+
+    if (url.pathname === '/api/store/catalog' && request.method === 'GET') {
+      return jsonResponse(
+        {
+          ok: true,
+          currencyName: ECONOMY_CONFIG.currencyName,
+          catalog: COSMETIC_CATALOG,
+          dailySchedule: DAILY_LOGIN_SCHEDULE,
+          economyConfig: ECONOMY_CONFIG,
+        },
+        200,
+        cors,
+      );
+    }
+
+    if (url.pathname === '/api/economy/wallet' && request.method === 'GET') {
+      const playerId = (url.searchParams.get('playerId') ?? '').trim();
+      const token = extractBearerToken(request);
+      if (!playerId || !token) {
+        return jsonResponse(
+          { error: 'UNAUTHORIZED', message: 'Missing player credentials.' },
+          401,
+          cors,
+        );
+      }
+      if (env.DB) {
+        const valid = await new D1ProgressionService(env.DB).verifyPlayerToken(playerId, token);
+        if (!valid) {
+          return jsonResponse({ error: 'UNAUTHORIZED', message: 'Invalid player credentials.' }, 401, cors);
+        }
+        const overview = await new EconomyService(env.DB).getOverview(playerId);
+        return jsonResponse({ ok: true, ...overview }, 200, cors);
+      }
+      const res = await getMatchmakerStub().economyGetOverview(playerId, token);
+      if (!res.ok) {
+        return jsonResponse({ error: res.code, message: res.message }, res.status, cors);
+      }
+      return jsonResponse(res, 200, cors);
+    }
+
+    if (url.pathname === '/api/economy/transactions' && request.method === 'GET') {
+      const playerId = (url.searchParams.get('playerId') ?? '').trim();
+      const limit = Number.parseInt(url.searchParams.get('limit') ?? '40', 10) || 40;
+      const token = extractBearerToken(request);
+      if (!playerId || !token) {
+        return jsonResponse(
+          { error: 'UNAUTHORIZED', message: 'Missing player credentials.' },
+          401,
+          cors,
+        );
+      }
+      if (env.DB) {
+        const valid = await new D1ProgressionService(env.DB).verifyPlayerToken(playerId, token);
+        if (!valid) {
+          return jsonResponse({ error: 'UNAUTHORIZED', message: 'Invalid player credentials.' }, 401, cors);
+        }
+        const transactions = await new EconomyService(env.DB).getTransactions(playerId, limit);
+        return jsonResponse({ ok: true, transactions }, 200, cors);
+      }
+      const res = await getMatchmakerStub().economyGetTransactions(playerId, token, limit);
+      if (!res.ok) {
+        return jsonResponse({ error: res.code, message: res.message }, res.status, cors);
+      }
+      return jsonResponse(res, 200, cors);
+    }
+
+    if (url.pathname === '/api/economy/purchase' && request.method === 'POST') {
+      const body = await readJsonBody(request);
+      if (!body || typeof body.playerId !== 'string' || typeof body.itemId !== 'string') {
+        return jsonResponse(
+          { error: 'INVALID_INPUT', message: 'playerId and itemId are required.' },
+          400,
+          cors,
+        );
+      }
+      const token = extractBearerToken(request, body);
+      if (env.DB) {
+        const valid = await new D1ProgressionService(env.DB).verifyPlayerToken(body.playerId, token);
+        if (!valid) {
+          return jsonResponse({ error: 'UNAUTHORIZED', message: 'Invalid player credentials.' }, 401, cors);
+        }
+        const res = await new EconomyService(env.DB).purchaseItem(body.playerId.trim(), body.itemId);
+        if (!res.ok) {
+          return jsonResponse({ error: res.code, message: res.message }, res.status, cors);
+        }
+        return jsonResponse(res, 200, cors);
+      }
+      const res = await getMatchmakerStub().economyPurchaseItem(body.playerId, token, body.itemId);
+      if (!res.ok) {
+        return jsonResponse({ error: res.code, message: res.message }, res.status, cors);
+      }
+      return jsonResponse(res, 200, cors);
+    }
+
+    if (url.pathname === '/api/economy/equip' && request.method === 'POST') {
+      const body = await readJsonBody(request);
+      if (!body || typeof body.playerId !== 'string' || typeof body.category !== 'string') {
+        return jsonResponse(
+          { error: 'INVALID_INPUT', message: 'playerId and category are required.' },
+          400,
+          cors,
+        );
+      }
+      const token = extractBearerToken(request, body);
+      if (env.DB) {
+        const valid = await new D1ProgressionService(env.DB).verifyPlayerToken(body.playerId, token);
+        if (!valid) {
+          return jsonResponse({ error: 'UNAUTHORIZED', message: 'Invalid player credentials.' }, 401, cors);
+        }
+        const res = await new EconomyService(env.DB).equipItem(
+          body.playerId.trim(),
+          body.category,
+          body.itemId ?? null,
+        );
+        if (!res.ok) {
+          return jsonResponse({ error: res.code, message: res.message }, res.status, cors);
+        }
+        await getMatchmakerStub().syncPlayerCosmeticsInRoom(body.playerId.trim(), res.equipped);
+        return jsonResponse(res, 200, cors);
+      }
+      const res = await getMatchmakerStub().economyEquipItem(
+        body.playerId,
+        token,
+        body.category,
+        body.itemId ?? null,
+      );
+      if (!res.ok) {
+        return jsonResponse({ error: res.code, message: res.message }, res.status, cors);
+      }
+      return jsonResponse(res, 200, cors);
+    }
+
+    if (url.pathname === '/api/economy/daily-claim' && request.method === 'POST') {
+      const body = await readJsonBody(request);
+      if (!body || typeof body.playerId !== 'string') {
+        return jsonResponse(
+          { error: 'INVALID_INPUT', message: 'playerId is required.' },
+          400,
+          cors,
+        );
+      }
+      const token = extractBearerToken(request, body);
+      if (env.DB) {
+        const valid = await new D1ProgressionService(env.DB).verifyPlayerToken(body.playerId, token);
+        if (!valid) {
+          return jsonResponse({ error: 'UNAUTHORIZED', message: 'Invalid player credentials.' }, 401, cors);
+        }
+        const res = await new EconomyService(env.DB).claimDailyReward(body.playerId.trim());
+        if (!res.ok) {
+          return jsonResponse(
+            { error: res.code, message: res.message, nextClaimAtMs: res.nextClaimAtMs },
+            res.status,
+            cors,
+          );
+        }
+        return jsonResponse(res, 200, cors);
+      }
+      const res = await getMatchmakerStub().economyClaimDaily(body.playerId, token);
+      if (!res.ok) {
+        return jsonResponse(
+          {
+            error: res.code,
+            message: res.message,
+            nextClaimAtMs: 'nextClaimAtMs' in res ? res.nextClaimAtMs : undefined,
+          },
+          res.status,
+          cors,
+        );
+      }
+      return jsonResponse(res, 200, cors);
+    }
+
+    if (url.pathname === '/api/economy/ai-reward' && request.method === 'POST') {
+      const body = await readJsonBody(request);
+      if (!body || typeof body.playerId !== 'string') {
+        return jsonResponse(
+          { error: 'INVALID_INPUT', message: 'playerId is required.' },
+          400,
+          cors,
+        );
+      }
+      const token = extractBearerToken(request, body);
+      const payload: Partial<AiMatchRewardRequest> = {
+        clientMatchId: typeof body.clientMatchId === 'string' ? body.clientMatchId : '',
+        difficulty: body.difficulty as AiMatchRewardRequest['difficulty'],
+        won: Boolean(body.won),
+        totalShots: Number(body.totalShots ?? 0),
+        ballsPocketed: Number(body.ballsPocketed ?? 0),
+        durationSec: Number(body.durationSec ?? 0),
+      };
+      if (env.DB) {
+        const valid = await new D1ProgressionService(env.DB).verifyPlayerToken(body.playerId, token);
+        if (!valid) {
+          return jsonResponse({ error: 'UNAUTHORIZED', message: 'Invalid player credentials.' }, 401, cors);
+        }
+        const res = await new EconomyService(env.DB).claimAiMatchReward(body.playerId.trim(), payload);
+        if (!res.ok) {
+          return jsonResponse({ error: res.code, message: res.message }, res.status, cors);
+        }
+        return jsonResponse(res, 200, cors);
+      }
+      const res = await getMatchmakerStub().economyClaimAiReward(body.playerId, token, payload);
       if (!res.ok) {
         return jsonResponse({ error: res.code, message: res.message }, res.status, cors);
       }

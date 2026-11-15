@@ -51,18 +51,26 @@ export function computeInitialBallPositions(): Array<{ number: number; x: number
   return positions;
 }
 
+const _auroraEmissiveColor = new THREE.Color();
+
 export class BilliardBalls {
   public readonly group = new THREE.Group();
   public readonly balls = new Map<number, BallInstance>();
 
+  private readonly maxAnisotropy: number;
+  private currentSkinId = 'ball_classic';
+  private textures: THREE.CanvasTexture[] = [];
+  private materials: THREE.MeshPhysicalMaterial[] = [];
+
   constructor(maxAnisotropy: number) {
+    this.maxAnisotropy = maxAnisotropy;
     this.group.name = 'BilliardBalls';
     this.buildBalls(maxAnisotropy);
   }
 
   private buildBalls(maxAnisotropy: number) {
     const sphereGeo = new THREE.SphereGeometry(BALL_SPECS.radius, 48, 32);
-    const textures = createAllBallTextures(maxAnisotropy);
+    this.textures = createAllBallTextures(maxAnisotropy, this.currentSkinId);
 
     const shadowTex = createContactShadowTexture();
     const shadowGeo = new THREE.PlaneGeometry(BALL_SPECS.radius * 2.5, BALL_SPECS.radius * 2.5);
@@ -72,7 +80,7 @@ export class BilliardBalls {
 
     for (const pos of initialPositions) {
       const def = BALL_DEFINITIONS[pos.number];
-      const tex = textures[pos.number];
+      const tex = this.textures[pos.number];
 
       const mat = new THREE.MeshPhysicalMaterial({
         map: tex,
@@ -83,6 +91,7 @@ export class BilliardBalls {
         reflectivity: 0.9,
         envMapIntensity: 1.15,
       });
+      this.materials[def.number] = mat;
 
       const mesh = new THREE.Mesh(sphereGeo, mat);
       mesh.position.set(pos.x, pos.y, pos.z);
@@ -110,6 +119,94 @@ export class BilliardBalls {
         shadowMesh,
         pocketed: false,
       });
+    }
+  }
+
+  public applyBallSkin(ballSkinId: string) {
+    const targetId = ballSkinId || 'ball_classic';
+    if (this.currentSkinId === targetId && this.textures.length > 0) return;
+    this.currentSkinId = targetId;
+
+    const oldTextures = this.textures;
+    const nextTextures = createAllBallTextures(this.maxAnisotropy, targetId);
+    this.textures = nextTextures;
+
+    for (const def of BALL_DEFINITIONS) {
+      const mat = this.materials[def.number];
+      if (!mat) continue;
+
+      mat.map = nextTextures[def.number];
+      mat.emissive.setHex(0x000000);
+      mat.emissiveIntensity = 0;
+
+      switch (targetId) {
+        case 'ball_brushed_metallic':
+          mat.metalness = 0.72;
+          mat.roughness = 0.22;
+          mat.clearcoat = 0.65;
+          mat.clearcoatRoughness = 0.14;
+          mat.envMapIntensity = 1.45;
+          break;
+        case 'ball_neon_pulse':
+          mat.metalness = 0.12;
+          mat.roughness = 0.14;
+          mat.clearcoat = 1.0;
+          mat.clearcoatRoughness = 0.04;
+          mat.envMapIntensity = 1.2;
+          mat.emissive.set(def.number === 0 ? '#22d3ee' : def.color);
+          mat.emissiveIntensity = def.number === 8 ? 0.12 : 0.22;
+          break;
+        case 'ball_artisan_marble':
+          mat.metalness = 0.04;
+          mat.roughness = 0.1;
+          mat.clearcoat = 1.0;
+          mat.clearcoatRoughness = 0.03;
+          mat.envMapIntensity = 1.25;
+          break;
+        case 'ball_aurora_chroma':
+          mat.metalness = 0.28;
+          mat.roughness = 0.11;
+          mat.clearcoat = 1.0;
+          mat.clearcoatRoughness = 0.04;
+          mat.envMapIntensity = 1.35;
+          mat.emissive.setHex(0x38bdf8);
+          mat.emissiveIntensity = 0.16;
+          break;
+        case 'ball_classic':
+        default:
+          mat.metalness = 0.02;
+          mat.roughness = 0.13;
+          mat.clearcoat = 1.0;
+          mat.clearcoatRoughness = 0.05;
+          mat.envMapIntensity = 1.15;
+          break;
+      }
+
+      mat.needsUpdate = true;
+    }
+
+    for (const tex of oldTextures) {
+      tex.dispose();
+    }
+  }
+
+  public update(elapsedSec: number) {
+    if (this.currentSkinId === 'ball_aurora_chroma') {
+      const baseHue = (elapsedSec * 0.14) % 1;
+      for (let i = 0; i < this.materials.length; i++) {
+        const mat = this.materials[i];
+        if (!mat) continue;
+        _auroraEmissiveColor.setHSL((baseHue + i * 0.04) % 1, 0.72, 0.52);
+        mat.emissive.copy(_auroraEmissiveColor);
+        mat.emissiveIntensity = 0.14 + 0.06 * Math.sin(elapsedSec * 2.2 + i * 0.45);
+      }
+    } else if (this.currentSkinId === 'ball_neon_pulse') {
+      const pulse = 0.18 + 0.06 * Math.sin(elapsedSec * 2.8);
+      for (let i = 0; i < this.materials.length; i++) {
+        const mat = this.materials[i];
+        if (!mat) continue;
+        mat.emissiveIntensity = i === 8 ? pulse * 0.55 : pulse;
+      }
     }
   }
 

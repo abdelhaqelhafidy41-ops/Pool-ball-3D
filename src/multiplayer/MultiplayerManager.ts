@@ -86,6 +86,7 @@ class MultiplayerManagerImpl {
   public reauthenticateSocketIdentity(): void {
     this.network.clearSessionCredentials();
     useGameStore.getState().resetSocialState();
+    void import('./EconomyClient').then(({ economyClient }) => economyClient.refreshWallet());
     const state = this.network.getConnectionState();
     if (state === 'connected' || state === 'connecting' || state === 'reconnecting') {
       this.network.retryConnect();
@@ -507,6 +508,7 @@ class MultiplayerManagerImpl {
         this.sceneBridge?.onApplyAuthoritativeBalls(msg.balls);
         this.sceneBridge?.onOnlineShotSettled?.(msg.match, msg.balls);
         void progressionClient.refreshOwnProfile();
+        void import('./EconomyClient').then(({ economyClient }) => economyClient.refreshWallet());
         break;
       }
 

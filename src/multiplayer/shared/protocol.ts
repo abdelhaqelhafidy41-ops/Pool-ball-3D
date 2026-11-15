@@ -8,6 +8,7 @@ import type {
   PocketId,
   RuleProfileId,
 } from '../../game/rules/types';
+import type { EquippedCosmetics } from './economy';
 import type {
   MatchCompletionType,
   MatchProgressionRewardSummary,
@@ -29,7 +30,7 @@ export type ConnectionState = 'disconnected' | 'connecting' | 'connected' | 'rec
 export type OpponentConnectionState = 'connected' | 'disconnected' | 'reconnected';
 export type OnlineModeIntent = 'quick' | 'create' | 'join' | 'friend';
 
-export type OnlineAvatarId =
+export type StarterAvatarId =
   | 'cue_gold'
   | 'eight_obsidian'
   | 'crown_emerald'
@@ -39,8 +40,15 @@ export type OnlineAvatarId =
   | 'trophy_platinum'
   | 'break_amber';
 
+export type StoreAvatarId =
+  | 'avatar_neon_phoenix'
+  | 'avatar_golden_crown'
+  | 'avatar_void_samurai';
+
+export type OnlineAvatarId = StarterAvatarId | StoreAvatarId;
+
 export const ONLINE_AVATARS: Array<{
-  id: OnlineAvatarId;
+  id: StarterAvatarId;
   label: string;
   accent: string;
   glyph: string;
@@ -60,6 +68,7 @@ export interface OnlinePlayerProfile {
   playerId?: string;
   displayName: string;
   avatarId: OnlineAvatarId;
+  equippedCosmetics?: EquippedCosmetics;
   role: PlayerId;
   connected: boolean;
   ready: boolean;

@@ -1,6 +1,11 @@
 import { ONLINE_AVATARS, type OnlineAvatarId } from './protocol';
 
-const VALID_AVATAR_IDS = new Set<OnlineAvatarId>(ONLINE_AVATARS.map((a) => a.id));
+const VALID_AVATAR_IDS = new Set<OnlineAvatarId>([
+  ...ONLINE_AVATARS.map((a) => a.id),
+  'avatar_neon_phoenix',
+  'avatar_golden_crown',
+  'avatar_void_samurai',
+]);
 const USERNAME_PATTERN = /^[a-zA-Z0-9_.-]{3,20}$/;
 const PBKDF2_ITERATIONS = 100_000;
 

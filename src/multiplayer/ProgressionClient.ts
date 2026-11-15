@@ -146,6 +146,7 @@ class ProgressionClientImpl {
           displayName: json.profile.displayName,
           avatarId: json.profile.avatarId as OnlineAvatarId,
         });
+        void import('./EconomyClient').then(({ economyClient }) => economyClient.refreshWallet());
         return json.profile;
       } catch {
         this.lastSessionError =
@@ -286,6 +287,7 @@ class ProgressionClientImpl {
         displayName: json.profile.displayName,
         avatarId: json.profile.avatarId as OnlineAvatarId,
       });
+      void import('./EconomyClient').then(({ economyClient }) => economyClient.refreshWallet());
       return { ok: true, data: json.profile };
     } catch {
       return { ok: false, error: 'Network error during registration.' };
@@ -324,6 +326,7 @@ class ProgressionClientImpl {
         displayName: json.profile.displayName,
         avatarId: json.profile.avatarId as OnlineAvatarId,
       });
+      void import('./EconomyClient').then(({ economyClient }) => economyClient.refreshWallet());
       return { ok: true, data: json.profile };
     } catch {
       return { ok: false, error: 'Network error during sign in.' };

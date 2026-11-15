@@ -28,6 +28,10 @@ import {
   type SocialOverviewPayload,
   type SocialSearchPlayerItem,
 } from '../../src/multiplayer/shared/social';
+import type {
+  AiMatchRewardRequest,
+  EquippedCosmetics,
+} from '../../src/multiplayer/shared/economy';
 import {
   clampLatency,
   constantTimeEqual,
@@ -39,6 +43,7 @@ import {
   type WorkerRuntimeConfig,
 } from './config';
 import { createDurableObjectSqlDb, D1ProgressionService } from './D1ProgressionService';
+import { EconomyService } from './EconomyService';
 import { SocialService, type SocialError } from './SocialService';
 
 const ROOM_CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -426,6 +431,7 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
                 session.player_id,
               );
             }
+            await this.getEconomyService().syncStarterAvatarIfChanged(session.player_id, avatar);
           } catch {
             // Non-blocking progression profile sync error
           }
@@ -608,6 +614,8 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
           session.session_id,
         );
 
+        const hostPlayerId = session.player_id ?? session.session_id;
+        const hostCosmetics = await this.getEconomyService().getEquippedCosmetics(hostPlayerId);
         const roomStub = this.env.POOL_ROOM.get(this.env.POOL_ROOM.idFromName(roomId));
         const roomInfo = await roomStub.initPrivateRoom({
           roomId,
@@ -618,10 +626,11 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
           expiresAtMs,
           host: {
             sessionId: session.session_id,
-            playerId: session.player_id ?? session.session_id,
+            playerId: hostPlayerId,
             reconnectToken: session.reconnect_token,
             displayName: session.display_name,
             avatarId: sanitizeAvatarId(session.avatar_id),
+            equippedCosmetics: hostCosmetics,
             latencyMs: session.latency_ms,
           },
         });
@@ -670,13 +679,16 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
           return;
         }
 
+        const joinPlayerId = session.player_id ?? session.session_id;
+        const joinCosmetics = await this.getEconomyService().getEquippedCosmetics(joinPlayerId);
         const roomStub = this.env.POOL_ROOM.get(this.env.POOL_ROOM.idFromName(roomRow.room_id));
         const joinRes = await roomStub.joinRoom({
           sessionId: session.session_id,
-          playerId: session.player_id ?? session.session_id,
+          playerId: joinPlayerId,
           reconnectToken: session.reconnect_token,
           displayName: session.display_name,
           avatarId: sanitizeAvatarId(session.avatar_id),
+          equippedCosmetics: joinCosmetics,
           latencyMs: session.latency_ms,
         });
 
@@ -1070,6 +1082,13 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
     return new SocialService(createDurableObjectSqlDb(this.ctx.storage.sql));
   }
 
+  private getEconomyService(): EconomyService {
+    if (this.env.DB) {
+      return new EconomyService(this.env.DB);
+    }
+    return new EconomyService(createDurableObjectSqlDb(this.ctx.storage.sql));
+  }
+
   private async authenticateRestPlayer(
     playerId: unknown,
     playerToken: unknown,
@@ -1400,6 +1419,98 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
     });
   }
 
+  // ===== Phase 8 Economy & Store RPC Methods =====
+
+  public async economyGetOverview(playerId: string, playerToken: string) {
+    this.ensureSchema();
+    const auth = await this.authenticateRestPlayer(playerId, playerToken);
+    if (!auth.ok) return auth;
+    const overview = await this.getEconomyService().getOverview(auth.playerId);
+    return { ok: true as const, ...overview };
+  }
+
+  public async economyGetTransactions(
+    playerId: string,
+    playerToken: string,
+    limit = 40,
+  ) {
+    this.ensureSchema();
+    const auth = await this.authenticateRestPlayer(playerId, playerToken);
+    if (!auth.ok) return auth;
+    const transactions = await this.getEconomyService().getTransactions(auth.playerId, limit);
+    return { ok: true as const, transactions };
+  }
+
+  public async economyPurchaseItem(
+    playerId: string,
+    playerToken: string,
+    itemId: unknown,
+  ) {
+    this.ensureSchema();
+    const auth = await this.authenticateRestPlayer(playerId, playerToken);
+    if (!auth.ok) return auth;
+    return this.getEconomyService().purchaseItem(auth.playerId, itemId);
+  }
+
+  public async economyEquipItem(
+    playerId: string,
+    playerToken: string,
+    category: unknown,
+    itemId: unknown,
+  ) {
+    this.ensureSchema();
+    const auth = await this.authenticateRestPlayer(playerId, playerToken);
+    if (!auth.ok) return auth;
+    const res = await this.getEconomyService().equipItem(auth.playerId, category, itemId);
+    if (res.ok) {
+      await this.syncPlayerCosmeticsInRoom(auth.playerId, res.equipped);
+    }
+    return res;
+  }
+
+  public async economyClaimDaily(playerId: string, playerToken: string) {
+    this.ensureSchema();
+    const auth = await this.authenticateRestPlayer(playerId, playerToken);
+    if (!auth.ok) return auth;
+    return this.getEconomyService().claimDailyReward(auth.playerId);
+  }
+
+  public async economyClaimAiReward(
+    playerId: string,
+    playerToken: string,
+    input: Partial<AiMatchRewardRequest>,
+  ) {
+    this.ensureSchema();
+    const auth = await this.authenticateRestPlayer(playerId, playerToken);
+    if (!auth.ok) return auth;
+    return this.getEconomyService().claimAiMatchReward(auth.playerId, input);
+  }
+
+  public async syncPlayerCosmeticsInRoom(
+    playerId: string,
+    equipped: EquippedCosmetics,
+  ): Promise<void> {
+    this.ensureSchema();
+    this.ctx.storage.sql.exec(
+      'UPDATE sessions SET avatar_id = ? WHERE player_id = ?',
+      sanitizeAvatarId(equipped.avatarId),
+      playerId,
+    );
+    const sess =
+      this.findLatestConnectedSessionByPlayerId(playerId) ??
+      this.findLatestSessionByPlayerId(playerId);
+    if (sess?.active_room_id) {
+      try {
+        const roomStub = this.env.POOL_ROOM.get(
+          this.env.POOL_ROOM.idFromName(sess.active_room_id),
+        );
+        await roomStub.updatePlayerCosmetics(playerId, equipped);
+      } catch {
+        // Ignore if room already closed
+      }
+    }
+  }
+
   // ===== Internal Social Handlers (shared between WS & REST) =====
 
   private async handlePresenceUpdate(
@@ -1718,6 +1829,7 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
         };
       }
 
+      const joinCosmetics = await this.getEconomyService().getEquippedCosmetics(actorPlayerId);
       const roomStub = this.env.POOL_ROOM.get(this.env.POOL_ROOM.idFromName(row.room_id));
       const joinRes = await roomStub.joinRoom({
         sessionId: recipientSess.session_id,
@@ -1725,6 +1837,7 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
         reconnectToken: recipientSess.reconnect_token,
         displayName: recipientSess.display_name,
         avatarId: sanitizeAvatarId(recipientSess.avatar_id),
+        equippedCosmetics: joinCosmetics,
         latencyMs: recipientSess.latency_ms,
       });
 
@@ -1816,6 +1929,11 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
       expiresAtMs,
     );
 
+    const [hostCosmetics, guestCosmetics] = await Promise.all([
+      this.getEconomyService().getEquippedCosmetics(inv.senderId),
+      this.getEconomyService().getEquippedCosmetics(actorPlayerId),
+    ]);
+
     const roomStub = this.env.POOL_ROOM.get(this.env.POOL_ROOM.idFromName(roomId));
     await roomStub.initPrivateRoom({
       roomId,
@@ -1830,6 +1948,7 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
         reconnectToken: senderSess.reconnect_token,
         displayName: senderSess.display_name,
         avatarId: sanitizeAvatarId(senderSess.avatar_id),
+        equippedCosmetics: hostCosmetics,
         latencyMs: senderSess.latency_ms,
       },
     });
@@ -1840,6 +1959,7 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
       reconnectToken: recipientSess.reconnect_token,
       displayName: recipientSess.display_name,
       avatarId: sanitizeAvatarId(recipientSess.avatar_id),
+      equippedCosmetics: guestCosmetics,
       latencyMs: recipientSess.latency_ms,
     });
 
@@ -2334,6 +2454,13 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
           sessB.session_id,
         );
 
+        const p1Id = sessA.player_id ?? sessA.session_id;
+        const p2Id = sessB.player_id ?? sessB.session_id;
+        const [p1Cosmetics, p2Cosmetics] = await Promise.all([
+          this.getEconomyService().getEquippedCosmetics(p1Id),
+          this.getEconomyService().getEquippedCosmetics(p2Id),
+        ]);
+
         const roomStub = this.env.POOL_ROOM.get(this.env.POOL_ROOM.idFromName(roomId));
         const started = await roomStub.initMatchedRoom({
           roomId,
@@ -2344,18 +2471,20 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
           expiresAtMs,
           player1: {
             sessionId: sessA.session_id,
-            playerId: sessA.player_id ?? sessA.session_id,
+            playerId: p1Id,
             reconnectToken: sessA.reconnect_token,
             displayName: sessA.display_name,
             avatarId: sanitizeAvatarId(sessA.avatar_id),
+            equippedCosmetics: p1Cosmetics,
             latencyMs: sessA.latency_ms,
           },
           player2: {
             sessionId: sessB.session_id,
-            playerId: sessB.player_id ?? sessB.session_id,
+            playerId: p2Id,
             reconnectToken: sessB.reconnect_token,
             displayName: sessB.display_name,
             avatarId: sanitizeAvatarId(sessB.avatar_id),
+            equippedCosmetics: p2Cosmetics,
             latencyMs: sessB.latency_ms,
           },
         });

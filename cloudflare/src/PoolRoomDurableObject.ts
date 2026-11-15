@@ -13,6 +13,11 @@ import type {
   ServerToClientMessage,
 } from '../../src/multiplayer/shared/protocol';
 import {
+  DEFAULT_EQUIPPED_COSMETICS,
+  sanitizeEquippedCosmetics,
+  type EquippedCosmetics,
+} from '../../src/multiplayer/shared/economy';
+import {
   clampLatency,
   constantTimeEqual,
   loadWorkerConfig,
@@ -65,6 +70,7 @@ export interface InitRoomPlayerInput {
   reconnectToken: string;
   displayName: string;
   avatarId: OnlineAvatarId;
+  equippedCosmetics?: EquippedCosmetics;
   latencyMs: number;
 }
 
@@ -105,6 +111,7 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
         reconnect_token TEXT NOT NULL,
         display_name TEXT NOT NULL,
         avatar_id TEXT NOT NULL,
+        cosmetics_json TEXT,
         role TEXT NOT NULL,
         connected INTEGER NOT NULL,
         ready INTEGER NOT NULL,
@@ -137,6 +144,11 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
     } catch {
       // Already present
     }
+    try {
+      sql.exec('ALTER TABLE room_players ADD COLUMN cosmetics_json TEXT');
+    } catch {
+      // Already present
+    }
     this.schemaReady = true;
   }
 
@@ -165,26 +177,37 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
         status: String(m.status) as OnlineRoomStatus,
         createdAtMs: Number(m.created_at_ms),
         expiresAtMs: Number(m.expires_at_ms),
-        players: playerRows.map((p) => ({
-          sessionId: String(p.session_id),
-          playerId: p.player_id ? String(p.player_id) : String(p.session_id),
-          reconnectToken: String(p.reconnect_token),
-          displayName: String(p.display_name),
-          avatarId: sanitizeAvatarId(p.avatar_id),
-          role: p.role === 'player2' ? 'player2' : 'player1',
-          connected: Number(p.connected) === 1,
-          ready: Number(p.ready) === 1,
-          latencyMs: Number(p.latency_ms),
-          disconnectedAtMs:
-            p.disconnected_at_ms === null || p.disconnected_at_ms === undefined
-              ? null
-              : Number(p.disconnected_at_ms),
-          reconnectDeadlineMs:
-            p.reconnect_deadline_ms === null || p.reconnect_deadline_ms === undefined
-              ? null
-              : Number(p.reconnect_deadline_ms),
-          rematchRequested: Number(p.rematch_requested) === 1,
-        })),
+        players: playerRows.map((p) => {
+          let equipped: EquippedCosmetics = { ...DEFAULT_EQUIPPED_COSMETICS };
+          if (typeof p.cosmetics_json === 'string' && p.cosmetics_json.length > 0) {
+            try {
+              equipped = sanitizeEquippedCosmetics(JSON.parse(p.cosmetics_json) as Partial<EquippedCosmetics>);
+            } catch {
+              equipped = { ...DEFAULT_EQUIPPED_COSMETICS };
+            }
+          }
+          return {
+            sessionId: String(p.session_id),
+            playerId: p.player_id ? String(p.player_id) : String(p.session_id),
+            reconnectToken: String(p.reconnect_token),
+            displayName: String(p.display_name),
+            avatarId: sanitizeAvatarId(p.avatar_id),
+            equippedCosmetics: equipped,
+            role: p.role === 'player2' ? 'player2' : 'player1',
+            connected: Number(p.connected) === 1,
+            ready: Number(p.ready) === 1,
+            latencyMs: Number(p.latency_ms),
+            disconnectedAtMs:
+              p.disconnected_at_ms === null || p.disconnected_at_ms === undefined
+                ? null
+                : Number(p.disconnected_at_ms),
+            reconnectDeadlineMs:
+              p.reconnect_deadline_ms === null || p.reconnect_deadline_ms === undefined
+                ? null
+                : Number(p.reconnect_deadline_ms),
+            rematchRequested: Number(p.rematch_requested) === 1,
+          };
+        }),
       };
 
       const matchRows = sql
@@ -233,14 +256,15 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
     for (const p of this.room.players) {
       sql.exec(
         `INSERT INTO room_players (
-          session_id, player_id, reconnect_token, display_name, avatar_id, role,
+          session_id, player_id, reconnect_token, display_name, avatar_id, cosmetics_json, role,
           connected, ready, latency_ms, disconnected_at_ms, reconnect_deadline_ms, rematch_requested
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         p.sessionId,
         p.playerId ?? p.sessionId,
         p.reconnectToken,
         p.displayName,
         p.avatarId,
+        JSON.stringify(p.equippedCosmetics ?? DEFAULT_EQUIPPED_COSMETICS),
         p.role,
         p.connected ? 1 : 0,
         p.ready ? 1 : 0,
@@ -319,6 +343,7 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
           reconnectToken: params.host.reconnectToken,
           displayName: sanitizeDisplayName(params.host.displayName),
           avatarId: sanitizeAvatarId(params.host.avatarId),
+          equippedCosmetics: sanitizeEquippedCosmetics(params.host.equippedCosmetics),
           role: 'player1',
           connected: true,
           ready: true,
@@ -366,6 +391,7 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
           reconnectToken: params.player1.reconnectToken,
           displayName: sanitizeDisplayName(params.player1.displayName),
           avatarId: sanitizeAvatarId(params.player1.avatarId),
+          equippedCosmetics: sanitizeEquippedCosmetics(params.player1.equippedCosmetics),
           role: 'player1',
           connected: true,
           ready: true,
@@ -380,6 +406,7 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
           reconnectToken: params.player2.reconnectToken,
           displayName: sanitizeDisplayName(params.player2.displayName),
           avatarId: sanitizeAvatarId(params.player2.avatarId),
+          equippedCosmetics: sanitizeEquippedCosmetics(params.player2.equippedCosmetics),
           role: 'player2',
           connected: true,
           ready: true,
@@ -444,6 +471,7 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
       reconnectToken: player.reconnectToken,
       displayName: sanitizeDisplayName(player.displayName),
       avatarId: sanitizeAvatarId(player.avatarId),
+      equippedCosmetics: sanitizeEquippedCosmetics(player.equippedCosmetics),
       role: 'player2',
       connected: true,
       ready: false,
@@ -483,6 +511,23 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
 
     this.persistRoomState();
     this.persistMatchState();
+    this.broadcastRoomUpdate(this.room);
+  }
+
+  public async updatePlayerCosmetics(
+    playerId: string,
+    equippedCosmetics: EquippedCosmetics,
+  ): Promise<void> {
+    await this.ensureHydrated();
+    if (!this.room) return;
+    const player = this.room.players.find(
+      (p) => p.playerId === playerId || p.sessionId === playerId,
+    );
+    if (!player) return;
+    const sanitized = sanitizeEquippedCosmetics(equippedCosmetics);
+    player.equippedCosmetics = sanitized;
+    player.avatarId = sanitizeAvatarId(sanitized.avatarId);
+    this.persistRoomState();
     this.broadcastRoomUpdate(this.room);
   }
 
@@ -1357,6 +1402,7 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
         playerId: p.playerId ?? p.sessionId,
         displayName: p.displayName,
         avatarId: p.avatarId,
+        equippedCosmetics: p.equippedCosmetics ?? DEFAULT_EQUIPPED_COSMETICS,
         role: p.role,
         connected: p.connected,
         ready: p.ready,

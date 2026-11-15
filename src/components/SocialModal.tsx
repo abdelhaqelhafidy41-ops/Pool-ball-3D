@@ -20,7 +20,7 @@ import type { RuleProfileId } from '../game/rules/types';
 import { soundEngine } from '../game/utils/SoundEngine';
 import { multiplayerManager } from '../multiplayer/MultiplayerManager';
 import { socialClient } from '../multiplayer/SocialClient';
-import { ONLINE_AVATARS } from '../multiplayer/shared/protocol';
+import { getAvatarVisualMeta } from '../multiplayer/shared/economy';
 import {
   SOCIAL_LIMITS,
   type PresenceStatus,
@@ -597,7 +597,7 @@ export function SocialModal() {
               ) : (
                 <div className="space-y-2 max-h-[360px] overflow-y-auto">
                   {friends.map((f) => {
-                    const av = ONLINE_AVATARS.find((a) => a.id === f.avatarId) ?? ONLINE_AVATARS[0];
+                    const av = getAvatarVisualMeta(f.avatarId);
                     const alreadyInvited = outgoingInvitations.some(
                       (i) => i.recipientId === f.playerId && i.status === 'pending',
                     );
@@ -718,7 +718,7 @@ export function SocialModal() {
                   </div>
                 ) : (
                   searchResults.map((p) => {
-                    const av = ONLINE_AVATARS.find((a) => a.id === p.avatarId) ?? ONLINE_AVATARS[0];
+                    const av = getAvatarVisualMeta(p.avatarId);
                     return (
                       <div
                         key={p.playerId}

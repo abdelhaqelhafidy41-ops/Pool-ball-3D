@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import type { CueSpin } from '../../store/useGameStore';
 import type { AimTrajectoryPrediction } from '../physics/PhysicsWorld';
 import { BALL_SPECS, CUE_SPECS, TABLE_DIMENSIONS } from '../utils/constants';
-import { createCueButtTexture } from '../utils/ProceduralTextures';
+import { createCueButtTexture, createCueShaftTexture } from '../utils/ProceduralTextures';
 
 const MAX_CUE_POINTS = 64;
 const MAX_TARGET_POINTS = 96;
@@ -25,9 +25,23 @@ export class CueStick {
   private readonly ghostRingMat: THREE.MeshBasicMaterial;
   private readonly ghostBall: THREE.Mesh;
 
+  private readonly maxAnisotropy: number;
+  private currentSkinId = 'cue_classic_maple';
+  private tipMat!: THREE.MeshStandardMaterial;
+  private ferruleMat!: THREE.MeshPhysicalMaterial;
+  private shaftMat!: THREE.MeshPhysicalMaterial;
+  private jointMat!: THREE.MeshPhysicalMaterial;
+  private ringMat!: THREE.MeshPhysicalMaterial;
+  private buttMat!: THREE.MeshPhysicalMaterial;
+  private buttRingMat!: THREE.MeshPhysicalMaterial;
+  private bumperMat!: THREE.MeshStandardMaterial;
+  private buttTex: THREE.CanvasTexture | null = null;
+  private shaftTex: THREE.CanvasTexture | null = null;
+
   private currentElevation: number = CUE_SPECS.baseElevationRad;
 
   constructor(maxAnisotropy: number) {
+    this.maxAnisotropy = maxAnisotropy;
     this.group.name = 'CueSystem';
     this.stickPivot.name = 'CueStickPivot';
     this.stickBody.name = 'CueStickBody';
@@ -113,47 +127,54 @@ export class CueStick {
 
   private buildStickParts(maxAnisotropy: number) {
     // Built along -X: tip at x = 0, butt end at x = -CUE_SPECS.length
-    const tipMat = new THREE.MeshStandardMaterial({
+    this.tipMat = new THREE.MeshStandardMaterial({
       color: 0x1b5299,
       roughness: 0.9,
       metalness: 0.0,
     });
 
-    const ferruleMat = new THREE.MeshPhysicalMaterial({
+    this.ferruleMat = new THREE.MeshPhysicalMaterial({
       color: 0xf7f4eb,
       roughness: 0.2,
       clearcoat: 0.65,
     });
 
-    const mapleMat = new THREE.MeshPhysicalMaterial({
+    this.shaftMat = new THREE.MeshPhysicalMaterial({
       color: 0xe0bd8b,
       roughness: 0.26,
       clearcoat: 0.55,
       clearcoatRoughness: 0.18,
     });
 
-    const brassMat = new THREE.MeshPhysicalMaterial({
+    this.jointMat = new THREE.MeshPhysicalMaterial({
       color: 0xd9b35c,
       metalness: 0.94,
       roughness: 0.18,
       anisotropy: 0.7,
     });
 
-    const chromeMat = new THREE.MeshPhysicalMaterial({
+    this.ringMat = new THREE.MeshPhysicalMaterial({
       color: 0xd8dde6,
       metalness: 0.95,
       roughness: 0.14,
     });
 
-    const buttTex = createCueButtTexture(maxAnisotropy);
-    const buttMat = new THREE.MeshPhysicalMaterial({
-      map: buttTex,
+    this.buttTex = createCueButtTexture(maxAnisotropy, this.currentSkinId);
+    this.buttMat = new THREE.MeshPhysicalMaterial({
+      map: this.buttTex,
       roughness: 0.22,
       clearcoat: 0.82,
       clearcoatRoughness: 0.1,
     });
 
-    const rubberMat = new THREE.MeshStandardMaterial({
+    this.buttRingMat = new THREE.MeshPhysicalMaterial({
+      color: 0xd9b35c,
+      metalness: 0.94,
+      roughness: 0.18,
+      anisotropy: 0.7,
+    });
+
+    this.bumperMat = new THREE.MeshStandardMaterial({
       color: 0x111215,
       roughness: 0.85,
     });
@@ -165,7 +186,7 @@ export class CueStick {
       24,
     );
     tipGeo.rotateZ(-Math.PI / 2);
-    const tipMesh = new THREE.Mesh(tipGeo, tipMat);
+    const tipMesh = new THREE.Mesh(tipGeo, this.tipMat);
     tipMesh.position.x = -0.0035;
     tipMesh.castShadow = true;
     this.stickBody.add(tipMesh);
@@ -180,7 +201,7 @@ export class CueStick {
       Math.PI * 0.5,
     );
     tipDomeGeo.rotateZ(-Math.PI / 2);
-    const tipDome = new THREE.Mesh(tipDomeGeo, tipMat);
+    const tipDome = new THREE.Mesh(tipDomeGeo, this.tipMat);
     tipDome.position.x = -0.0005;
     this.stickBody.add(tipDome);
 
@@ -191,7 +212,7 @@ export class CueStick {
       24,
     );
     ferruleGeo.rotateZ(-Math.PI / 2);
-    const ferruleMesh = new THREE.Mesh(ferruleGeo, ferruleMat);
+    const ferruleMesh = new THREE.Mesh(ferruleGeo, this.ferruleMat);
     ferruleMesh.position.x = -0.0195;
     ferruleMesh.castShadow = true;
     this.stickBody.add(ferruleMesh);
@@ -204,21 +225,21 @@ export class CueStick {
     ];
     const shaftGeo = new THREE.LatheGeometry(shaftPts, 24);
     shaftGeo.rotateZ(Math.PI / 2);
-    const shaftMesh = new THREE.Mesh(shaftGeo, mapleMat);
+    const shaftMesh = new THREE.Mesh(shaftGeo, this.shaftMat);
     shaftMesh.position.x = -0.032;
     shaftMesh.castShadow = true;
     this.stickBody.add(shaftMesh);
 
     const jointGeo = new THREE.CylinderGeometry(0.011, 0.0113, 0.026, 24);
     jointGeo.rotateZ(-Math.PI / 2);
-    const jointMesh = new THREE.Mesh(jointGeo, brassMat);
+    const jointMesh = new THREE.Mesh(jointGeo, this.jointMat);
     jointMesh.position.x = -0.748;
     jointMesh.castShadow = true;
     this.stickBody.add(jointMesh);
 
     const ringGeo = new THREE.CylinderGeometry(0.0114, 0.0114, 0.006, 24);
     ringGeo.rotateZ(-Math.PI / 2);
-    const ringMesh = new THREE.Mesh(ringGeo, chromeMat);
+    const ringMesh = new THREE.Mesh(ringGeo, this.ringMat);
     ringMesh.position.x = -0.764;
     this.stickBody.add(ringMesh);
 
@@ -229,7 +250,7 @@ export class CueStick {
     ];
     const buttGeo = new THREE.LatheGeometry(buttPts, 28);
     buttGeo.rotateZ(Math.PI / 2);
-    const buttMesh = new THREE.Mesh(buttGeo, buttMat);
+    const buttMesh = new THREE.Mesh(buttGeo, this.buttMat);
     buttMesh.position.x = -0.767;
     buttMesh.castShadow = true;
     this.stickBody.add(buttMesh);
@@ -241,7 +262,7 @@ export class CueStick {
       24,
     );
     buttRingGeo.rotateZ(-Math.PI / 2);
-    const buttRing = new THREE.Mesh(buttRingGeo, brassMat);
+    const buttRing = new THREE.Mesh(buttRingGeo, this.buttRingMat);
     buttRing.position.x = -1.448;
     this.stickBody.add(buttRing);
 
@@ -252,11 +273,126 @@ export class CueStick {
       20,
     );
     bumperGeo.rotateZ(-Math.PI / 2);
-    const bumperMesh = new THREE.Mesh(bumperGeo, rubberMat);
+    const bumperMesh = new THREE.Mesh(bumperGeo, this.bumperMat);
     bumperMesh.position.x = -1.462;
     this.stickBody.add(bumperMesh);
 
     this.stickBody.rotation.z = -CUE_SPECS.baseElevationRad;
+  }
+
+  public applyCueSkin(cueSkinId: string) {
+    const targetId = cueSkinId || 'cue_classic_maple';
+    if (this.currentSkinId === targetId && this.buttTex) return;
+    this.currentSkinId = targetId;
+
+    const oldButtTex = this.buttTex;
+    const oldShaftTex = this.shaftTex;
+    this.buttTex = createCueButtTexture(this.maxAnisotropy, targetId);
+    this.shaftTex = createCueShaftTexture(this.maxAnisotropy, targetId);
+
+    this.buttMat.map = this.buttTex;
+    this.buttMat.emissive.setHex(0x000000);
+    this.buttMat.emissiveIntensity = 0;
+
+    this.shaftMat.map = this.shaftTex;
+    this.shaftMat.emissive.setHex(0x000000);
+    this.shaftMat.emissiveIntensity = 0;
+
+    switch (targetId) {
+      case 'cue_walnut_heritage':
+        this.tipMat.color.setHex(0x1f4b82);
+        this.ferruleMat.color.setHex(0xf3ece0);
+        this.shaftMat.color.setHex(0xc99c6b);
+        this.shaftMat.metalness = 0.0;
+        this.shaftMat.roughness = 0.24;
+        this.jointMat.color.setHex(0xd4a84f);
+        this.ringMat.color.setHex(0xe2d4b0);
+        this.buttRingMat.color.setHex(0xd4a84f);
+        break;
+      case 'cue_carbon_stealth':
+        this.tipMat.color.setHex(0x0284c7);
+        this.ferruleMat.color.setHex(0x181e28);
+        this.shaftMat.color.setHex(0xffffff);
+        this.shaftMat.metalness = 0.25;
+        this.shaftMat.roughness = 0.3;
+        this.jointMat.color.setHex(0x64748b);
+        this.ringMat.color.setHex(0x38bdf8);
+        this.buttRingMat.color.setHex(0x64748b);
+        break;
+      case 'cue_gold_imperial':
+        this.tipMat.color.setHex(0x1d4ed8);
+        this.ferruleMat.color.setHex(0xfef9e7);
+        this.shaftMat.color.setHex(0xebd29e);
+        this.shaftMat.metalness = 0.12;
+        this.shaftMat.roughness = 0.18;
+        this.jointMat.color.setHex(0xf6c85f);
+        this.ringMat.color.setHex(0xffe49e);
+        this.buttRingMat.color.setHex(0xf6c85f);
+        break;
+      case 'cue_platinum_apex':
+        this.tipMat.color.setHex(0x0ea5e9);
+        this.ferruleMat.color.setHex(0xf1f5f9);
+        this.shaftMat.color.setHex(0xdbe3ec);
+        this.shaftMat.metalness = 0.32;
+        this.shaftMat.roughness = 0.16;
+        this.jointMat.color.setHex(0xe2e8f0);
+        this.ringMat.color.setHex(0x38bdf8);
+        this.buttRingMat.color.setHex(0xe2e8f0);
+        break;
+      case 'cue_neon_cosmic':
+        this.tipMat.color.setHex(0x22d3ee);
+        this.ferruleMat.color.setHex(0x14172a);
+        this.shaftMat.color.setHex(0xffffff);
+        this.shaftMat.metalness = 0.22;
+        this.shaftMat.roughness = 0.2;
+        this.shaftMat.emissive.setHex(0x4c1d95);
+        this.shaftMat.emissiveIntensity = 0.32;
+        this.buttMat.emissive.setHex(0x22d3ee);
+        this.buttMat.emissiveIntensity = 0.14;
+        this.jointMat.color.setHex(0x22d3ee);
+        this.ringMat.color.setHex(0xec4899);
+        this.buttRingMat.color.setHex(0xec4899);
+        break;
+      case 'cue_dragon_sovereign':
+        this.tipMat.color.setHex(0xb91c1c);
+        this.ferruleMat.color.setHex(0xfdf5e6);
+        this.shaftMat.color.setHex(0xe6be8a);
+        this.shaftMat.metalness = 0.08;
+        this.shaftMat.roughness = 0.2;
+        this.jointMat.color.setHex(0xfbbf24);
+        this.ringMat.color.setHex(0xfef08a);
+        this.buttRingMat.color.setHex(0xfbbf24);
+        break;
+      case 'cue_classic_maple':
+      default:
+        this.tipMat.color.setHex(0x1b5299);
+        this.ferruleMat.color.setHex(0xf7f4eb);
+        this.shaftMat.color.setHex(0xe0bd8b);
+        this.shaftMat.metalness = 0.0;
+        this.shaftMat.roughness = 0.26;
+        this.jointMat.color.setHex(0xd9b35c);
+        this.ringMat.color.setHex(0xd8dde6);
+        this.buttRingMat.color.setHex(0xd9b35c);
+        break;
+    }
+
+    this.buttMat.needsUpdate = true;
+    this.shaftMat.needsUpdate = true;
+    this.jointMat.needsUpdate = true;
+    this.ringMat.needsUpdate = true;
+    this.buttRingMat.needsUpdate = true;
+    this.ferruleMat.needsUpdate = true;
+    this.tipMat.needsUpdate = true;
+
+    oldButtTex?.dispose();
+    oldShaftTex?.dispose();
+  }
+
+  public dispose() {
+    this.buttTex?.dispose();
+    this.shaftTex?.dispose();
+    this.buttTex = null;
+    this.shaftTex = null;
   }
 
   /**

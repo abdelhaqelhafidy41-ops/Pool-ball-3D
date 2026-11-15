@@ -363,6 +363,8 @@ export interface PlayerProgressionDelta {
   levelBefore: number;
   levelAfter: number;
   unlockedAchievements: UnlockedAchievement[];
+  coinsEarned?: number;
+  coinBreakdown?: Array<{ label: string; amount: number }>;
 }
 
 export interface MatchProgressionRewardSummary {

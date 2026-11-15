@@ -1,29 +1,59 @@
 import * as THREE from 'three';
 import type { FeltTheme } from '../../store/useGameStore';
 import { POCKET_POSITIONS, TABLE_DIMENSIONS, type PocketPosition } from '../utils/constants';
+import { disposeObject3D } from '../utils/dispose';
 import {
   createContactShadowTexture,
   createFeltTextures,
+  createFeltTexturesByTableSkin,
   createWoodTextures,
+  getTableSkinVisualSpec,
   type FeltTextureSet,
+  type TableTrimMetal,
+  type TableWoodFinish,
 } from '../utils/ProceduralTextures';
 
 export class PoolTable {
   public readonly group = new THREE.Group();
+  private readonly decorationGroup = new THREE.Group();
+
   private feltMaterial!: THREE.MeshStandardMaterial;
   private cushionMaterial!: THREE.MeshStandardMaterial;
+  private woodMaterial!: THREE.MeshPhysicalMaterial;
+  private darkWoodMaterial!: THREE.MeshStandardMaterial;
+  private brassMaterial!: THREE.MeshPhysicalMaterial;
+  private leatherMaterial!: THREE.MeshStandardMaterial;
+  private pearlMaterial!: THREE.MeshPhysicalMaterial;
+  private slateUnderMaterial!: THREE.MeshStandardMaterial;
+
   private feltTextures!: FeltTextureSet;
+  private woodMap!: THREE.CanvasTexture;
+  private woodRoughMap!: THREE.CanvasTexture;
+
   private maxAnisotropy: number;
+  private currentTableSkinId = 'table_classic_green';
+  private currentDecorationId = 'decor_none';
+  private currentFallbackTheme: FeltTheme;
+  private currentWoodFinish: TableWoodFinish = 'walnut';
+  private appliedFeltKey = '';
 
   constructor(initialTheme: FeltTheme, maxAnisotropy: number) {
     this.maxAnisotropy = maxAnisotropy;
+    this.currentFallbackTheme = initialTheme;
     this.group.name = 'PoolTable';
+    this.decorationGroup.name = 'TableDecorations';
     this.buildTable(initialTheme);
+    this.group.add(this.decorationGroup);
   }
 
   private buildTable(theme: FeltTheme) {
-    const { map: woodMap, roughnessMap: woodRoughMap } = createWoodTextures(this.maxAnisotropy);
+    const spec = getTableSkinVisualSpec(this.currentTableSkinId, theme);
+    this.currentWoodFinish = spec.woodFinish;
+    const wood = createWoodTextures(this.maxAnisotropy, spec.woodFinish);
+    this.woodMap = wood.map;
+    this.woodRoughMap = wood.roughnessMap;
     this.feltTextures = createFeltTextures(theme, this.maxAnisotropy);
+    this.appliedFeltKey = `${this.currentTableSkinId}::${theme}`;
 
     // Materials
     this.feltMaterial = new THREE.MeshStandardMaterial({
@@ -35,30 +65,30 @@ export class PoolTable {
     });
 
     this.cushionMaterial = new THREE.MeshStandardMaterial({
-      color: new THREE.Color(this.getThemeColor(theme)),
+      color: new THREE.Color(spec.cushionHex),
       bumpMap: this.feltTextures.bumpMap,
       bumpScale: 0.0018,
       roughness: 0.86,
       metalness: 0.0,
     });
 
-    const woodMaterial = new THREE.MeshPhysicalMaterial({
-      map: woodMap,
-      roughnessMap: woodRoughMap,
+    this.woodMaterial = new THREE.MeshPhysicalMaterial({
+      map: this.woodMap,
+      roughnessMap: this.woodRoughMap,
       roughness: 0.34,
       metalness: 0.04,
       clearcoat: 0.65,
       clearcoatRoughness: 0.18,
     });
 
-    const darkWoodMaterial = new THREE.MeshStandardMaterial({
-      map: woodMap,
+    this.darkWoodMaterial = new THREE.MeshStandardMaterial({
+      map: this.woodMap,
       color: 0x8b6e5b,
       roughness: 0.45,
       metalness: 0.05,
     });
 
-    const brassMaterial = new THREE.MeshPhysicalMaterial({
+    this.brassMaterial = new THREE.MeshPhysicalMaterial({
       color: 0xd9b35c,
       metalness: 0.92,
       roughness: 0.2,
@@ -67,7 +97,7 @@ export class PoolTable {
       clearcoatRoughness: 0.12,
     });
 
-    const leatherMaterial = new THREE.MeshStandardMaterial({
+    this.leatherMaterial = new THREE.MeshStandardMaterial({
       color: 0x161211,
       roughness: 0.74,
       metalness: 0.06,
@@ -80,33 +110,33 @@ export class PoolTable {
       side: THREE.DoubleSide,
     });
 
-    const pearlMaterial = new THREE.MeshPhysicalMaterial({
+    this.pearlMaterial = new THREE.MeshPhysicalMaterial({
       color: 0xf4efe2,
       roughness: 0.18,
       metalness: 0.08,
       clearcoat: 0.85,
     });
 
-    const slateUnderMaterial = new THREE.MeshStandardMaterial({
+    this.slateUnderMaterial = new THREE.MeshStandardMaterial({
       color: 0x181c22,
       roughness: 0.7,
       metalness: 0.1,
     });
 
     // 1. Slate Bed & Felt Playing Surface with true 6 Pocket Cutouts
-    this.buildPlayingSurface(slateUnderMaterial);
+    this.buildPlayingSurface(this.slateUnderMaterial);
 
     // 2. Six Rubber Cushions (K-55 profile with mitered pocket jaws)
     this.buildCushions();
 
     // 3. Wooden Rails with precision Pocket Bays + Inlaid Diamond Sights
-    this.buildRailsAndSights(woodMaterial, pearlMaterial);
+    this.buildRailsAndSights(this.woodMaterial, this.pearlMaterial);
 
     // 4. Redesigned Unified Six Pockets (Turned drop wells + flush leather throats + brass castings)
-    this.buildPockets(brassMaterial, leatherMaterial, pocketWellMaterial);
+    this.buildPockets(this.brassMaterial, this.leatherMaterial, pocketWellMaterial);
 
     // 5. Cabinet Apron, Brass Trim & 4 Turned Lathe Legs
-    this.buildCabinetAndLegs(darkWoodMaterial, brassMaterial);
+    this.buildCabinetAndLegs(this.darkWoodMaterial, this.brassMaterial);
 
     // 6. Ground Contact Shadow under the table
     const shadowTex = createContactShadowTexture();
@@ -595,33 +625,276 @@ export class PoolTable {
     }
   }
 
-  private getThemeColor(theme: FeltTheme): number {
-    switch (theme) {
-      case 'championshipBlue':
-        return 0x124e78;
-      case 'burgundyClub':
-        return 0x681827;
-      case 'tournamentGreen':
+  private applyTrimMetal(trimMetal: TableTrimMetal) {
+    this.brassMaterial.emissive.setHex(0x000000);
+    this.brassMaterial.emissiveIntensity = 0;
+    this.pearlMaterial.color.setHex(0xf4efe2);
+    this.pearlMaterial.emissive.setHex(0x000000);
+    this.pearlMaterial.emissiveIntensity = 0;
+
+    switch (trimMetal) {
+      case 'steel':
+        this.brassMaterial.color.setHex(0xcbd5e1);
+        this.brassMaterial.roughness = 0.16;
+        this.leatherMaterial.color.setHex(0x13161b);
+        this.darkWoodMaterial.color.setHex(0x7c6e67);
+        break;
+      case 'gold':
+        this.brassMaterial.color.setHex(0xf2c95d);
+        this.brassMaterial.roughness = 0.17;
+        this.leatherMaterial.color.setHex(0x151110);
+        this.darkWoodMaterial.color.setHex(0x6d615c);
+        this.pearlMaterial.color.setHex(0xfef3c7);
+        break;
+      case 'cyan_chrome':
+        this.brassMaterial.color.setHex(0x94e2f5);
+        this.brassMaterial.roughness = 0.14;
+        this.brassMaterial.emissive.setHex(0x0891b2);
+        this.brassMaterial.emissiveIntensity = 0.25;
+        this.leatherMaterial.color.setHex(0x0c1118);
+        this.darkWoodMaterial.color.setHex(0x525b68);
+        this.pearlMaterial.color.setHex(0x22d3ee);
+        this.pearlMaterial.emissive.setHex(0x22d3ee);
+        this.pearlMaterial.emissiveIntensity = 0.65;
+        break;
+      case 'brass':
       default:
-        return 0x0f5c3a;
+        this.brassMaterial.color.setHex(0xd9b35c);
+        this.brassMaterial.roughness = 0.2;
+        this.leatherMaterial.color.setHex(0x161211);
+        this.darkWoodMaterial.color.setHex(0x8b6e5b);
+        break;
+    }
+
+    this.brassMaterial.needsUpdate = true;
+    this.leatherMaterial.needsUpdate = true;
+    this.darkWoodMaterial.needsUpdate = true;
+    this.pearlMaterial.needsUpdate = true;
+  }
+
+  private rebuildDecorations(decorationId: string, tableSkinId: string) {
+    disposeObject3D(this.decorationGroup);
+    this.decorationGroup.clear();
+
+    const D = TABLE_DIMENSIONS;
+    const innerEdgeX = D.halfLength + D.cushionDepth;
+    const innerEdgeZ = D.halfWidth + D.cushionDepth;
+    const outerEdgeX = innerEdgeX + D.railWidth;
+    const outerEdgeZ = innerEdgeZ + D.railWidth;
+    const cabinetL = D.playLength + 0.22;
+    const cabinetW = D.playWidth + 0.22;
+    const cabinetTopY = D.surfaceY - D.slateThickness;
+    const railTopY = D.surfaceY + D.railHeight + 0.0056;
+
+    // Neon Arena table natively includes subtle perimeter cyan trim unless overridden
+    const effectiveDecor =
+      decorationId === 'decor_none' && tableSkinId === 'table_neon_arena'
+        ? 'decor_neon_underflow'
+        : decorationId;
+
+    if (effectiveDecor === 'decor_none') {
+      return;
+    }
+
+    if (effectiveDecor === 'decor_brass_corners' || effectiveDecor === 'decor_gold_inlays') {
+      const accentHex = effectiveDecor === 'decor_gold_inlays' ? 0xf6c85f : 0xd4a84f;
+      const accentMat = new THREE.MeshPhysicalMaterial({
+        color: accentHex,
+        metalness: 0.94,
+        roughness: 0.16,
+        clearcoat: 0.4,
+      });
+
+      // Corner rail escutcheon plates (strictly on outer wood corners, zero cloth overlap)
+      const plateGeo = new THREE.BoxGeometry(0.068, 0.004, 0.068);
+      for (const sx of [-1, 1]) {
+        for (const sz of [-1, 1]) {
+          const plate = new THREE.Mesh(plateGeo, accentMat);
+          plate.position.set(
+            sx * (outerEdgeX - 0.046),
+            railTopY,
+            sz * (outerEdgeZ - 0.046),
+          );
+          this.decorationGroup.add(plate);
+        }
+      }
+
+      if (effectiveDecor === 'decor_gold_inlays') {
+        const longStripGeo = new THREE.BoxGeometry(cabinetL * 0.86, 0.009, 0.008);
+        for (const sz of [-1, 1]) {
+          const strip = new THREE.Mesh(longStripGeo, accentMat);
+          strip.position.set(0, cabinetTopY - D.apronHeight * 0.22, sz * (cabinetW * 0.5 + 0.003));
+          this.decorationGroup.add(strip);
+        }
+        const shortStripGeo = new THREE.BoxGeometry(0.008, 0.009, cabinetW * 0.82);
+        for (const sx of [-1, 1]) {
+          const strip = new THREE.Mesh(shortStripGeo, accentMat);
+          strip.position.set(sx * (cabinetL * 0.5 + 0.003), cabinetTopY - D.apronHeight * 0.22, 0);
+          this.decorationGroup.add(strip);
+        }
+      }
+      return;
+    }
+
+    if (effectiveDecor === 'decor_neon_underflow') {
+      const neonMat = new THREE.MeshStandardMaterial({
+        color: 0x67e8f9,
+        emissive: 0x22d3ee,
+        emissiveIntensity: 1.35,
+        roughness: 0.2,
+        metalness: 0.1,
+      });
+
+      // Perimeter apron neon rails (outside cabinet box)
+      const longLedGeo = new THREE.BoxGeometry(cabinetL + 0.022, 0.011, 0.012);
+      for (const sz of [-1, 1]) {
+        const led = new THREE.Mesh(longLedGeo, neonMat);
+        led.position.set(0, cabinetTopY - D.apronHeight * 0.52, sz * (cabinetW * 0.5 + 0.007));
+        this.decorationGroup.add(led);
+      }
+
+      const shortLedGeo = new THREE.BoxGeometry(0.012, 0.011, cabinetW + 0.022);
+      for (const sx of [-1, 1]) {
+        const led = new THREE.Mesh(shortLedGeo, neonMat);
+        led.position.set(sx * (cabinetL * 0.5 + 0.007), cabinetTopY - D.apronHeight * 0.52, 0);
+        this.decorationGroup.add(led);
+      }
+
+      // Pedestal floor halo rectangle
+      const floorMat = new THREE.MeshBasicMaterial({
+        color: 0x22d3ee,
+        transparent: true,
+        opacity: 0.55,
+      });
+      const fLong = new THREE.BoxGeometry(cabinetL + 0.06, 0.004, 0.016);
+      const fShort = new THREE.BoxGeometry(0.016, 0.004, cabinetW + 0.06);
+      for (const sz of [-1, 1]) {
+        const bar = new THREE.Mesh(fLong, floorMat);
+        bar.position.set(0, 0.005, sz * (cabinetW * 0.5 + 0.024));
+        this.decorationGroup.add(bar);
+      }
+      for (const sx of [-1, 1]) {
+        const bar = new THREE.Mesh(fShort, floorMat);
+        bar.position.set(sx * (cabinetL * 0.5 + 0.024), 0.005, 0);
+        this.decorationGroup.add(bar);
+      }
+      return;
+    }
+
+    if (effectiveDecor === 'decor_championship_crest') {
+      const goldMat = new THREE.MeshPhysicalMaterial({
+        color: 0xfbbf24,
+        metalness: 0.96,
+        roughness: 0.14,
+        emissive: 0x92400e,
+        emissiveIntensity: 0.22,
+      });
+
+      const longFiligreeGeo = new THREE.BoxGeometry(cabinetL + 0.022, 0.012, 0.01);
+      for (const sz of [-1, 1]) {
+        const bar = new THREE.Mesh(longFiligreeGeo, goldMat);
+        bar.position.set(0, cabinetTopY - D.apronHeight * 0.25, sz * (cabinetW * 0.5 + 0.006));
+        this.decorationGroup.add(bar);
+      }
+      const shortFiligreeGeo = new THREE.BoxGeometry(0.01, 0.012, cabinetW + 0.022);
+      for (const sx of [-1, 1]) {
+        const bar = new THREE.Mesh(shortFiligreeGeo, goldMat);
+        bar.position.set(sx * (cabinetL * 0.5 + 0.006), cabinetTopY - D.apronHeight * 0.25, 0);
+        this.decorationGroup.add(bar);
+      }
+
+      // Floor gold championship trim perimeter
+      const floorRingMat = new THREE.MeshBasicMaterial({
+        color: 0xf59e0b,
+        transparent: true,
+        opacity: 0.45,
+      });
+      const fLong = new THREE.BoxGeometry(cabinetL + 0.08, 0.004, 0.018);
+      const fShort = new THREE.BoxGeometry(0.018, 0.004, cabinetW + 0.08);
+      for (const sz of [-1, 1]) {
+        const bar = new THREE.Mesh(fLong, floorRingMat);
+        bar.position.set(0, 0.005, sz * (cabinetW * 0.5 + 0.032));
+        this.decorationGroup.add(bar);
+      }
+      for (const sx of [-1, 1]) {
+        const bar = new THREE.Mesh(fShort, floorRingMat);
+        bar.position.set(sx * (cabinetL * 0.5 + 0.032), 0.005, 0);
+        this.decorationGroup.add(bar);
+      }
     }
   }
 
   public setFeltTheme(theme: FeltTheme) {
-    const nextTextures = createFeltTextures(theme, this.maxAnisotropy);
-    const oldMap = this.feltTextures.map;
-    const oldBump = this.feltTextures.bumpMap;
+    this.currentFallbackTheme = theme;
+    this.applyTableCosmetics(this.currentTableSkinId, this.currentDecorationId, theme);
+  }
 
-    this.feltTextures = nextTextures;
-    this.feltMaterial.map = nextTextures.map;
-    this.feltMaterial.bumpMap = nextTextures.bumpMap;
-    this.feltMaterial.needsUpdate = true;
+  public applyTableCosmetics(
+    tableSkinId: string,
+    decorationId: string,
+    fallbackTheme?: FeltTheme,
+  ) {
+    const resolvedTheme = fallbackTheme ?? this.currentFallbackTheme;
+    this.currentFallbackTheme = resolvedTheme;
+    const normalizedTable = tableSkinId || 'table_classic_green';
+    const normalizedDecor = decorationId || 'decor_none';
 
-    this.cushionMaterial.color.setHex(this.getThemeColor(theme));
-    this.cushionMaterial.bumpMap = nextTextures.bumpMap;
-    this.cushionMaterial.needsUpdate = true;
+    const spec = getTableSkinVisualSpec(normalizedTable, resolvedTheme);
+    const nextFeltKey = `${normalizedTable}::${resolvedTheme}`;
 
-    oldMap.dispose();
-    oldBump.dispose();
+    if (nextFeltKey !== this.appliedFeltKey) {
+      this.appliedFeltKey = nextFeltKey;
+      const nextFelt = createFeltTexturesByTableSkin(
+        normalizedTable,
+        this.maxAnisotropy,
+        resolvedTheme,
+      );
+      const oldMap = this.feltTextures.map;
+      const oldBump = this.feltTextures.bumpMap;
+
+      this.feltTextures = nextFelt;
+      this.feltMaterial.map = nextFelt.map;
+      this.feltMaterial.bumpMap = nextFelt.bumpMap;
+      this.feltMaterial.needsUpdate = true;
+
+      this.cushionMaterial.color.setHex(spec.cushionHex);
+      this.cushionMaterial.bumpMap = nextFelt.bumpMap;
+      this.cushionMaterial.needsUpdate = true;
+
+      oldMap.dispose();
+      oldBump.dispose();
+    }
+
+    if (spec.woodFinish !== this.currentWoodFinish) {
+      this.currentWoodFinish = spec.woodFinish;
+      const oldWoodMap = this.woodMap;
+      const oldWoodRough = this.woodRoughMap;
+      const nextWood = createWoodTextures(this.maxAnisotropy, spec.woodFinish);
+      this.woodMap = nextWood.map;
+      this.woodRoughMap = nextWood.roughnessMap;
+
+      this.woodMaterial.map = this.woodMap;
+      this.woodMaterial.roughnessMap = this.woodRoughMap;
+      this.woodMaterial.roughness = spec.woodFinish === 'obsidian_neon' ? 0.22 : 0.34;
+      this.woodMaterial.metalness = spec.woodFinish === 'obsidian_neon' ? 0.16 : 0.04;
+      this.woodMaterial.needsUpdate = true;
+
+      this.darkWoodMaterial.map = this.woodMap;
+      this.darkWoodMaterial.needsUpdate = true;
+
+      oldWoodMap.dispose();
+      oldWoodRough.dispose();
+    }
+
+    this.applyTrimMetal(spec.trimMetal);
+
+    if (
+      this.currentDecorationId !== normalizedDecor ||
+      this.currentTableSkinId !== normalizedTable
+    ) {
+      this.currentTableSkinId = normalizedTable;
+      this.currentDecorationId = normalizedDecor;
+      this.rebuildDecorations(normalizedDecor, normalizedTable);
+    }
   }
 }
