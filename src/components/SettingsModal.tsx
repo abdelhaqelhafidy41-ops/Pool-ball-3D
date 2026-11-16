@@ -35,7 +35,7 @@ export function SettingsModal({ onRestartMatch, onResetAllStats }: SettingsModal
 
   return (
     <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/65 p-4">
-      <div className="w-full max-w-md max-h-[90vh] overflow-y-auto rounded-2xl border border-white/15 bg-[#0f161f] p-5 sm:p-6 shadow-2xl text-slate-100">
+      <div className="w-full max-w-md max-h-[92dvh] modal-scroll-y rounded-2xl border border-white/15 bg-[#0f161f] p-5 sm:p-6 shadow-2xl text-slate-100">
         <div className="flex items-center justify-between border-b border-white/10 pb-3.5">
           <div>
             <h2 className="text-lg font-bold tracking-wide text-white">Game & Match Settings</h2>

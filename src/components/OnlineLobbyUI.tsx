@@ -133,7 +133,7 @@ export function OnlineLobbyUI() {
       aria-label="Online Multiplayer Lobby"
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-3 sm:p-4"
     >
-      <div className="w-full max-w-xl max-h-[92vh] overflow-y-auto rounded-2xl border border-white/15 bg-[#0c1219] p-4 sm:p-6 text-slate-100 shadow-2xl">
+      <div className="w-full max-w-xl max-h-[92dvh] modal-scroll-y rounded-2xl border border-white/15 bg-[#0c1219] p-4 sm:p-6 text-slate-100 shadow-2xl">
         {/* Header */}
         <div className="flex items-center justify-between gap-3 pb-3 border-b border-white/10">
           <div className="flex items-center gap-2.5">

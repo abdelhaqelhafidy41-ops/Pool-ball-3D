@@ -60,7 +60,7 @@ export function clearStoredPlayerIdentity(): void {
 
 export function resolveProgressionApiBase(): string {
   const loc = typeof window !== 'undefined' ? window.location : undefined;
-  return resolveHttpBaseUrl(import.meta.env.VITE_WS_URL, loc);
+  return resolveHttpBaseUrl(import.meta.env?.VITE_WS_URL, loc);
 }
 
 export interface ApiResult<T> {

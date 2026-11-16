@@ -60,6 +60,7 @@ export interface DailyRewardStatus {
   claimedToday: boolean;
   lastClaimAtMs: number | null;
   nextClaimAtMs: number;
+  serverNowMs?: number;
   schedule: DailyRewardTier[];
 }
 
@@ -210,7 +211,7 @@ export const COSMETIC_CATALOG: CosmeticItemDef[] = [
   // A. Cue Sticks
   {
     id: 'cue_classic_maple',
-    name: 'Hard Maple Classic',
+    name: 'Classic Wood Cue',
     category: 'cue',
     subCategory: 'Classic Wooden',
     rarity: 'common',
@@ -232,7 +233,7 @@ export const COSMETIC_CATALOG: CosmeticItemDef[] = [
   },
   {
     id: 'cue_carbon_stealth',
-    name: 'Obsidian Carbon Pro',
+    name: 'Professional Carbon Cue',
     category: 'cue',
     subCategory: 'Carbon Fiber',
     rarity: 'rare',
@@ -243,7 +244,7 @@ export const COSMETIC_CATALOG: CosmeticItemDef[] = [
   },
   {
     id: 'cue_gold_imperial',
-    name: 'Imperial 24K Bullion',
+    name: 'Golden Cue',
     category: 'cue',
     subCategory: 'Gold & Platinum',
     rarity: 'epic',
@@ -254,7 +255,7 @@ export const COSMETIC_CATALOG: CosmeticItemDef[] = [
   },
   {
     id: 'cue_platinum_apex',
-    name: 'Platinum Crown Apex',
+    name: 'Royal Platinum Cue',
     category: 'cue',
     subCategory: 'Gold & Platinum',
     rarity: 'epic',
@@ -265,7 +266,7 @@ export const COSMETIC_CATALOG: CosmeticItemDef[] = [
   },
   {
     id: 'cue_neon_cosmic',
-    name: 'Nebula Prism Neon',
+    name: 'Neon Cyber Cue',
     category: 'cue',
     subCategory: 'Neon & Futuristic',
     rarity: 'legendary',
@@ -276,7 +277,7 @@ export const COSMETIC_CATALOG: CosmeticItemDef[] = [
   },
   {
     id: 'cue_dragon_sovereign',
-    name: 'Sovereign Crimson Gold',
+    name: 'Legendary Dragon Cue',
     category: 'cue',
     subCategory: 'Rare & Legendary',
     rarity: 'legendary',
@@ -289,7 +290,7 @@ export const COSMETIC_CATALOG: CosmeticItemDef[] = [
   // B. Ball Skins
   {
     id: 'ball_classic',
-    name: 'Tournament Phenolic',
+    name: 'Classic Balls',
     category: 'ball',
     subCategory: 'Classic',
     rarity: 'common',
@@ -300,7 +301,7 @@ export const COSMETIC_CATALOG: CosmeticItemDef[] = [
   },
   {
     id: 'ball_brushed_metallic',
-    name: 'Brushed Titanium Set',
+    name: 'Metallic Balls',
     category: 'ball',
     subCategory: 'Metallic',
     rarity: 'rare',
@@ -311,7 +312,7 @@ export const COSMETIC_CATALOG: CosmeticItemDef[] = [
   },
   {
     id: 'ball_neon_pulse',
-    name: 'Cyber Grid Neon',
+    name: 'Neon Balls',
     category: 'ball',
     subCategory: 'Neon',
     rarity: 'epic',
@@ -322,7 +323,7 @@ export const COSMETIC_CATALOG: CosmeticItemDef[] = [
   },
   {
     id: 'ball_artisan_marble',
-    name: 'Venetian Marble Swirl',
+    name: 'Marble Balls',
     category: 'ball',
     subCategory: 'Marble',
     rarity: 'epic',
@@ -330,6 +331,28 @@ export const COSMETIC_CATALOG: CosmeticItemDef[] = [
     isStarter: false,
     description: 'Swirled Italian mineral veining fused with gold-rimmed number medallions.',
     previewColors: ['#e7e2d8', '#1f2937', '#d4a84f'],
+  },
+  {
+    id: 'ball_golden',
+    name: 'Golden Balls',
+    category: 'ball',
+    subCategory: '24K Gold',
+    rarity: 'epic',
+    price: 2400,
+    isStarter: false,
+    description: 'Polished 24-karat bullion luster with obsidian-trimmed championship medallions.',
+    previewColors: ['#f6c85f', '#78350f', '#fef08a'],
+  },
+  {
+    id: 'ball_crystal',
+    name: 'Crystal Balls',
+    category: 'ball',
+    subCategory: 'Prism Crystal',
+    rarity: 'legendary',
+    price: 2900,
+    isStarter: false,
+    description: 'Faceted glacier-sapphire sheen with frosted crystalline number cores.',
+    previewColors: ['#bae6fd', '#0284c7', '#f0f9ff'],
   },
   {
     id: 'ball_aurora_chroma',
@@ -346,7 +369,7 @@ export const COSMETIC_CATALOG: CosmeticItemDef[] = [
   // C. Pool Tables
   {
     id: 'table_classic_green',
-    name: 'Championship Emerald',
+    name: 'Classic Green Table',
     category: 'table',
     subCategory: 'Classic Green',
     rarity: 'common',
@@ -357,7 +380,7 @@ export const COSMETIC_CATALOG: CosmeticItemDef[] = [
   },
   {
     id: 'table_blue_tournament',
-    name: 'Pro Tour Sapphire',
+    name: 'Tournament Blue Table',
     category: 'table',
     subCategory: 'Blue Tournament',
     rarity: 'rare',
@@ -368,7 +391,7 @@ export const COSMETIC_CATALOG: CosmeticItemDef[] = [
   },
   {
     id: 'table_luxury_dark',
-    name: 'Obsidian Velvet Club',
+    name: 'Luxury Dark Table',
     category: 'table',
     subCategory: 'Luxury Dark',
     rarity: 'epic',
@@ -389,8 +412,19 @@ export const COSMETIC_CATALOG: CosmeticItemDef[] = [
     previewColors: ['#6f1926', '#281014', '#e5b84b'],
   },
   {
+    id: 'table_royal_gold',
+    name: 'Royal Gold Table',
+    category: 'table',
+    subCategory: 'Royal Gold',
+    rarity: 'legendary',
+    price: 2750,
+    isStarter: false,
+    description: 'Deep imperial obsidian-gold baize accented with rosewood rails and 24K gold castings.',
+    previewColors: ['#2a2315', '#3d1c14', '#fbbf24'],
+  },
+  {
     id: 'table_neon_arena',
-    name: 'Cyber Obsidian Arena',
+    name: 'Neon Arena Table',
     category: 'table',
     subCategory: 'Neon Arena',
     rarity: 'legendary',
@@ -879,6 +913,7 @@ export function computeDailyRewardState(
     claimedToday,
     lastClaimAtMs: lastClaimMs,
     nextClaimAtMs: claimedToday ? getNextUtcMidnightMs(nowMs) : nowMs,
+    serverNowMs: nowMs,
     schedule: DAILY_LOGIN_SCHEDULE,
   };
 }

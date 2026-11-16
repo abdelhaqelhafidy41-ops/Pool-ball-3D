@@ -22,7 +22,20 @@ import { useGameStore } from '../store/useGameStore';
 
 class EconomyClientImpl {
   private inflightWallet: Promise<PlayerCosmeticSnapshot | null> | null = null;
+  private inflightPurchase: Promise<ApiResult<PurchaseItemResponse>> | null = null;
+  private inflightDailyClaim: Promise<ApiResult<DailyClaimResponse>> | null = null;
   private catalogLoaded = false;
+  private serverTimeOffsetMs = 0;
+
+  private updateServerClock(serverNowMs: number | undefined | null) {
+    if (typeof serverNowMs === 'number' && Number.isFinite(serverNowMs) && serverNowMs > 0) {
+      this.serverTimeOffsetMs = serverNowMs - Date.now();
+    }
+  }
+
+  public getTrustedNowMs(): number {
+    return Date.now() + this.serverTimeOffsetMs;
+  }
 
   private async ensureIdentity() {
     let stored = getStoredPlayerIdentity();
@@ -52,8 +65,8 @@ class EconomyClientImpl {
     return { ok: res.ok, status: res.status, json };
   }
 
-  public async fetchCatalog(): Promise<CosmeticItemDef[]> {
-    if (this.catalogLoaded) {
+  public async fetchCatalog(force = false): Promise<CosmeticItemDef[]> {
+    if (this.catalogLoaded && !force) {
       return useGameStore.getState().storeCatalog;
     }
     try {
@@ -68,6 +81,7 @@ class EconomyClientImpl {
     } catch {
       // Fallback cleanly to bundled COSMETIC_CATALOG
     }
+    useGameStore.getState().setStoreCatalog(COSMETIC_CATALOG);
     return COSMETIC_CATALOG;
   }
 
@@ -79,22 +93,37 @@ class EconomyClientImpl {
       if (!identity) return null;
 
       try {
-        const { ok, json } = await this.requestJson<{ snapshot: PlayerCosmeticSnapshot }>(
-          `/api/economy/wallet?playerId=${encodeURIComponent(identity.playerId)}`,
-          {
-            headers: { Authorization: `Bearer ${identity.playerToken}` },
-          },
-        );
-        if (!ok || !json.snapshot) return null;
+        const { ok, json } = await this.requestJson<
+          Partial<PlayerCosmeticSnapshot> & { snapshot?: PlayerCosmeticSnapshot }
+        >(`/api/economy/wallet?playerId=${encodeURIComponent(identity.playerId)}`, {
+          headers: { Authorization: `Bearer ${identity.playerToken}` },
+        });
+        if (!ok) return null;
+
+        // Support both flat worker/DO response ({ wallet, inventoryIds, equipped, dailyReward })
+        // and wrapped { snapshot } payloads.
+        const snapshot: PlayerCosmeticSnapshot | null = json.snapshot
+          ? json.snapshot
+          : json.wallet && json.equipped && json.dailyReward
+            ? {
+                wallet: json.wallet,
+                inventoryIds: Array.isArray(json.inventoryIds) ? json.inventoryIds : [],
+                equipped: json.equipped,
+                dailyReward: json.dailyReward,
+              }
+            : null;
+        if (!snapshot) return null;
+
+        this.updateServerClock(snapshot.dailyReward?.serverNowMs);
 
         const store = useGameStore.getState();
-        store.applyEconomySnapshot(json.snapshot);
-        if (json.snapshot.equipped.avatarId !== store.onlineProfile.avatarId) {
+        store.applyEconomySnapshot(snapshot);
+        if (snapshot.equipped.avatarId !== store.onlineProfile.avatarId) {
           store.setOnlineProfile({
-            avatarId: json.snapshot.equipped.avatarId as OnlineAvatarId,
+            avatarId: snapshot.equipped.avatarId as OnlineAvatarId,
           });
         }
-        return json.snapshot;
+        return snapshot;
       } catch {
         return null;
       }
@@ -126,39 +155,48 @@ class EconomyClientImpl {
   }
 
   public async purchaseItem(itemId: string): Promise<ApiResult<PurchaseItemResponse>> {
-    const identity = await this.ensureIdentity();
-    if (!identity) {
-      return { ok: false, error: 'Player session not initialized.' };
-    }
+    if (this.inflightPurchase) return this.inflightPurchase;
 
-    try {
-      const { ok, json } = await this.requestJson<PurchaseItemResponse>(
-        '/api/economy/purchase',
-        {
-          method: 'POST',
-          headers: { Authorization: `Bearer ${identity.playerToken}` },
-          body: JSON.stringify({
-            playerId: identity.playerId,
-            itemId,
-          }),
-        },
-      );
-      if (!ok || !json.wallet) {
-        return {
-          ok: false,
-          code: json.error,
-          error: json.message ?? 'Purchase failed.',
-        };
+    const run = async (): Promise<ApiResult<PurchaseItemResponse>> => {
+      const identity = await this.ensureIdentity();
+      if (!identity) {
+        return { ok: false, error: 'Player session not initialized.' };
       }
-      useGameStore.getState().applyEconomySnapshot({
-        wallet: json.wallet,
-        inventoryIds: json.inventoryIds,
-        equipped: json.equipped,
-      });
-      return { ok: true, data: json };
-    } catch {
-      return { ok: false, error: 'Network error while purchasing item.' };
-    }
+
+      try {
+        const { ok, json } = await this.requestJson<PurchaseItemResponse>(
+          '/api/economy/purchase',
+          {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${identity.playerToken}` },
+            body: JSON.stringify({
+              playerId: identity.playerId,
+              itemId,
+            }),
+          },
+        );
+        if (!ok || !json.wallet) {
+          return {
+            ok: false,
+            code: json.error,
+            error: json.message ?? 'Purchase failed.',
+          };
+        }
+        useGameStore.getState().applyEconomySnapshot({
+          wallet: json.wallet,
+          inventoryIds: json.inventoryIds,
+          equipped: json.equipped,
+        });
+        return { ok: true, data: json };
+      } catch {
+        return { ok: false, error: 'Network error while purchasing item.' };
+      }
+    };
+
+    this.inflightPurchase = run().finally(() => {
+      this.inflightPurchase = null;
+    });
+    return this.inflightPurchase;
   }
 
   public async equipItem(
@@ -206,37 +244,50 @@ class EconomyClientImpl {
   }
 
   public async claimDailyReward(): Promise<ApiResult<DailyClaimResponse>> {
-    const identity = await this.ensureIdentity();
-    if (!identity) {
-      return { ok: false, error: 'Player session not initialized.' };
-    }
+    if (this.inflightDailyClaim) return this.inflightDailyClaim;
 
-    try {
-      const { ok, json } = await this.requestJson<DailyClaimResponse>(
-        '/api/economy/daily-claim',
-        {
-          method: 'POST',
-          headers: { Authorization: `Bearer ${identity.playerToken}` },
-          body: JSON.stringify({
-            playerId: identity.playerId,
-          }),
-        },
-      );
-      if (!ok || !json.wallet) {
-        return {
-          ok: false,
-          code: json.error,
-          error: json.message ?? 'Daily reward already claimed today.',
-        };
+    const run = async (): Promise<ApiResult<DailyClaimResponse>> => {
+      const identity = await this.ensureIdentity();
+      if (!identity) {
+        return { ok: false, error: 'Player session not initialized.' };
       }
-      useGameStore.getState().applyEconomySnapshot({
-        wallet: json.wallet,
-        dailyReward: json.dailyReward,
-      });
-      return { ok: true, data: json };
-    } catch {
-      return { ok: false, error: 'Network error claiming daily reward.' };
-    }
+
+      try {
+        const { ok, json } = await this.requestJson<DailyClaimResponse>(
+          '/api/economy/daily-claim',
+          {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${identity.playerToken}` },
+            body: JSON.stringify({
+              playerId: identity.playerId,
+            }),
+          },
+        );
+        if (!ok || !json.wallet) {
+          if (json.error === 'ALREADY_CLAIMED') {
+            void this.refreshWallet();
+          }
+          return {
+            ok: false,
+            code: json.error,
+            error: json.message ?? 'Daily reward already claimed today.',
+          };
+        }
+        this.updateServerClock(json.dailyReward?.serverNowMs);
+        useGameStore.getState().applyEconomySnapshot({
+          wallet: json.wallet,
+          dailyReward: json.dailyReward,
+        });
+        return { ok: true, data: json };
+      } catch {
+        return { ok: false, error: 'Network error claiming daily reward.' };
+      }
+    };
+
+    this.inflightDailyClaim = run().finally(() => {
+      this.inflightDailyClaim = null;
+    });
+    return this.inflightDailyClaim;
   }
 
   public async claimAiMatchReward(

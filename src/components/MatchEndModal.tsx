@@ -35,6 +35,7 @@ export function MatchEndModal({ onPlayAgain, onMainMenu, onWatchReplay }: MatchE
   const lastAiRewardClaim = useGameStore((s) => s.lastAiRewardClaim);
   const openStoreModal = useGameStore((s) => s.openStoreModal);
   const claimedAiMatchIdsRef = useRef<Set<string>>(new Set());
+  const claimingAiMatchIdsRef = useRef<Set<string>>(new Set());
 
   const isEligibleAiWin =
     screen === 'playing' &&
@@ -46,17 +47,37 @@ export function MatchEndModal({ onPlayAgain, onMainMenu, onWatchReplay }: MatchE
 
   useEffect(() => {
     if (!isEligibleAiWin) return;
-    if (!aiMatchClientId || claimedAiMatchIdsRef.current.has(aiMatchClientId)) return;
-    claimedAiMatchIdsRef.current.add(aiMatchClientId);
+    if (
+      !aiMatchClientId ||
+      claimedAiMatchIdsRef.current.has(aiMatchClientId) ||
+      claimingAiMatchIdsRef.current.has(aiMatchClientId)
+    ) {
+      return;
+    }
+    claimingAiMatchIdsRef.current.add(aiMatchClientId);
     const durationSec = Math.max(0, Math.round((Date.now() - aiMatchStartedAtMs) / 1000));
-    void economyClient.claimAiMatchReward({
-      clientMatchId: aiMatchClientId,
-      difficulty: matchConfig.aiDifficulty,
-      won: true,
-      totalShots: shotCount,
-      ballsPocketed: pocketedNumbers.length,
-      durationSec,
-    });
+    void economyClient
+      .claimAiMatchReward({
+        clientMatchId: aiMatchClientId,
+        difficulty: matchConfig.aiDifficulty,
+        won: true,
+        totalShots: shotCount,
+        ballsPocketed: pocketedNumbers.length,
+        durationSec,
+      })
+      .then((res) => {
+        claimingAiMatchIdsRef.current.delete(aiMatchClientId);
+        if (
+          res.ok ||
+          res.code === 'INVALID_MATCH_SUMMARY' ||
+          res.code === 'MATCH_NOT_WON'
+        ) {
+          claimedAiMatchIdsRef.current.add(aiMatchClientId);
+        }
+      })
+      .catch(() => {
+        claimingAiMatchIdsRef.current.delete(aiMatchClientId);
+      });
   }, [
     isEligibleAiWin,
     aiMatchClientId,

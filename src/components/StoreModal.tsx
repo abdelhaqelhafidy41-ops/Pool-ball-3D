@@ -4,13 +4,14 @@ import {
   Clock,
   Coins,
   Filter,
+  Info,
   Package,
   Search,
   ShoppingBag,
   Sparkles,
   X,
 } from 'lucide-react';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { soundEngine } from '../game/utils/SoundEngine';
 import { economyClient } from '../multiplayer/EconomyClient';
 import {
@@ -20,7 +21,6 @@ import {
   categorySlotKey,
   getCategoryDefaultItemId,
   type CoinTransactionReason,
-  type CosmeticCategory,
   type CosmeticItemDef,
   type ItemRarity,
 } from '../multiplayer/shared/economy';
@@ -46,7 +46,7 @@ const RARITY_FILTERS: Array<{ id: 'all' | ItemRarity; label: string }> = [
   { id: 'legendary', label: 'Legendary' },
 ];
 
-function formatCountdown(targetMs: number, nowMs: number): string {
+export function formatCountdown(targetMs: number, nowMs: number): string {
   const diffSec = Math.max(0, Math.floor((targetMs - nowMs) / 1000));
   const h = Math.floor(diffSec / 3600);
   const m = Math.floor((diffSec % 3600) / 60);
@@ -68,6 +68,10 @@ function formatTxReason(reason: CoinTransactionReason): string {
       return 'Daily Login Streak';
     case 'tournament_reward':
       return 'Tournament Payout';
+    case 'tournament_entry':
+      return 'Tournament Entry Fee';
+    case 'tournament_refund':
+      return 'Tournament Entry Refund';
     case 'store_purchase':
       return 'Store Purchase';
     case 'purchase_refund':
@@ -98,7 +102,7 @@ function CosmeticArtwork({
   size?: 'card' | 'inspector';
 }) {
   const [c1, c2, c3] = item.previewColors;
-  const hClass = size === 'inspector' ? 'h-32 w-full' : 'h-20 w-full';
+  const hClass = size === 'inspector' ? 'h-28 w-full' : 'h-16 sm:h-20 w-full';
 
   if (item.category === 'cue') {
     return (
@@ -168,7 +172,7 @@ function CosmeticArtwork({
     return (
       <div className={`${hClass} flex items-center justify-center`}>
         <div
-          className="flex h-14 w-14 items-center justify-center rounded-xl border-2 text-2xl font-black shadow-inner"
+          className="flex h-12 w-12 sm:h-14 sm:w-14 items-center justify-center rounded-xl border-2 text-xl sm:text-2xl font-black shadow-inner"
           style={{
             backgroundColor: `${c1}1f`,
             borderColor: c1,
@@ -263,13 +267,18 @@ export function StoreModal() {
   const [rarityFilter, setRarityFilter] = useState<'all' | ItemRarity>('all');
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedItemId, setSelectedItemId] = useState<string>('cue_classic_maple');
+  const [mobileInspectOpen, setMobileInspectOpen] = useState(false);
   const [confirmPurchaseItem, setConfirmPurchaseItem] = useState<CosmeticItemDef | null>(null);
   const [busyAction, setBusyAction] = useState(false);
-  const [nowMs, setNowMs] = useState(() => Date.now());
+  const [nowMs, setNowMs] = useState(() => economyClient.getTrustedNowMs());
+  const rolloverRefreshTriggeredRef = useRef<number | null>(null);
 
   useEffect(() => {
-    if (!storeModalOpen) return;
-    void economyClient.fetchCatalog();
+    if (!storeModalOpen) {
+      setMobileInspectOpen(false);
+      return;
+    }
+    void economyClient.fetchCatalog(true);
     void economyClient.refreshWallet();
   }, [storeModalOpen]);
 
@@ -280,10 +289,23 @@ export function StoreModal() {
 
   useEffect(() => {
     if (!storeModalOpen || storeTab !== 'daily') return;
-    setNowMs(Date.now());
-    const id = window.setInterval(() => setNowMs(Date.now()), 1000);
+    const syncTick = () => {
+      const trustedNow = economyClient.getTrustedNowMs();
+      setNowMs(trustedNow);
+      if (
+        dailyReward &&
+        !dailyReward.canClaim &&
+        trustedNow >= dailyReward.nextClaimAtMs &&
+        rolloverRefreshTriggeredRef.current !== dailyReward.nextClaimAtMs
+      ) {
+        rolloverRefreshTriggeredRef.current = dailyReward.nextClaimAtMs;
+        void economyClient.refreshWallet();
+      }
+    };
+    syncTick();
+    const id = window.setInterval(syncTick, 1000);
     return () => window.clearInterval(id);
-  }, [storeModalOpen, storeTab]);
+  }, [storeModalOpen, storeTab, dailyReward]);
 
   const ownedSet = useMemo(() => new Set(inventoryIds), [inventoryIds]);
 
@@ -320,6 +342,7 @@ export function StoreModal() {
   };
 
   const handleEquipOrUnequip = async (item: CosmeticItemDef) => {
+    if (busyAction) return;
     soundEngine.playUiClick();
     setBusyAction(true);
     setStoreNotice(null);
@@ -345,7 +368,7 @@ export function StoreModal() {
   };
 
   const handleConfirmPurchase = async () => {
-    if (!confirmPurchaseItem) return;
+    if (!confirmPurchaseItem || busyAction) return;
     soundEngine.playUiClick();
     setBusyAction(true);
     setStoreNotice(null);
@@ -365,6 +388,7 @@ export function StoreModal() {
   };
 
   const handleClaimDaily = async () => {
+    if (busyAction) return;
     soundEngine.playUiClick();
     setBusyAction(true);
     setStoreNotice(null);
@@ -381,32 +405,157 @@ export function StoreModal() {
     }
   };
 
+  const renderInspectorDetails = (item: CosmeticItemDef) => {
+    const owned = ownedSet.has(item.id);
+    const equipped = isEquipped(item);
+    const rarity = RARITY_META[item.rarity];
+    const canAfford = balance >= item.price;
+    const isDefault = getCategoryDefaultItemId(item.category) === item.id;
+
+    return (
+      <div className="space-y-4">
+        <div>
+          <div className={`h-0.5 w-full mb-3 ${rarity.barClass}`} />
+          <div className="rounded-lg border border-white/10 bg-[#0e151f] p-3">
+            <CosmeticArtwork item={item} size="inspector" />
+          </div>
+        </div>
+
+        <div>
+          <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
+            <span className={rarity.textClass}>{rarity.label}</span>
+            {' · '}
+            {COSMETIC_CATEGORY_LABELS[item.category]}
+            {' · '}
+            {item.subCategory}
+          </div>
+          <h3 className="mt-1 text-base font-extrabold text-white">{item.name}</h3>
+          <p className="mt-1.5 text-xs text-slate-300 leading-relaxed">{item.description}</p>
+        </div>
+
+        <div className="rounded-lg border border-white/10 bg-black/30 px-3 py-2 text-[11px] text-slate-400">
+          <div className="flex items-center justify-between">
+            <span>Gameplay Stat Bonus</span>
+            <span className="font-mono font-bold text-slate-200">Cosmetic Only</span>
+          </div>
+          <div className="mt-1 flex items-center justify-between">
+            <span>Status</span>
+            <span
+              className={`font-bold ${
+                equipped ? 'text-emerald-300' : owned ? 'text-sky-300' : 'text-amber-300'
+              }`}
+            >
+              {equipped ? 'Equipped' : owned ? 'In Inventory' : 'Available'}
+            </span>
+          </div>
+        </div>
+
+        <div className="pt-1">
+          {owned ? (
+            <button
+              type="button"
+              disabled={busyAction || (equipped && isDefault)}
+              onClick={() => void handleEquipOrUnequip(item)}
+              className={`inline-flex w-full items-center justify-center gap-2 rounded-lg px-4 py-2.5 text-xs font-extrabold uppercase tracking-wider transition-colors cursor-pointer whitespace-nowrap disabled:opacity-50 ${
+                equipped
+                  ? 'border border-white/15 bg-white/8 text-slate-200 hover:bg-white/15'
+                  : 'bg-emerald-500 text-slate-950 hover:bg-emerald-400'
+              }`}
+            >
+              <Check className="h-4 w-4" />
+              {equipped
+                ? isDefault
+                  ? 'Default Equipped'
+                  : 'Unequip to Default'
+                : 'Equip Cosmetic'}
+            </button>
+          ) : item.isRewardExclusive ? (
+            <div className="rounded-lg border border-amber-400/35 bg-amber-500/10 px-3 py-2.5 text-center text-xs font-bold text-amber-200">
+              Unlocked exclusively through Championship &amp; Tournament placements.
+            </div>
+          ) : (
+            <div className="space-y-2">
+              <button
+                type="button"
+                data-testid="inspector-buy-btn"
+                disabled={busyAction || !canAfford}
+                onClick={() => {
+                  soundEngine.playUiClick();
+                  setConfirmPurchaseItem(item);
+                }}
+                className="inline-flex w-full items-center justify-center gap-2 rounded-lg bg-amber-500 px-4 py-2.5 text-xs font-extrabold uppercase tracking-wider text-slate-950 hover:bg-amber-400 disabled:opacity-45 disabled:cursor-not-allowed transition-colors cursor-pointer whitespace-nowrap"
+              >
+                <Coins className="h-4 w-4" />
+                Buy for {item.price.toLocaleString()} POOL COINS
+              </button>
+              {!canAfford && (
+                <p className="text-center text-[11px] font-semibold text-rose-300">
+                  Need {(item.price - balance).toLocaleString()} more POOL COINS
+                </p>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  };
+
   return (
     <div
       role="dialog"
       aria-modal="true"
       aria-label="Pool Coins Store and Cosmetic Inventory"
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-2 sm:p-4"
+      data-testid="store-modal-backdrop"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-1.5 sm:p-4 pt-[max(0.375rem,env(safe-area-inset-top))] pb-[max(0.375rem,env(safe-area-inset-bottom))]"
     >
-      <div className="relative flex h-[92vh] w-full max-w-6xl flex-col overflow-hidden rounded-xl border border-amber-400/25 bg-[#0c1219] text-slate-100 shadow-2xl">
-        {/* Top Armory Bar (obsidian + gold) */}
-        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-white/10 bg-[#090e14] px-4 py-3 sm:px-6">
-          <div className="flex items-center gap-3">
-            <div className="flex h-9 w-9 items-center justify-center rounded-lg border border-amber-400/40 bg-amber-500/12">
-              <ShoppingBag className="h-4.5 w-4.5 text-amber-400" />
+      <div
+        data-testid="store-modal-shell"
+        className="relative flex h-[94dvh] max-h-[94dvh] sm:h-[90dvh] sm:max-h-[90dvh] w-full max-w-6xl flex-col overflow-hidden rounded-xl border border-amber-400/25 bg-[#0c1219] text-slate-100 shadow-2xl"
+      >
+        {/* Top Armory Bar (compact on mobile, single bar on desktop) */}
+        <div className="shrink-0 border-b border-white/10 bg-[#090e14] px-3 py-2.5 sm:px-6 sm:py-3 space-y-2 lg:space-y-0 lg:flex lg:items-center lg:justify-between lg:gap-3">
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2.5 min-w-0">
+              <div className="flex h-8 w-8 sm:h-9 sm:w-9 shrink-0 items-center justify-center rounded-lg border border-amber-400/40 bg-amber-500/12">
+                <ShoppingBag className="h-4 w-4 text-amber-400" />
+              </div>
+              <div className="min-w-0">
+                <h2 className="text-sm sm:text-lg font-extrabold tracking-tight text-white truncate">
+                  COSMETIC ARMORY &amp; STORE
+                </h2>
+                <p className="hidden sm:block text-[11px] text-slate-400">
+                  Visual customizations only · Zero gameplay advantages
+                </p>
+              </div>
             </div>
-            <div>
-              <h2 className="text-base sm:text-lg font-extrabold tracking-tight text-white">
-                COSMETIC ARMORY & STORE
-              </h2>
-              <p className="text-[11px] text-slate-400">
-                Visual customizations only · Zero gameplay advantages
-              </p>
+
+            {/* Balance & Close on mobile top-right (mirrors on desktop right via order) */}
+            <div className="flex items-center gap-2 shrink-0 lg:hidden">
+              <div
+                data-testid="store-coin-balance-mobile"
+                className="flex items-center gap-1.5 rounded-lg border border-amber-400/45 bg-amber-500/12 px-2.5 py-1"
+              >
+                <Coins className="h-3.5 w-3.5 text-amber-400" />
+                <span className="font-mono text-xs font-black tabular-nums text-amber-300">
+                  {balance.toLocaleString()}
+                </span>
+              </div>
+              <button
+                type="button"
+                aria-label="Close Store"
+                onClick={() => {
+                  soundEngine.playUiClick();
+                  closeStoreModal();
+                }}
+                className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-white/10 bg-white/5 text-slate-300 hover:bg-white/12 hover:text-white cursor-pointer"
+              >
+                <X className="h-4 w-4" />
+              </button>
             </div>
           </div>
 
-          {/* Primary Tabs */}
-          <div className="flex items-center gap-1 rounded-lg border border-white/10 bg-black/40 p-1">
+          {/* Primary Tabs (horizontally scrollable on narrow screens) */}
+          <div className="modal-scroll-x flex items-center gap-1 rounded-lg border border-white/10 bg-black/40 p-1">
             {(
               [
                 { id: 'store', label: 'Store', icon: ShoppingBag },
@@ -421,11 +570,12 @@ export function StoreModal() {
                 <button
                   key={t.id}
                   type="button"
+                  data-testid={`store-tab-${t.id}`}
                   onClick={() => {
                     soundEngine.playUiClick();
                     setStoreTab(t.id);
                   }}
-                  className={`relative inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-bold transition-colors cursor-pointer whitespace-nowrap ${
+                  className={`relative inline-flex items-center gap-1.5 rounded-md px-2.5 sm:px-3 py-1.5 text-[11px] sm:text-xs font-bold transition-colors cursor-pointer whitespace-nowrap shrink-0 ${
                     active
                       ? 'bg-amber-500 text-slate-950'
                       : 'text-slate-300 hover:bg-white/5 hover:text-white'
@@ -441,8 +591,8 @@ export function StoreModal() {
             })}
           </div>
 
-          {/* Wallet Balance & Close */}
-          <div className="flex items-center gap-2.5">
+          {/* Desktop Wallet Balance & Close */}
+          <div className="hidden lg:flex items-center gap-2.5 shrink-0">
             <div
               data-testid="store-coin-balance"
               className="flex items-center gap-2 rounded-lg border border-amber-400/45 bg-amber-500/12 px-3 py-1.5"
@@ -474,32 +624,35 @@ export function StoreModal() {
         {/* Status Notice Banner */}
         {storeNotice && (
           <div
-            className={`mx-4 mt-3 flex items-center justify-between rounded-lg border px-3 py-2 text-xs font-semibold sm:mx-6 ${
+            className={`mx-3 mt-2 sm:mx-6 sm:mt-3 shrink-0 flex items-center justify-between gap-2 rounded-lg border px-3 py-2 text-xs font-semibold ${
               storeNotice.type === 'ok'
                 ? 'border-emerald-400/40 bg-emerald-500/12 text-emerald-200'
                 : 'border-rose-500/40 bg-rose-500/12 text-rose-200'
             }`}
           >
-            <span>{storeNotice.text}</span>
+            <span className="min-w-0 break-words">{storeNotice.text}</span>
             <button
               type="button"
               onClick={() => setStoreNotice(null)}
-              className="text-current opacity-70 hover:opacity-100 cursor-pointer"
+              className="shrink-0 text-current opacity-70 hover:opacity-100 cursor-pointer"
             >
               <X className="h-3.5 w-3.5" />
             </button>
           </div>
         )}
 
-        {/* Body Content */}
+        {/* Store / Inventory Body: single primary vertical scroller on mobile, split pane on desktop */}
         {(storeTab === 'store' || storeTab === 'inventory') && (
           <div className="flex min-h-0 flex-1 flex-col lg:flex-row overflow-hidden">
-            {/* Left Catalog Browser */}
-            <div className="flex min-h-0 flex-1 flex-col overflow-hidden p-4 sm:p-5">
+            {/* Catalog Pane: single vertical scroll on <lg, fixed filter + scrolling grid on lg+ */}
+            <div
+              data-testid="store-scroll-region"
+              className="modal-scroll-y flex min-h-0 flex-1 flex-col lg:overflow-hidden p-3 sm:p-5 pb-6"
+            >
               {/* Filter & Search Toolbar */}
-              <div className="space-y-2.5 pb-3 border-b border-white/10">
-                <div className="flex flex-wrap items-center gap-2">
-                  <div className="relative flex-1 min-w-[180px]">
+              <div className="shrink-0 space-y-2 pb-3 border-b border-white/10">
+                <div className="flex flex-col sm:flex-row sm:items-center gap-2">
+                  <div className="relative flex-1 min-w-0">
                     <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" />
                     <input
                       type="text"
@@ -510,8 +663,8 @@ export function StoreModal() {
                     />
                   </div>
 
-                  <div className="flex items-center gap-1 rounded-lg border border-white/10 bg-[#080d13] p-1">
-                    <Filter className="ml-1.5 h-3 w-3 text-slate-400" />
+                  <div className="modal-scroll-x flex items-center gap-1 rounded-lg border border-white/10 bg-[#080d13] p-1">
+                    <Filter className="ml-1.5 h-3 w-3 shrink-0 text-slate-400" />
                     {RARITY_FILTERS.map((rf) => (
                       <button
                         key={rf.id}
@@ -520,7 +673,7 @@ export function StoreModal() {
                           soundEngine.playUiClick();
                           setRarityFilter(rf.id);
                         }}
-                        className={`rounded px-2 py-1 text-[11px] font-bold transition-colors cursor-pointer whitespace-nowrap ${
+                        className={`rounded px-2 py-1 text-[11px] font-bold transition-colors cursor-pointer whitespace-nowrap shrink-0 ${
                           rarityFilter === rf.id
                             ? 'bg-amber-500 text-slate-950'
                             : 'text-slate-400 hover:text-white'
@@ -533,18 +686,19 @@ export function StoreModal() {
                 </div>
 
                 {/* Category Tabs */}
-                <div className="flex items-center gap-1 overflow-x-auto pb-0.5">
+                <div className="modal-scroll-x flex items-center gap-1 pb-0.5">
                   {CATEGORY_TABS.map((cat) => {
                     const active = storeCategory === cat.id;
                     return (
                       <button
                         key={cat.id}
                         type="button"
+                        data-testid={`store-category-${cat.id}`}
                         onClick={() => {
                           soundEngine.playUiClick();
                           setStoreCategory(cat.id);
                         }}
-                        className={`rounded-md border px-2.5 py-1 text-[11px] font-bold transition-colors cursor-pointer whitespace-nowrap ${
+                        className={`rounded-md border px-2.5 py-1 text-[11px] font-bold transition-colors cursor-pointer whitespace-nowrap shrink-0 ${
                           active
                             ? 'border-amber-400 bg-amber-500/18 text-amber-200'
                             : 'border-white/10 bg-white/[0.03] text-slate-300 hover:bg-white/10'
@@ -557,24 +711,25 @@ export function StoreModal() {
                 </div>
               </div>
 
-              {/* Card Grid */}
-              <div className="mt-3 flex-1 overflow-y-auto pr-1">
+              {/* Card Grid (scrolls inside lg:flex-1 on desktop, flows inside single pane on <lg) */}
+              <div className="mt-3 lg:min-h-0 lg:flex-1 lg:overflow-y-auto lg:pr-1 lg:overscroll-contain">
                 {filteredItems.length === 0 ? (
                   <div className="rounded-xl border border-white/10 bg-black/25 py-12 text-center text-xs text-slate-400">
                     No cosmetic items match the current filters.
                   </div>
                 ) : (
-                  <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-2.5">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-2.5 pb-4">
                     {filteredItems.map((item) => {
                       const owned = ownedSet.has(item.id);
                       const equipped = isEquipped(item);
                       const selected = selectedItem?.id === item.id;
                       const rarity = RARITY_META[item.rarity];
+                      const canAfford = balance >= item.price;
+                      const isDefault = getCategoryDefaultItemId(item.category) === item.id;
 
                       return (
-                        <button
+                        <div
                           key={item.id}
-                          type="button"
                           data-testid={`store-item-${item.id}`}
                           onClick={() => {
                             soundEngine.playUiClick();
@@ -591,16 +746,27 @@ export function StoreModal() {
                           {/* Top 2px Rarity Bar */}
                           <div className={`h-0.5 w-full ${rarity.barClass}`} />
 
-                          <div className="px-3 pt-2.5 pb-1">
+                          <div className="px-3 pt-2.5 pb-1 relative">
                             <CosmeticArtwork item={item} size="card" />
+                            <button
+                              type="button"
+                              aria-label={`Inspect ${item.name}`}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                soundEngine.playUiClick();
+                                setSelectedItemId(item.id);
+                                setMobileInspectOpen(true);
+                              }}
+                              className="lg:hidden absolute right-2 top-2 inline-flex h-6 w-6 items-center justify-center rounded-md border border-white/12 bg-black/50 text-slate-300 hover:text-white cursor-pointer"
+                            >
+                              <Info className="h-3.5 w-3.5" />
+                            </button>
                           </div>
 
-                          <div className="flex flex-1 flex-col justify-between px-3 pb-3 pt-1">
+                          <div className="flex flex-1 flex-col justify-between px-3 pb-3 pt-1 gap-2">
                             <div>
-                              <div className="flex items-start justify-between gap-2">
-                                <div className="text-xs font-extrabold text-white leading-snug">
-                                  {item.name}
-                                </div>
+                              <div className="text-xs font-extrabold text-white leading-snug">
+                                {item.name}
                               </div>
                               <div className="mt-0.5 text-[10px] text-slate-400">
                                 <span className={`font-bold ${rarity.textClass}`}>
@@ -611,33 +777,70 @@ export function StoreModal() {
                               </div>
                             </div>
 
-                            <div className="mt-2.5 flex items-center justify-between border-t border-white/8 pt-2">
+                            <div className="flex items-center justify-between gap-2 border-t border-white/8 pt-2">
                               {equipped ? (
-                                <span className="inline-flex items-center gap-1 text-[11px] font-extrabold uppercase tracking-wider text-emerald-300">
+                                <span className="inline-flex items-center gap-1 text-[11px] font-extrabold uppercase tracking-wider text-emerald-300 whitespace-nowrap">
                                   <Check className="h-3 w-3" />
                                   Equipped
                                 </span>
                               ) : owned ? (
-                                <span className="text-[11px] font-bold uppercase tracking-wider text-slate-300">
+                                <span className="text-[11px] font-bold uppercase tracking-wider text-sky-300 whitespace-nowrap">
                                   Owned
                                 </span>
                               ) : item.isRewardExclusive ? (
-                                <span className="text-[11px] font-bold uppercase tracking-wider text-amber-300">
+                                <span className="text-[10px] font-bold uppercase tracking-wider text-amber-300 whitespace-nowrap">
                                   Tournament Prize
                                 </span>
                               ) : (
-                                <span className="inline-flex items-center gap-1 font-mono text-xs font-black tabular-nums text-amber-300">
+                                <span className="inline-flex items-center gap-1 font-mono text-xs font-black tabular-nums text-amber-300 whitespace-nowrap">
                                   <Coins className="h-3.5 w-3.5 text-amber-400" />
                                   {item.price.toLocaleString()}
                                 </span>
                               )}
 
-                              <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
-                                {COSMETIC_CATEGORY_LABELS[item.category]}
-                              </span>
+                              {owned ? (
+                                <button
+                                  type="button"
+                                  data-testid={`card-equip-btn-${item.id}`}
+                                  disabled={busyAction || (equipped && isDefault)}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setSelectedItemId(item.id);
+                                    void handleEquipOrUnequip(item);
+                                  }}
+                                  className={`rounded-md px-2.5 py-1 text-[10px] font-extrabold uppercase tracking-wider transition-colors cursor-pointer whitespace-nowrap disabled:opacity-45 ${
+                                    equipped
+                                      ? isDefault
+                                        ? 'border border-white/10 bg-white/5 text-slate-400'
+                                        : 'border border-white/15 bg-white/10 text-slate-200 hover:bg-white/18'
+                                      : 'bg-emerald-500 text-slate-950 hover:bg-emerald-400'
+                                  }`}
+                                >
+                                  {equipped ? (isDefault ? 'Default' : 'Unequip') : 'Equip'}
+                                </button>
+                              ) : item.isRewardExclusive ? (
+                                <span className="text-[10px] font-semibold text-slate-400 whitespace-nowrap">
+                                  Locked
+                                </span>
+                              ) : (
+                                <button
+                                  type="button"
+                                  data-testid={`card-buy-btn-${item.id}`}
+                                  disabled={busyAction || !canAfford}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    soundEngine.playUiClick();
+                                    setSelectedItemId(item.id);
+                                    setConfirmPurchaseItem(item);
+                                  }}
+                                  className="rounded-md bg-amber-500 px-2.5 py-1 text-[10px] font-extrabold uppercase tracking-wider text-slate-950 hover:bg-amber-400 disabled:opacity-40 disabled:cursor-not-allowed transition-colors cursor-pointer whitespace-nowrap"
+                                >
+                                  Buy
+                                </button>
+                              )}
                             </div>
                           </div>
-                        </button>
+                        </div>
                       );
                     })}
                   </div>
@@ -645,120 +848,16 @@ export function StoreModal() {
               </div>
             </div>
 
-            {/* Right Sticky Inspector Panel */}
-            <div className="w-full shrink-0 border-t lg:border-t-0 lg:border-l border-white/10 bg-[#090e14] p-4 sm:p-5 lg:w-80 flex flex-col justify-between">
+            {/* Desktop Sticky Right Inspector Panel */}
+            <div className="hidden lg:flex lg:w-80 lg:shrink-0 lg:flex-col lg:justify-between border-l border-white/10 bg-[#090e14] p-5 modal-scroll-y">
               {selectedItem ? (
-                (() => {
-                  const owned = ownedSet.has(selectedItem.id);
-                  const equipped = isEquipped(selectedItem);
-                  const rarity = RARITY_META[selectedItem.rarity];
-                  const canAfford = balance >= selectedItem.price;
-                  const isDefault =
-                    getCategoryDefaultItemId(selectedItem.category) === selectedItem.id;
-
-                  return (
-                    <div className="space-y-4">
-                      <div>
-                        <div className={`h-0.5 w-full mb-3 ${rarity.barClass}`} />
-                        <div className="rounded-lg border border-white/10 bg-[#0e151f] p-3">
-                          <CosmeticArtwork item={selectedItem} size="inspector" />
-                        </div>
-                      </div>
-
-                      <div>
-                        <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
-                          <span className={rarity.textClass}>{rarity.label}</span>
-                          {' · '}
-                          {COSMETIC_CATEGORY_LABELS[selectedItem.category]}
-                          {' · '}
-                          {selectedItem.subCategory}
-                        </div>
-                        <h3 className="mt-1 text-base font-extrabold text-white">
-                          {selectedItem.name}
-                        </h3>
-                        <p className="mt-1.5 text-xs text-slate-300 leading-relaxed">
-                          {selectedItem.description}
-                        </p>
-                      </div>
-
-                      <div className="rounded-lg border border-white/10 bg-black/30 px-3 py-2 text-[11px] text-slate-400">
-                        <div className="flex items-center justify-between">
-                          <span>Gameplay Stat Bonus</span>
-                          <span className="font-mono font-bold text-slate-200">
-                            Cosmetic Only
-                          </span>
-                        </div>
-                        <div className="mt-1 flex items-center justify-between">
-                          <span>Status</span>
-                          <span
-                            className={`font-bold ${
-                              equipped
-                                ? 'text-emerald-300'
-                                : owned
-                                  ? 'text-sky-300'
-                                  : 'text-amber-300'
-                            }`}
-                          >
-                            {equipped ? 'Equipped' : owned ? 'In Inventory' : 'Available'}
-                          </span>
-                        </div>
-                      </div>
-
-                      <div className="pt-1">
-                        {owned ? (
-                          <button
-                            type="button"
-                            disabled={busyAction || (equipped && isDefault)}
-                            onClick={() => void handleEquipOrUnequip(selectedItem)}
-                            className={`inline-flex w-full items-center justify-center gap-2 rounded-lg px-4 py-2.5 text-xs font-extrabold uppercase tracking-wider transition-colors cursor-pointer whitespace-nowrap disabled:opacity-50 ${
-                              equipped
-                                ? 'border border-white/15 bg-white/8 text-slate-200 hover:bg-white/15'
-                                : 'bg-emerald-500 text-slate-950 hover:bg-emerald-400'
-                            }`}
-                          >
-                            <Check className="h-4 w-4" />
-                            {equipped
-                              ? isDefault
-                                ? 'Default Equipped'
-                                : 'Unequip to Default'
-                              : 'Equip Cosmetic'}
-                          </button>
-                        ) : selectedItem.isRewardExclusive ? (
-                          <div className="rounded-lg border border-amber-400/35 bg-amber-500/10 px-3 py-2.5 text-center text-xs font-bold text-amber-200">
-                            Unlocked exclusively through Championship &amp; Tournament placements.
-                          </div>
-                        ) : (
-                          <div className="space-y-2">
-                            <button
-                              type="button"
-                              data-testid="inspector-buy-btn"
-                              disabled={busyAction || !canAfford}
-                              onClick={() => {
-                                soundEngine.playUiClick();
-                                setConfirmPurchaseItem(selectedItem);
-                              }}
-                              className="inline-flex w-full items-center justify-center gap-2 rounded-lg bg-amber-500 px-4 py-2.5 text-xs font-extrabold uppercase tracking-wider text-slate-950 hover:bg-amber-400 disabled:opacity-45 disabled:cursor-not-allowed transition-colors cursor-pointer whitespace-nowrap"
-                            >
-                              <Coins className="h-4 w-4" />
-                              Buy for {selectedItem.price.toLocaleString()} POOL COINS
-                            </button>
-                            {!canAfford && (
-                              <p className="text-center text-[11px] font-semibold text-rose-300">
-                                Need {(selectedItem.price - balance).toLocaleString()} more POOL COINS
-                              </p>
-                            )}
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  );
-                })()
+                renderInspectorDetails(selectedItem)
               ) : (
                 <div className="text-xs text-slate-400">Select an item to inspect details.</div>
               )}
 
               <div className="mt-4 border-t border-white/10 pt-3 text-[10px] text-slate-400">
-                Earn POOL COINS via Online Wins (+120/+150), AI Wins (+25–110), Achievements, and Daily Login Streaks.
+                Earn POOL COINS via Online Wins (+120/+150), AI Wins (+25–110), Achievements, Tournaments, and Daily Login Streaks.
               </div>
             </div>
           </div>
@@ -766,13 +865,16 @@ export function StoreModal() {
 
         {/* Daily Rewards Tab */}
         {storeTab === 'daily' && (
-          <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-5">
-            <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-400/35 bg-[#101824] p-4">
-              <div>
+          <div
+            data-testid="daily-rewards-scroll"
+            className="modal-scroll-y flex-1 min-h-0 p-3 sm:p-6 pb-8 space-y-4 sm:space-y-5"
+          >
+            <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-400/35 bg-[#101824] p-3.5 sm:p-4">
+              <div className="min-w-0 flex-1">
                 <div className="text-[11px] font-bold uppercase tracking-wider text-amber-400">
                   7-Day Check-In Streak
                 </div>
-                <h3 className="mt-0.5 text-lg font-extrabold text-white">
+                <h3 className="mt-0.5 text-base sm:text-lg font-extrabold text-white">
                   Current Streak: {dailyReward?.streak ?? 0} Day
                   {(dailyReward?.streak ?? 0) === 1 ? '' : 's'}
                 </h3>
@@ -781,32 +883,40 @@ export function StoreModal() {
                 </p>
               </div>
 
-              <div className="flex items-center gap-3">
+              <div className="flex items-center gap-3 shrink-0">
                 {dailyReward?.canClaim ? (
                   <button
                     type="button"
                     data-testid="claim-daily-btn"
                     disabled={busyAction}
                     onClick={() => void handleClaimDaily()}
-                    className="inline-flex items-center gap-2 rounded-lg bg-emerald-500 px-5 py-2.5 text-xs font-extrabold uppercase tracking-wider text-slate-950 hover:bg-emerald-400 disabled:opacity-50 cursor-pointer whitespace-nowrap"
+                    className="inline-flex items-center gap-2 rounded-lg bg-emerald-500 px-4 sm:px-5 py-2.5 text-xs font-extrabold uppercase tracking-wider text-slate-950 hover:bg-emerald-400 disabled:opacity-50 cursor-pointer whitespace-nowrap"
                   >
                     <Sparkles className="h-4 w-4" />
                     Claim +{dailyReward.nextRewardCoins} POOL COINS
                   </button>
                 ) : (
-                  <div className="rounded-lg border border-white/12 bg-black/35 px-4 py-2 text-right">
+                  <div
+                    data-testid="daily-countdown-box"
+                    className="rounded-lg border border-white/12 bg-black/35 px-4 py-2 text-right"
+                  >
                     <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
                       Next Reward Available In
                     </div>
-                    <div className="font-mono text-sm font-black tabular-nums text-amber-300">
-                      {dailyReward ? formatCountdown(dailyReward.nextClaimAtMs, nowMs) : '00:00:00'}
+                    <div
+                      data-testid="daily-countdown-timer"
+                      className="font-mono text-sm font-black tabular-nums text-amber-300"
+                    >
+                      {dailyReward
+                        ? formatCountdown(dailyReward.nextClaimAtMs, nowMs)
+                        : 'Syncing...'}
                     </div>
                   </div>
                 )}
               </div>
             </div>
 
-            <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-2.5">
+            <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-2.5 pb-4">
               {(dailyReward?.schedule ?? DAILY_LOGIN_SCHEDULE).map((tier) => {
                 const currentDay = dailyReward?.nextDayIndex ?? 1;
                 const claimedToday = dailyReward?.claimedToday ?? false;
@@ -818,6 +928,7 @@ export function StoreModal() {
                 return (
                   <div
                     key={tier.day}
+                    data-testid={`daily-tier-${tier.day}`}
                     className={`flex flex-col items-center justify-between rounded-xl border p-3.5 text-center ${
                       isNextReady
                         ? 'border-emerald-400 bg-emerald-500/12'
@@ -829,8 +940,8 @@ export function StoreModal() {
                     <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
                       {tier.label}
                     </div>
-                    <div className="my-3 flex h-10 w-10 items-center justify-center rounded-lg border border-amber-400/35 bg-amber-500/12">
-                      <Coins className="h-5 w-5 text-amber-400" />
+                    <div className="my-2.5 flex h-9 w-9 sm:h-10 sm:w-10 items-center justify-center rounded-lg border border-amber-400/35 bg-amber-500/12">
+                      <Coins className="h-4 w-4 sm:h-5 sm:w-5 text-amber-400" />
                     </div>
                     <div className="font-mono text-sm font-black tabular-nums text-amber-300">
                       +{tier.coins}
@@ -853,7 +964,10 @@ export function StoreModal() {
 
         {/* Coin Ledger Tab */}
         {storeTab === 'ledger' && (
-          <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-3">
+          <div
+            data-testid="ledger-scroll"
+            className="modal-scroll-y flex-1 min-h-0 p-3 sm:p-6 pb-8 space-y-3"
+          >
             <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-white/10 bg-black/25 px-4 py-3 text-xs">
               <div className="font-mono tabular-nums text-slate-300">
                 Total Earned:{' '}
@@ -893,11 +1007,11 @@ export function StoreModal() {
                     >
                       <div className="min-w-0">
                         <div className="font-bold text-white">{formatTxReason(tx.reason)}</div>
-                        <div className="mt-0.5 flex items-center gap-1.5 text-[10px] text-slate-400">
-                          <Clock className="h-3 w-3" />
+                        <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-[10px] text-slate-400">
+                          <Clock className="h-3 w-3 shrink-0" />
                           <span>{formatTxTime(tx.createdAtMs)}</span>
                           {' · '}
-                          <span className="font-mono">{tx.referenceId}</span>
+                          <span className="font-mono break-all">{tx.referenceId}</span>
                         </div>
                       </div>
                       <div className="text-right font-mono tabular-nums">
@@ -917,6 +1031,28 @@ export function StoreModal() {
                 })}
               </div>
             )}
+          </div>
+        )}
+
+        {/* Mobile Item Inspector Modal Drawer (<lg only) */}
+        {mobileInspectOpen && selectedItem && (
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-label={`Inspect ${selectedItem.name}`}
+            className="lg:hidden absolute inset-0 z-10 flex items-center justify-center bg-black/80 p-3"
+          >
+            <div className="modal-scroll-y relative w-full max-w-sm max-h-[85dvh] rounded-xl border border-amber-400/40 bg-[#090e14] p-4 shadow-2xl">
+              <button
+                type="button"
+                aria-label="Close Details"
+                onClick={() => setMobileInspectOpen(false)}
+                className="absolute right-3 top-3 inline-flex h-8 w-8 items-center justify-center rounded-lg border border-white/10 bg-white/5 text-slate-300 hover:text-white cursor-pointer"
+              >
+                <X className="h-4 w-4" />
+              </button>
+              <div className="pr-8">{renderInspectorDetails(selectedItem)}</div>
+            </div>
           </div>
         )}
 

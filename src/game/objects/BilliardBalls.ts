@@ -147,6 +147,25 @@ export class BilliardBalls {
           mat.clearcoatRoughness = 0.14;
           mat.envMapIntensity = 1.45;
           break;
+        case 'ball_golden':
+          mat.metalness = 0.88;
+          mat.roughness = 0.14;
+          mat.clearcoat = 0.9;
+          mat.clearcoatRoughness = 0.06;
+          mat.envMapIntensity = 1.55;
+          mat.emissive.setHex(0x78350f);
+          mat.emissiveIntensity = 0.08;
+          break;
+        case 'ball_crystal':
+          mat.metalness = 0.15;
+          mat.roughness = 0.06;
+          mat.clearcoat = 1.0;
+          mat.clearcoatRoughness = 0.02;
+          mat.reflectivity = 1.0;
+          mat.envMapIntensity = 1.6;
+          mat.emissive.set(def.number === 0 ? '#7dd3fc' : '#38bdf8');
+          mat.emissiveIntensity = 0.14;
+          break;
         case 'ball_neon_pulse':
           mat.metalness = 0.12;
           mat.roughness = 0.14;

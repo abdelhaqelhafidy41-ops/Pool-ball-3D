@@ -106,8 +106,8 @@ export function MainMenu({ onStartMatch, onToggleFullscreen }: MainMenuProps) {
   return (
     <div className="pointer-events-none fixed inset-0 z-20 flex flex-col justify-between p-4 sm:p-8 overflow-y-auto">
       {/* Top Row: Championship Match Setup Lockup + Quick Utility Controls */}
-      <div className="flex items-start justify-between gap-4">
-        <div className="pointer-events-auto rounded-2xl border border-white/10 bg-[#0b1016]/90 px-5 py-4 shadow-2xl w-full max-w-md">
+      <div className="flex flex-col-reverse sm:flex-row items-stretch sm:items-start justify-between gap-3 sm:gap-4">
+        <div className="pointer-events-auto rounded-2xl border border-white/10 bg-[#0b1016]/90 px-4 sm:px-5 py-4 shadow-2xl w-full max-w-md">
           <div className="flex items-center gap-3.5">
             {/* Bespoke inline SVG 8-ball crest */}
             <svg
@@ -605,7 +605,7 @@ export function MainMenu({ onStartMatch, onToggleFullscreen }: MainMenuProps) {
         </div>
 
         {/* Top-Right Compact Controls */}
-        <div className="pointer-events-auto flex items-center gap-2">
+        <div className="pointer-events-auto self-end sm:self-auto flex items-center gap-2 shrink-0">
           <FpsCounter />
           <button
             type="button"

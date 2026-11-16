@@ -609,7 +609,7 @@ export class NetworkManager {
 
   private buildWebSocketUrl(roomId: string | null = null): string {
     const loc = typeof window !== 'undefined' ? window.location : undefined;
-    const base = resolveWebSocketUrl(import.meta.env.VITE_WS_URL, loc);
+    const base = resolveWebSocketUrl(import.meta.env?.VITE_WS_URL, loc);
     if (!roomId) return base;
     try {
       const parsed = new URL(base);

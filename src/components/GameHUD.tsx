@@ -179,7 +179,7 @@ export function GameHUD({
         <MatchScoreboard />
 
         {/* Top-Right Utility Cluster */}
-        <div className="pointer-events-auto flex items-center gap-1.5">
+        <div className="pointer-events-auto flex items-start gap-1.5">
           {replayShots.length > 0 && !ballsMoving && !isShotAnimating && (
             <button
               type="button"
@@ -196,41 +196,54 @@ export function GameHUD({
               <span>Replay</span>
             </button>
           )}
-          <FpsCounter />
           <button
             type="button"
-            onClick={() => {
-              soundEngine.unlock();
-              toggleSound();
-            }}
-            title={soundEnabled ? 'Mute Audio (M)' : 'Unmute Audio (M)'}
-            className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-white/10 bg-[#0c1219]/92 text-slate-200 hover:bg-white/10 transition-colors cursor-pointer"
-          >
-            {soundEnabled ? (
-              <Volume2 className="h-4 w-4 text-amber-400" />
-            ) : (
-              <VolumeX className="h-4 w-4 text-slate-400" />
-            )}
-          </button>
-          <button
-            type="button"
-            onClick={onToggleFullscreen}
-            title="Toggle Fullscreen (F)"
-            className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-white/10 bg-[#0c1219]/92 text-slate-200 hover:bg-white/10 transition-colors cursor-pointer"
-          >
-            {isFullscreen ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
-          </button>
-          <button
-            type="button"
+            data-testid="hud-settings-btn"
             onClick={() => {
               soundEngine.playUiClick();
               setSettingsOpen(true);
             }}
             title="Settings (Esc)"
-            className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-white/10 bg-[#0c1219]/92 text-slate-200 hover:bg-white/10 transition-colors cursor-pointer"
+            aria-label="Open Settings"
+            className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-white/10 bg-[#0c1219]/92 text-slate-200 hover:bg-white/10 transition-colors cursor-pointer shrink-0"
           >
             <Settings className="h-4 w-4" />
           </button>
+
+          {/* Compact Vertical Stack: FPS -> Sound -> Fullscreen */}
+          <div
+            data-testid="hud-utility-stack"
+            className="flex flex-col items-end gap-1.5"
+          >
+            <FpsCounter />
+            <button
+              type="button"
+              data-testid="hud-sound-btn"
+              onClick={() => {
+                soundEngine.unlock();
+                toggleSound();
+              }}
+              title={soundEnabled ? 'Mute Audio (M)' : 'Unmute Audio (M)'}
+              aria-label={soundEnabled ? 'Mute Audio' : 'Unmute Audio'}
+              className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-white/10 bg-[#0c1219]/92 text-slate-200 hover:bg-white/10 transition-colors cursor-pointer shrink-0"
+            >
+              {soundEnabled ? (
+                <Volume2 className="h-4 w-4 text-amber-400" />
+              ) : (
+                <VolumeX className="h-4 w-4 text-slate-400" />
+              )}
+            </button>
+            <button
+              type="button"
+              data-testid="hud-fullscreen-btn"
+              onClick={onToggleFullscreen}
+              title="Toggle Fullscreen (F)"
+              aria-label={isFullscreen ? 'Exit Fullscreen' : 'Enter Fullscreen'}
+              className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-white/10 bg-[#0c1219]/92 text-slate-200 hover:bg-white/10 transition-colors cursor-pointer shrink-0"
+            >
+              {isFullscreen ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
+            </button>
+          </div>
         </div>
       </div>
 

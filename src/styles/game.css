@@ -15,6 +15,23 @@
   }
 }
 
+.modal-scroll-y,
+.overflow-y-auto {
+  overflow-y: auto;
+  overflow-x: hidden;
+  touch-action: pan-y;
+  overscroll-behavior-y: contain;
+  -webkit-overflow-scrolling: touch;
+}
+
+.modal-scroll-x {
+  overflow-x: auto;
+  overflow-y: hidden;
+  touch-action: pan-x;
+  overscroll-behavior-x: contain;
+  -webkit-overflow-scrolling: touch;
+}
+
 /* Custom sleek range input for pool shot power & settings */
 input[type='range'].pool-slider {
   -webkit-appearance: none;

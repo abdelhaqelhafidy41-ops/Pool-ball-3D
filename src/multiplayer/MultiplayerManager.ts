@@ -246,7 +246,7 @@ class MultiplayerManagerImpl {
   public async fetchOnlineHistory(): Promise<MatchHistoryRecord[]> {
     try {
       const loc = typeof window !== 'undefined' ? window.location : undefined;
-      const baseUrl = resolveHttpBaseUrl(import.meta.env.VITE_WS_URL, loc);
+      const baseUrl = resolveHttpBaseUrl(import.meta.env?.VITE_WS_URL, loc);
       const res = await fetch(`${baseUrl}/api/online/history`);
       if (!res.ok) return [];
       const json = (await res.json()) as { history?: MatchHistoryRecord[] };

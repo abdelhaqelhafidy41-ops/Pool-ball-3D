@@ -67,6 +67,17 @@ const TABLE_SKIN_SPECS: Record<string, TableSkinVisualSpec> = {
     woodFinish: 'rosewood',
     trimMetal: 'gold',
   },
+  table_royal_gold: {
+    id: 'table_royal_gold',
+    clothBase: '#1e1b15',
+    clothHighlight: '#2b261c',
+    clothShadow: '#12100c',
+    cushionHex: 0x1e1b15,
+    markingColor: 'rgba(251, 191, 36, 0.56)',
+    spotColor: 'rgba(253, 224, 71, 0.85)',
+    woodFinish: 'rosewood',
+    trimMetal: 'gold',
+  },
   table_neon_arena: {
     id: 'table_neon_arena',
     clothBase: '#0b1e28',
@@ -155,6 +166,10 @@ function buildFeltTextureSetFromSpec(
   if (spec.id === 'table_neon_arena') {
     ctx.strokeStyle = 'rgba(34, 211, 238, 0.14)';
     ctx.lineWidth = 2;
+    ctx.strokeRect(18, 18, width - 36, height - 36);
+  } else if (spec.id === 'table_royal_gold') {
+    ctx.strokeStyle = 'rgba(251, 191, 36, 0.24)';
+    ctx.lineWidth = 2.5;
     ctx.strokeRect(18, 18, width - 36, height - 36);
   }
 
@@ -368,6 +383,8 @@ export function createBallTexture(
   const isNeon = ballSkinId === 'ball_neon_pulse';
   const isMarble = ballSkinId === 'ball_artisan_marble';
   const isMetallic = ballSkinId === 'ball_brushed_metallic';
+  const isGolden = ballSkinId === 'ball_golden';
+  const isCrystal = ballSkinId === 'ball_crystal';
   const isAurora = ballSkinId === 'ball_aurora_chroma';
 
   if (def.number === 0) {
@@ -381,6 +398,42 @@ export function createBallTexture(
       for (const uFrac of [0.125, 0.375, 0.625, 0.875]) {
         ctx.beginPath();
         ctx.arc(width * uFrac, height * 0.5, 13, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    } else if (isGolden) {
+      const goldGrad = ctx.createLinearGradient(0, 0, width, height);
+      goldGrad.addColorStop(0, '#fef3c7');
+      goldGrad.addColorStop(0.5, '#f6c85f');
+      goldGrad.addColorStop(1, '#d97706');
+      ctx.fillStyle = goldGrad;
+      ctx.fillRect(0, 0, width, height);
+      ctx.fillStyle = '#78350f';
+      for (const uFrac of [0.125, 0.375, 0.625, 0.875]) {
+        ctx.beginPath();
+        ctx.arc(width * uFrac, height * 0.5, 11, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.fillRect(0, 0, width, 12);
+      ctx.fillRect(0, height - 12, width, 12);
+    } else if (isCrystal) {
+      const crysGrad = ctx.createLinearGradient(0, 0, width, height);
+      crysGrad.addColorStop(0, '#f0f9ff');
+      crysGrad.addColorStop(0.5, '#bae6fd');
+      crysGrad.addColorStop(1, '#e0f2fe');
+      ctx.fillStyle = crysGrad;
+      ctx.fillRect(0, 0, width, height);
+      ctx.strokeStyle = 'rgba(2, 132, 199, 0.32)';
+      ctx.lineWidth = 2;
+      for (let i = -2; i <= 10; i++) {
+        ctx.beginPath();
+        ctx.moveTo(i * 120, 0);
+        ctx.lineTo(i * 120 + 220, height);
+        ctx.stroke();
+      }
+      ctx.fillStyle = '#0284c7';
+      for (const uFrac of [0.125, 0.375, 0.625, 0.875]) {
+        ctx.beginPath();
+        ctx.arc(width * uFrac, height * 0.5, 11, 0, Math.PI * 2);
         ctx.fill();
       }
     } else if (isMarble) {
@@ -428,7 +481,15 @@ export function createBallTexture(
     }
   } else {
     // Object balls 1..15
-    const baseFill = isNeon ? '#0a0f1a' : isMetallic ? '#d8e0ea' : ivory;
+    const baseFill = isNeon
+      ? '#0a0f1a'
+      : isGolden
+        ? '#f3cf72'
+        : isCrystal
+          ? '#e0f2fe'
+          : isMetallic
+            ? '#d8e0ea'
+            : ivory;
     ctx.fillStyle = baseFill;
     ctx.fillRect(0, 0, width, height);
 
@@ -468,6 +529,17 @@ export function createBallTexture(
         ctx.fillStyle = def.color;
         ctx.fillRect(0, height * 0.5 - bandHalfHeight, width, 8);
         ctx.fillRect(0, height * 0.5 + bandHalfHeight - 8, width, 8);
+      } else if (isGolden) {
+        ctx.fillStyle = '#f59e0b';
+        ctx.fillRect(0, height * 0.5 - bandHalfHeight, width, 10);
+        ctx.fillRect(0, height * 0.5 + bandHalfHeight - 10, width, 10);
+      } else if (isCrystal) {
+        const sg = ctx.createLinearGradient(0, height * 0.5 - bandHalfHeight, width, height * 0.5 + bandHalfHeight);
+        sg.addColorStop(0, def.color);
+        sg.addColorStop(0.5, '#7dd3fc');
+        sg.addColorStop(1, def.color);
+        ctx.fillStyle = sg;
+        ctx.fillRect(0, height * 0.5 - bandHalfHeight, width, bandHalfHeight * 2);
       } else if (isAurora) {
         const g = ctx.createLinearGradient(0, height * 0.5 - bandHalfHeight, width, height * 0.5 + bandHalfHeight);
         g.addColorStop(0, def.color);
@@ -497,6 +569,26 @@ export function createBallTexture(
         ctx.fillRect(0, 0, width, height);
         ctx.fillStyle = def.color;
         ctx.fillRect(0, height * 0.5 - 12, width, 24);
+      } else if (isGolden) {
+        const sg = ctx.createLinearGradient(0, 0, width, height);
+        if (def.number === 8) {
+          sg.addColorStop(0, '#1c1710');
+          sg.addColorStop(0.5, '#2b2112');
+          sg.addColorStop(1, '#14100b');
+        } else {
+          sg.addColorStop(0, def.color);
+          sg.addColorStop(0.5, '#f6c85f');
+          sg.addColorStop(1, def.color);
+        }
+        ctx.fillStyle = sg;
+        ctx.fillRect(0, 0, width, height);
+      } else if (isCrystal) {
+        const cg = ctx.createLinearGradient(0, 0, width, height);
+        cg.addColorStop(0, def.color);
+        cg.addColorStop(0.5, def.number === 8 ? '#0f172a' : '#bae6fd');
+        cg.addColorStop(1, def.color);
+        ctx.fillStyle = cg;
+        ctx.fillRect(0, 0, width, height);
       } else if (isAurora) {
         const g = ctx.createLinearGradient(0, 0, width, height);
         g.addColorStop(0, def.color);
@@ -515,16 +607,29 @@ export function createBallTexture(
       for (let y = 0; y < height; y += 3) {
         ctx.fillRect(0, y, width, 1);
       }
+    } else if (isCrystal) {
+      ctx.strokeStyle = 'rgba(255,255,255,0.28)';
+      ctx.lineWidth = 2;
+      for (let i = -2; i <= 10; i++) {
+        ctx.beginPath();
+        ctx.moveTo(i * 110, 0);
+        ctx.lineTo(i * 110 + 180, height);
+        ctx.stroke();
+      }
     }
 
     drawBallMedallion(ctx, width * 0.25, height * 0.5, def.number, {
       isNeon,
       isMarble,
+      isGolden,
+      isCrystal,
       accentColor: def.color,
     });
     drawBallMedallion(ctx, width * 0.75, height * 0.5, def.number, {
       isNeon,
       isMarble,
+      isGolden,
+      isCrystal,
       accentColor: def.color,
     });
   }
@@ -541,27 +646,45 @@ function drawBallMedallion(
   cx: number,
   cy: number,
   num: number,
-  style: { isNeon: boolean; isMarble: boolean; accentColor: string },
+  style: {
+    isNeon: boolean;
+    isMarble: boolean;
+    isGolden: boolean;
+    isCrystal: boolean;
+    accentColor: string;
+  },
 ) {
   const radius = 64;
 
-  ctx.fillStyle = style.isNeon ? style.accentColor : style.isMarble ? '#d4a84f' : 'rgba(0, 0, 0, 0.22)';
+  ctx.fillStyle = style.isNeon
+    ? style.accentColor
+    : style.isCrystal
+      ? '#7dd3fc'
+      : style.isGolden || style.isMarble
+        ? '#d4a84f'
+        : 'rgba(0, 0, 0, 0.22)';
   ctx.beginPath();
   ctx.arc(cx, cy, radius + 4, 0, Math.PI * 2);
   ctx.fill();
 
-  ctx.fillStyle = style.isNeon ? '#0a0f1a' : '#f8f5eb';
+  ctx.fillStyle = style.isNeon ? '#0a0f1a' : style.isGolden ? '#fffbeb' : style.isCrystal ? '#f0f9ff' : '#f8f5eb';
   ctx.beginPath();
   ctx.arc(cx, cy, radius, 0, Math.PI * 2);
   ctx.fill();
 
-  ctx.strokeStyle = style.isNeon ? style.accentColor : 'rgba(20, 20, 24, 0.28)';
+  ctx.strokeStyle = style.isNeon
+    ? style.accentColor
+    : style.isGolden
+      ? '#b45309'
+      : style.isCrystal
+        ? '#0284c7'
+        : 'rgba(20, 20, 24, 0.28)';
   ctx.lineWidth = 3;
   ctx.beginPath();
   ctx.arc(cx, cy, radius - 5, 0, Math.PI * 2);
   ctx.stroke();
 
-  ctx.fillStyle = style.isNeon ? '#f8fafc' : '#111318';
+  ctx.fillStyle = style.isNeon ? '#f8fafc' : style.isCrystal ? '#0c4a6e' : '#111318';
   ctx.font = '800 66px "Inter", "Segoe UI", system-ui, sans-serif';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';

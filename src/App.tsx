@@ -17,6 +17,7 @@ import type { PocketId } from './game/rules/types';
 import { soundEngine } from './game/utils/SoundEngine';
 import { economyClient } from './multiplayer/EconomyClient';
 import { multiplayerManager } from './multiplayer/MultiplayerManager';
+import { progressionClient } from './multiplayer/ProgressionClient';
 import { socialClient } from './multiplayer/SocialClient';
 import { useGameStore } from './store/useGameStore';
 
@@ -47,7 +48,10 @@ export default function App() {
   }, [setIsFullscreen]);
 
   useEffect(() => {
-    if (!ownPlayerId) return;
+    if (!ownPlayerId) {
+      void progressionClient.ensurePlayerSession();
+      return;
+    }
     multiplayerManager.ensureConnected();
     void socialClient.fetchOverview();
     void economyClient.refreshWallet();
