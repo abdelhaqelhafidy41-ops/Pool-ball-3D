@@ -1,10 +1,17 @@
 import type {
   LeaderboardResponse,
   LeaderboardScope,
+  OnlineMatchType,
   PlayerSearchResult,
   PublicPlayerProfile,
 } from './shared/progression';
 import type { MatchHistoryRecord, OnlineAvatarId } from './shared/protocol';
+import type {
+  CompetitiveSeasonRecord,
+  PenaltyAppealRecord,
+  PlayerModerationStatus,
+  PlayerSeasonStanding,
+} from './shared/ranked';
 import { resolveHttpBaseUrl } from './NetworkManager';
 import { useGameStore } from '../store/useGameStore';
 
@@ -361,6 +368,7 @@ class ProgressionClientImpl {
 
   public async fetchLeaderboard(params: {
     scope: LeaderboardScope;
+    seasonId?: string | null;
     page?: number;
     limit?: number;
     query?: string;
@@ -372,6 +380,7 @@ class ProgressionClientImpl {
         page: String(params.page ?? 1),
         limit: String(params.limit ?? 20),
       });
+      if (params.seasonId) qs.set('seasonId', params.seasonId);
       if (params.query?.trim()) qs.set('q', params.query.trim());
       if (stored?.playerId) qs.set('playerId', stored.playerId);
 
@@ -386,6 +395,8 @@ class ProgressionClientImpl {
 
   public async fetchMatchHistory(params?: {
     playerId?: string | null;
+    matchType?: OnlineMatchType | 'all' | null;
+    seasonId?: string | null;
     limit?: number;
   }): Promise<MatchHistoryRecord[]> {
     try {
@@ -393,6 +404,10 @@ class ProgressionClientImpl {
         limit: String(params?.limit ?? 30),
       });
       if (params?.playerId) qs.set('playerId', params.playerId);
+      if (params?.matchType && params.matchType !== 'all') {
+        qs.set('matchType', params.matchType);
+      }
+      if (params?.seasonId) qs.set('seasonId', params.seasonId);
 
       const { ok, json } = await this.requestJson<{ matches: MatchHistoryRecord[] }>(
         `/api/matches/history?${qs.toString()}`,
@@ -400,6 +415,99 @@ class ProgressionClientImpl {
       return ok && Array.isArray(json.matches) ? json.matches : [];
     } catch {
       return [];
+    }
+  }
+
+  public async fetchRankedSeasons(): Promise<{
+    activeSeason: CompetitiveSeasonRecord;
+    seasons: CompetitiveSeasonRecord[];
+  } | null> {
+    try {
+      const { ok, json } = await this.requestJson<{
+        activeSeason?: CompetitiveSeasonRecord;
+        seasons?: CompetitiveSeasonRecord[];
+      }>('/api/ranked/seasons');
+      if (!ok || !json.activeSeason) return null;
+      const seasons = Array.isArray(json.seasons) ? json.seasons : [json.activeSeason];
+      useGameStore.getState().setSeasonsData(json.activeSeason, seasons);
+      return { activeSeason: json.activeSeason, seasons };
+    } catch {
+      return null;
+    }
+  }
+
+  public async fetchRankedStanding(
+    playerId?: string,
+    seasonId?: string | null,
+  ): Promise<PlayerSeasonStanding | null> {
+    const stored = getStoredPlayerIdentity();
+    const targetId = playerId ?? stored?.playerId;
+    if (!targetId) return null;
+    try {
+      const qs = seasonId ? `?seasonId=${encodeURIComponent(seasonId)}` : '';
+      const { ok, json } = await this.requestJson<{ standing: PlayerSeasonStanding | null }>(
+        `/api/ranked/standing/${encodeURIComponent(targetId)}${qs}`,
+      );
+      if (!ok) return null;
+      if (targetId === stored?.playerId && !seasonId) {
+        useGameStore.getState().setPlayerSeasonStanding(json.standing ?? null);
+      }
+      return json.standing ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  public async fetchModerationStatus(): Promise<PlayerModerationStatus | null> {
+    const stored = getStoredPlayerIdentity();
+    if (!stored) return null;
+    try {
+      const { ok, json } = await this.requestJson<{ status?: PlayerModerationStatus }>(
+        `/api/moderation/status?playerId=${encodeURIComponent(stored.playerId)}`,
+        {
+          headers: { Authorization: `Bearer ${stored.playerToken}` },
+        },
+      );
+      if (!ok || !json.status) return null;
+      useGameStore.getState().setModerationStatus(json.status);
+      return json.status;
+    } catch {
+      return null;
+    }
+  }
+
+  public async submitPenaltyAppeal(
+    penaltyId: string,
+    message: string,
+  ): Promise<ApiResult<PenaltyAppealRecord>> {
+    const stored = getStoredPlayerIdentity();
+    if (!stored) {
+      return { ok: false, error: 'Competitive player identity not initialized.' };
+    }
+    try {
+      const { ok, json } = await this.requestJson<{ appeal?: PenaltyAppealRecord }>(
+        '/api/moderation/appeals',
+        {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${stored.playerToken}` },
+          body: JSON.stringify({
+            playerId: stored.playerId,
+            penaltyId,
+            message,
+          }),
+        },
+      );
+      if (!ok || !json.appeal) {
+        return {
+          ok: false,
+          code: json.error,
+          error: json.message ?? 'Failed to submit penalty appeal.',
+        };
+      }
+      void this.fetchModerationStatus();
+      return { ok: true, data: json.appeal };
+    } catch {
+      return { ok: false, error: 'Network error while submitting appeal.' };
     }
   }
 }

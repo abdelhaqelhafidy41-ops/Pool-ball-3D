@@ -32,15 +32,18 @@ import {
   WorkerMatchManager,
   type PersistedMatchState,
 } from './WorkerMatchManager';
+import { CLOTH_PHYSICS } from '../../src/game/utils/constants';
 import type {
   MatchProgressionRewardSummary,
   MatchTelemetrySummaryForProgression,
+  OnlineMatchType,
 } from '../../src/multiplayer/shared/progression';
 import {
   sanitizeChatText,
   SOCIAL_LIMITS,
   type RoomChatMessageRecord,
 } from '../../src/multiplayer/shared/social';
+import { AntiCheatService } from './AntiCheatService';
 import { checkChatAntiSpam } from './SocialService';
 
 interface RoomSocketAttachment {
@@ -57,6 +60,7 @@ interface StoredRoomState {
   roomCode: string;
   hostSessionId: string;
   isPrivate: boolean;
+  matchType?: OnlineMatchType;
   ruleProfileId: RuleProfileId;
   calledShotsEnabled: boolean;
   status: OnlineRoomStatus;
@@ -148,6 +152,11 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
       // Already present
     }
     try {
+      sql.exec('ALTER TABLE room_meta ADD COLUMN match_type TEXT');
+    } catch {
+      // Already present
+    }
+    try {
       sql.exec('ALTER TABLE room_players ADD COLUMN player_id TEXT');
     } catch {
       // Already present
@@ -184,11 +193,27 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
         }
       }
 
+      const persistedMatchType: OnlineMatchType =
+        m.match_type === 'ranked'
+          ? 'ranked'
+          : m.match_type === 'tournament'
+            ? 'tournament'
+            : m.match_type === 'private'
+              ? 'private'
+              : m.match_type === 'quick'
+                ? 'quick'
+                : parsedTournament
+                  ? 'tournament'
+                  : Number(m.is_private) === 1
+                    ? 'private'
+                    : 'quick';
+
       this.room = {
         roomId: String(m.room_id),
         roomCode: String(m.room_code),
         hostSessionId: String(m.host_session_id),
         isPrivate: Number(m.is_private) === 1,
+        matchType: persistedMatchType,
         ruleProfileId: m.rule_profile_id === 'wpa' ? 'wpa' : 'casual',
         calledShotsEnabled: Number(m.called_shots_enabled) === 1,
         status: String(m.status) as OnlineRoomStatus,
@@ -254,15 +279,20 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
     if (!this.room) return;
     const sql = this.ctx.storage.sql;
 
+    const computedMatchType: OnlineMatchType =
+      this.room.matchType ??
+      (this.room.tournament ? 'tournament' : this.room.isPrivate ? 'private' : 'quick');
+
     sql.exec(
       `INSERT OR REPLACE INTO room_meta (
-        id, room_id, room_code, host_session_id, is_private,
+        id, room_id, room_code, host_session_id, is_private, match_type,
         rule_profile_id, called_shots_enabled, status, created_at_ms, expires_at_ms, tournament_json
-      ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       this.room.roomId,
       this.room.roomCode,
       this.room.hostSessionId,
       this.room.isPrivate ? 1 : 0,
+      computedMatchType,
       this.room.ruleProfileId,
       this.room.calledShotsEnabled ? 1 : 0,
       this.room.status,
@@ -350,6 +380,7 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
       roomCode: params.roomCode,
       hostSessionId: params.host.sessionId,
       isPrivate: true,
+      matchType: 'private',
       ruleProfileId: params.ruleProfileId,
       calledShotsEnabled: params.calledShotsEnabled,
       status: 'waiting',
@@ -382,6 +413,7 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
   public async initMatchedRoom(params: {
     roomId: string;
     roomCode: string;
+    matchType?: 'quick' | 'ranked';
     ruleProfileId: RuleProfileId;
     calledShotsEnabled: boolean;
     player1: InitRoomPlayerInput;
@@ -398,6 +430,7 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
       roomCode: params.roomCode,
       hostSessionId: params.player1.sessionId,
       isPrivate: false,
+      matchType: params.matchType === 'ranked' ? 'ranked' : 'quick',
       ruleProfileId: params.ruleProfileId,
       calledShotsEnabled: params.calledShotsEnabled,
       status: 'ready',
@@ -469,6 +502,7 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
       roomCode: params.roomCode,
       hostSessionId: params.player1.sessionId,
       isPrivate: false,
+      matchType: 'tournament',
       ruleProfileId: params.ruleProfileId,
       calledShotsEnabled: params.calledShotsEnabled,
       status: 'waiting',
@@ -940,7 +974,8 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
       }
 
       default:
-        this.sendError(ws, 'INVALID_INPUT', 'Unsupported message type.');
+        this.match?.recordRejectedInput(player.role);
+        this.sendError(ws, 'INVALID_INPUT', 'Unsupported or unauthorized message type.');
     }
   }
 
@@ -1225,7 +1260,12 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
     }
 
     if (msg.type === 'game:aim') {
-      if (role !== match.getActivePlayer() || !Number.isFinite(msg.cueAngle)) return;
+      if (role !== match.getActivePlayer()) return;
+      if (typeof msg.cueAngle !== 'number' || !Number.isFinite(msg.cueAngle) || Math.abs(msg.cueAngle) > 1000) {
+        match.recordRejectedInput(role);
+        this.sendError(ws, 'CHEAT_REJECTED', 'Invalid cue aim vector rejected.');
+        return;
+      }
       this.broadcastToOthers(player.sessionId, {
         type: 'match:aim_preview',
         roomId: this.room.roomId,
@@ -1236,11 +1276,16 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
     }
 
     if (msg.type === 'game:spin') {
+      if (role !== match.getActivePlayer()) return;
       if (
-        role !== match.getActivePlayer() ||
+        typeof msg.x !== 'number' ||
+        typeof msg.y !== 'number' ||
         !Number.isFinite(msg.x) ||
-        !Number.isFinite(msg.y)
+        !Number.isFinite(msg.y) ||
+        Math.hypot(msg.x, msg.y) > CLOTH_PHYSICS.maxTipOffsetRatio + 0.08
       ) {
+        match.recordRejectedInput(role);
+        this.sendError(ws, 'CHEAT_REJECTED', 'Invalid cue spin offset rejected.');
         return;
       }
       this.broadcastToOthers(player.sessionId, {
@@ -1426,11 +1471,13 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
       this.persistMatchState();
     }
 
-    const matchType = params.roomSnapshot.tournament
-      ? ('tournament' as const)
-      : params.roomSnapshot.isPrivate
-        ? ('private' as const)
-        : ('quick' as const);
+    const matchType: OnlineMatchType =
+      params.roomSnapshot.matchType ??
+      (params.roomSnapshot.tournament
+        ? 'tournament'
+        : params.roomSnapshot.isPrivate
+          ? 'private'
+          : 'quick');
 
     const enrichedRecord: MatchHistoryRecord = {
       ...params.historyRecord,
@@ -1468,10 +1515,51 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
         : await this.getMatchmakerStub().progressionRecordMatch(matchInput);
       progression = recRes.summary;
       enrichedRecord.rankedApplied = recRes.summary.rankedApplied;
+      enrichedRecord.p1EloBefore = recRes.summary.players.player1.eloBefore;
+      enrichedRecord.p1EloAfter = recRes.summary.players.player1.eloAfter;
       enrichedRecord.p1EloDelta = recRes.summary.players.player1.eloDelta;
+      enrichedRecord.p2EloBefore = recRes.summary.players.player2.eloBefore;
+      enrichedRecord.p2EloAfter = recRes.summary.players.player2.eloAfter;
       enrichedRecord.p2EloDelta = recRes.summary.players.player2.eloDelta;
+      enrichedRecord.p1RankTier = recRes.summary.players.player1.rankAfter;
+      enrichedRecord.p2RankTier = recRes.summary.players.player2.rankAfter;
+      enrichedRecord.seasonId = recRes.summary.seasonId ?? null;
     } catch {
       // Non-blocking fallback if progression storage fails
+    }
+
+    try {
+      const acTelemetry = this.match?.getAntiCheatTelemetry() ?? {
+        p1RejectedInputs: 0,
+        p2RejectedInputs: 0,
+        minShotIntervalMs: null,
+      };
+      const acInput = {
+        matchId: enrichedRecord.matchId,
+        roomId: params.roomSnapshot.roomId,
+        matchMode: matchType,
+        player1Id: params.p1.playerId,
+        player2Id: params.p2.playerId,
+        winnerRole: enrichedRecord.winnerRole,
+        winnerId:
+          enrichedRecord.winnerRole === 'player1' ? params.p1.playerId : params.p2.playerId,
+        completionType: params.telemetrySummary.completionType,
+        totalShots: enrichedRecord.totalShots,
+        durationSec: params.telemetrySummary.durationSec,
+        p1RejectedInputs: acTelemetry.p1RejectedInputs,
+        p2RejectedInputs: acTelemetry.p2RejectedInputs,
+        minShotIntervalMs: acTelemetry.minShotIntervalMs,
+        p1WinStreakAfter: 0,
+        p2WinStreakAfter: 0,
+        endedAtMs: enrichedRecord.endedAtMs,
+      };
+      if (this.env.DB) {
+        await new AntiCheatService(this.env.DB).inspectCompletedMatch(acInput);
+      } else {
+        await this.getMatchmakerStub().inspectCompletedMatch(acInput);
+      }
+    } catch {
+      // Non-blocking anti-cheat audit fallback
     }
 
     await Promise.all([
@@ -1581,11 +1669,15 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
   }
 
   private toRoomInfo(room: StoredRoomState): OnlineRoomInfo {
+    const matchType: OnlineMatchType =
+      room.matchType ??
+      (room.tournament ? 'tournament' : room.isPrivate ? 'private' : 'quick');
     return {
       roomId: room.roomId,
       roomCode: room.roomCode,
       hostSessionId: room.hostSessionId,
       isPrivate: room.isPrivate,
+      matchType,
       ruleProfileId: room.ruleProfileId,
       calledShotsEnabled: room.calledShotsEnabled,
       status: room.status,

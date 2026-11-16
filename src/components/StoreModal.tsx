@@ -72,6 +72,8 @@ function formatTxReason(reason: CoinTransactionReason): string {
       return 'Tournament Entry Fee';
     case 'tournament_refund':
       return 'Tournament Entry Refund';
+    case 'season_reward':
+      return 'Season End Reward';
     case 'store_purchase':
       return 'Store Purchase';
     case 'purchase_refund':

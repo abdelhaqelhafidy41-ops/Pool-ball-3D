@@ -224,3 +224,11 @@ export function verifyTournamentAdmin(
   }
   return { ok: true };
 }
+
+export function verifyAdminRequest(
+  request: Request,
+  env: Env,
+): { ok: true } | { ok: false; status: number; code: string; message: string } {
+  return verifyTournamentAdmin(request, env);
+}
+

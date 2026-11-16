@@ -1,7 +1,15 @@
 import type { PlayerId, RuleProfileId } from '../../game/rules/types';
+import {
+  getRankForElo,
+  type CompetitiveSeasonRecord,
+  type PlayerSeasonStanding,
+  type RankProgressInfo,
+  type RankTierDefinition,
+  type RankTransitionInfo,
+} from './ranked';
 
-export type LeaderboardScope = 'global' | 'weekly' | 'monthly';
-export type OnlineMatchType = 'quick' | 'private' | 'tournament';
+export type LeaderboardScope = 'global' | 'weekly' | 'monthly' | 'season';
+export type OnlineMatchType = 'quick' | 'ranked' | 'private' | 'tournament';
 export type MatchCompletionType =
   | 'legal_8ball'
   | 'opponent_early_8ball'
@@ -136,6 +144,7 @@ export const ELO_CONFIG = {
   kStandard: 24,
   kMaster: 16,
   masterThreshold: 2000,
+  drawsSupported: false,
 } as const;
 
 export interface LevelProgressInfo {
@@ -193,15 +202,25 @@ export function calculateEloUpdate(params: {
   player1Matches: number;
   player2Matches: number;
   winnerRole: PlayerId;
+  actualScore1?: number;
 }): {
   player1After: number;
   player2After: number;
   player1Delta: number;
   player2Delta: number;
+  expected1: number;
+  expected2: number;
+  k1: number;
+  k2: number;
 } {
   const expected1 = 1 / (1 + Math.pow(10, (params.player2Elo - params.player1Elo) / 400));
   const expected2 = 1 - expected1;
-  const score1 = params.winnerRole === 'player1' ? 1 : 0;
+  const score1 =
+    ELO_CONFIG.drawsSupported && typeof params.actualScore1 === 'number'
+      ? Math.max(0, Math.min(1, params.actualScore1))
+      : params.winnerRole === 'player1'
+        ? 1
+        : 0;
   const score2 = 1 - score1;
 
   const k1 = getEloKFactor(params.player1Elo, params.player1Matches);
@@ -218,7 +237,17 @@ export function calculateEloUpdate(params: {
     player2After,
     player1Delta: player1After - params.player1Elo,
     player2Delta: player2After - params.player2Elo,
+    expected1,
+    expected2,
+    k1,
+    k2,
   };
+}
+
+export function buildRankSummary(elo: number): {
+  rankTier: RankTierDefinition;
+} {
+  return { rankTier: getRankForElo(elo) };
 }
 
 export interface PlayerMatchPerformance {
@@ -304,6 +333,7 @@ export interface PlayerPerformanceStats {
     wpa: { matches: number; wins: number };
     quick: { matches: number; wins: number };
     private: { matches: number; wins: number };
+    ranked?: { matches: number; wins: number };
   };
 }
 
@@ -315,6 +345,9 @@ export interface PublicPlayerProfile {
   isGuest: boolean;
   elo: number;
   peakElo: number;
+  rankTier?: RankTierDefinition;
+  rankProgress?: RankProgressInfo;
+  seasonStanding?: PlayerSeasonStanding | null;
   xp: number;
   level: number;
   levelProgress: LevelProgressInfo;
@@ -333,12 +366,14 @@ export interface LeaderboardEntry {
   avatarId: string;
   isGuest: boolean;
   elo: number;
+  rankTier?: RankTierDefinition;
   periodDelta: number;
   level: number;
   wins: number;
   losses: number;
   totalMatches: number;
   winRate: number;
+  currentStreak?: number;
 }
 
 export interface LeaderboardResponse {
@@ -349,6 +384,7 @@ export interface LeaderboardResponse {
   totalPages: number;
   items: LeaderboardEntry[];
   currentPlayer: LeaderboardEntry | null;
+  season?: CompetitiveSeasonRecord | null;
 }
 
 export interface PlayerProgressionDelta {
@@ -357,6 +393,15 @@ export interface PlayerProgressionDelta {
   eloBefore: number;
   eloAfter: number;
   eloDelta: number;
+  expectedScore?: number;
+  kFactor?: number;
+  rankBefore?: RankTierDefinition;
+  rankAfter?: RankTierDefinition;
+  rankTransition?: RankTransitionInfo;
+  seasonEloBefore?: number | null;
+  seasonEloAfter?: number | null;
+  seasonEloDelta?: number | null;
+  seasonRankTransition?: RankTransitionInfo | null;
   xpBefore: number;
   xpAfter: number;
   xpGained: number;
@@ -369,6 +414,8 @@ export interface PlayerProgressionDelta {
 
 export interface MatchProgressionRewardSummary {
   matchId: string;
+  matchType?: OnlineMatchType;
+  seasonId?: string | null;
   rankedApplied: boolean;
   durationSec: number;
   players: Record<PlayerId, PlayerProgressionDelta>;

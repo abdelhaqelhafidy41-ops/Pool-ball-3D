@@ -73,6 +73,7 @@ export type CoinTransactionReason =
   | 'tournament_reward'
   | 'tournament_entry'
   | 'tournament_refund'
+  | 'season_reward'
   | 'store_purchase'
   | 'purchase_refund';
 

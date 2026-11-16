@@ -83,6 +83,8 @@ export interface PersistedMatchState {
   rematchVotes: PlayerId[];
   playerCounters?: Record<PlayerId, PerPlayerTelemetryCounters>;
   completionType?: MatchCompletionType | null;
+  rejectedInputs?: Record<PlayerId, number>;
+  minShotIntervalMs?: number | null;
 }
 
 export interface WorkerMatchCallbacks {
@@ -145,6 +147,9 @@ export class WorkerMatchManager {
   private resultRecorded = false;
   private rematchVotes = new Set<PlayerId>();
   private callbacks: WorkerMatchCallbacks;
+  private rejectedInputs: Record<PlayerId, number> = { player1: 0, player2: 0 };
+  private lastShotTimestampMs: Record<PlayerId, number> = { player1: 0, player2: 0 };
+  private minShotIntervalMs: number | null = null;
 
   constructor(options: {
     roomId: string;
@@ -206,6 +211,14 @@ export class WorkerMatchManager {
           player2: createEmptyPlayerCounters(),
         };
     this.completionType = state.completionType ?? null;
+    this.rejectedInputs = state.rejectedInputs
+      ? {
+          player1: Number(state.rejectedInputs.player1 ?? 0),
+          player2: Number(state.rejectedInputs.player2 ?? 0),
+        }
+      : { player1: 0, player2: 0 };
+    this.minShotIntervalMs =
+      state.minShotIntervalMs !== undefined ? state.minShotIntervalMs : null;
     this.resultRecorded = state.resultRecorded;
     this.rematchVotes = new Set<PlayerId>(state.rematchVotes);
     await this.physics.restoreFromBallFrames(state.balls);
@@ -241,6 +254,24 @@ export class WorkerMatchManager {
         player2: { ...this.playerCounters.player2 },
       },
       completionType: this.completionType,
+      rejectedInputs: { ...this.rejectedInputs },
+      minShotIntervalMs: this.minShotIntervalMs,
+    };
+  }
+
+  public recordRejectedInput(player: PlayerId): void {
+    this.rejectedInputs[player] = (this.rejectedInputs[player] ?? 0) + 1;
+  }
+
+  public getAntiCheatTelemetry(): {
+    p1RejectedInputs: number;
+    p2RejectedInputs: number;
+    minShotIntervalMs: number | null;
+  } {
+    return {
+      p1RejectedInputs: this.rejectedInputs.player1 ?? 0,
+      p2RejectedInputs: this.rejectedInputs.player2 ?? 0,
+      minShotIntervalMs: this.minShotIntervalMs,
     };
   }
 
@@ -269,6 +300,9 @@ export class WorkerMatchManager {
       player2: createEmptyPlayerCounters(),
     };
     this.completionType = null;
+    this.rejectedInputs = { player1: 0, player2: 0 };
+    this.lastShotTimestampMs = { player1: 0, player2: 0 };
+    this.minShotIntervalMs = null;
     this.resultRecorded = false;
     this.rematchVotes.clear();
     this.physics.resetRack();
@@ -301,12 +335,15 @@ export class WorkerMatchManager {
     targetPocket: PocketId | null,
   ): { ok: true; snapshot: OnlineMatchSnapshot } | { ok: false; code: MultiplayerErrorCode; message: string } {
     if (this.phase === 'GAME_OVER') {
+      this.recordRejectedInput(player);
       return { ok: false, code: 'MATCH_FINISHED', message: 'Match has already finished.' };
     }
     if (player !== this.turnManager.getActivePlayer()) {
+      this.recordRejectedInput(player);
       return { ok: false, code: 'OUT_OF_TURN', message: 'Wait for your turn.' };
     }
     if (this.phase === 'BALLS_MOVING') {
+      this.recordRejectedInput(player);
       return { ok: false, code: 'OUT_OF_TURN', message: 'Balls are currently moving.' };
     }
 
@@ -317,6 +354,7 @@ export class WorkerMatchManager {
         this.playerGroups[player],
       );
       if (!legal.includes(targetBall)) {
+        this.recordRejectedInput(player);
         return {
           ok: false,
           code: 'INVALID_INPUT',
@@ -326,6 +364,7 @@ export class WorkerMatchManager {
     }
 
     if (targetPocket !== null && !VALID_POCKET_IDS.has(targetPocket)) {
+      this.recordRejectedInput(player);
       return {
         ok: false,
         code: 'INVALID_INPUT',
@@ -346,20 +385,25 @@ export class WorkerMatchManager {
     | { ok: true; confirmed: boolean; snapshot: OnlineMatchSnapshot; balls: OnlineBallFrame[] }
     | { ok: false; code: MultiplayerErrorCode; message: string } {
     if (this.phase === 'GAME_OVER') {
+      this.recordRejectedInput(player);
       return { ok: false, code: 'MATCH_FINISHED', message: 'Match has already finished.' };
     }
     if (player !== this.turnManager.getActivePlayer()) {
+      this.recordRejectedInput(player);
       return { ok: false, code: 'OUT_OF_TURN', message: 'Only the active player can place the cue ball.' };
     }
     if (this.phase !== 'BALL_IN_HAND') {
+      this.recordRejectedInput(player);
       return { ok: false, code: 'INVALID_INPUT', message: 'Ball in Hand is not currently active.' };
     }
     if (!Number.isFinite(x) || !Number.isFinite(z)) {
+      this.recordRejectedInput(player);
       return { ok: false, code: 'INVALID_INPUT', message: 'Invalid cue ball coordinates.' };
     }
 
     const check = this.physics.validateCuePlacement(x, z, this.ballInHandZone);
     if (!check.valid) {
+      this.recordRejectedInput(player);
       return {
         ok: false,
         code: 'INVALID_INPUT',
@@ -400,6 +444,7 @@ export class WorkerMatchManager {
     | { ok: true; shotSeq: number; simulationPromise: Promise<void> }
     | { ok: false; code: MultiplayerErrorCode; message: string } {
     if (this.phase === 'GAME_OVER') {
+      this.recordRejectedInput(player);
       return { ok: false, code: 'MATCH_FINISHED', message: 'Match has already finished.' };
     }
     if (
@@ -407,15 +452,19 @@ export class WorkerMatchManager {
       input.shotToken.length < 4 ||
       input.shotToken.length > 64
     ) {
+      this.recordRejectedInput(player);
       return { ok: false, code: 'INVALID_INPUT', message: 'Missing or invalid shot token.' };
     }
     if (hasUsedShotToken(input.shotToken)) {
+      this.recordRejectedInput(player);
       return { ok: false, code: 'DUPLICATE_SHOT', message: 'Duplicate shot submission ignored.' };
     }
     if (player !== this.turnManager.getActivePlayer()) {
+      this.recordRejectedInput(player);
       return { ok: false, code: 'OUT_OF_TURN', message: 'Cannot shoot out of turn.' };
     }
     if (!this.canShoot() || this.physics.areAnyBallsMoving()) {
+      this.recordRejectedInput(player);
       return {
         ok: false,
         code: 'OUT_OF_TURN',
@@ -424,16 +473,44 @@ export class WorkerMatchManager {
     }
 
     if (
+      typeof input.cueAngle !== 'number' ||
+      typeof input.power !== 'number' ||
+      typeof input.spinX !== 'number' ||
+      typeof input.spinY !== 'number' ||
       !Number.isFinite(input.cueAngle) ||
       !Number.isFinite(input.power) ||
       !Number.isFinite(input.spinX) ||
       !Number.isFinite(input.spinY)
     ) {
+      this.recordRejectedInput(player);
       return { ok: false, code: 'INVALID_INPUT', message: 'Invalid shot vector parameters.' };
+    }
+
+    if (Math.abs(input.cueAngle) > 1000) {
+      this.recordRejectedInput(player);
+      return { ok: false, code: 'CHEAT_REJECTED', message: 'Shot cue angle out of bounds.' };
+    }
+
+    if (input.power <= 0 || input.power > 1.05) {
+      this.recordRejectedInput(player);
+      return {
+        ok: false,
+        code: 'CHEAT_REJECTED',
+        message: 'Shot power outside valid physical range (0, 1].',
+      };
     }
 
     const maxR = CLOTH_PHYSICS.maxTipOffsetRatio;
     const rawR = Math.hypot(input.spinX, input.spinY);
+    if (rawR > maxR + 0.08) {
+      this.recordRejectedInput(player);
+      return {
+        ok: false,
+        code: 'CHEAT_REJECTED',
+        message: 'Cue ball impact spin offset exceeds physical cue tip boundary.',
+      };
+    }
+
     const spinX = rawR > maxR ? (input.spinX / rawR) * maxR : input.spinX;
     const spinY = rawR > maxR ? (input.spinY / rawR) * maxR : input.spinY;
     const power = Math.max(0.02, Math.min(1, input.power));
@@ -448,13 +525,27 @@ export class WorkerMatchManager {
           this.tableOpen,
           this.playerGroups[player],
         );
-        if (legal.includes(input.calledBall)) {
-          effectiveCalledBall = input.calledBall;
+        if (!legal.includes(input.calledBall)) {
+          this.recordRejectedInput(player);
+          return {
+            ok: false,
+            code: 'INVALID_INPUT',
+            message: `Ball #${input.calledBall} is not a legal target.`,
+          };
         }
+        effectiveCalledBall = input.calledBall;
       } else {
         effectiveCalledBall = null;
       }
-      if (input.calledPocket !== null && VALID_POCKET_IDS.has(input.calledPocket)) {
+      if (input.calledPocket !== null) {
+        if (!VALID_POCKET_IDS.has(input.calledPocket)) {
+          this.recordRejectedInput(player);
+          return {
+            ok: false,
+            code: 'INVALID_INPUT',
+            message: 'Called pocket is invalid.',
+          };
+        }
         effectiveCalledPocket = input.calledPocket;
       } else {
         effectiveCalledPocket = null;
@@ -464,6 +555,15 @@ export class WorkerMatchManager {
         targetPocket: effectiveCalledPocket,
       };
     }
+
+    const nowMs = Date.now();
+    const prevShotTs = this.lastShotTimestampMs[player] ?? 0;
+    if (prevShotTs > 0) {
+      const interval = Math.max(0, nowMs - prevShotTs);
+      this.minShotIntervalMs =
+        this.minShotIntervalMs === null ? interval : Math.min(this.minShotIntervalMs, interval);
+    }
+    this.lastShotTimestampMs[player] = nowMs;
 
     recordShotToken(input.shotToken);
 

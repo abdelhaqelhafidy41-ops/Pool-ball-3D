@@ -27,9 +27,11 @@ import type {
 } from './social';
 import type { TournamentMatch, TournamentRecord } from './tournaments';
 
+import type { RankTierDefinition } from './ranked';
+
 export type ConnectionState = 'disconnected' | 'connecting' | 'connected' | 'reconnecting';
 export type OpponentConnectionState = 'connected' | 'disconnected' | 'reconnected';
-export type OnlineModeIntent = 'quick' | 'create' | 'join' | 'friend';
+export type OnlineModeIntent = 'quick' | 'ranked' | 'create' | 'join' | 'friend';
 
 export type StarterAvatarId =
   | 'cue_gold'
@@ -101,6 +103,7 @@ export interface OnlineRoomInfo {
   roomCode: string;
   hostSessionId: string;
   isPrivate: boolean;
+  matchType?: OnlineMatchType;
   ruleProfileId: RuleProfileId;
   calledShotsEnabled: boolean;
   status: OnlineRoomStatus;
@@ -170,8 +173,15 @@ export interface MatchHistoryRecord {
   matchType?: OnlineMatchType;
   completionType?: MatchCompletionType;
   rankedApplied?: boolean;
+  p1EloBefore?: number;
+  p1EloAfter?: number;
   p1EloDelta?: number;
+  p2EloBefore?: number;
+  p2EloAfter?: number;
   p2EloDelta?: number;
+  p1RankTier?: RankTierDefinition;
+  p2RankTier?: RankTierDefinition;
+  seasonId?: string | null;
   durationSec?: number;
   reason: string;
   totalShots: number;
@@ -211,7 +221,10 @@ export type MultiplayerErrorCode =
   | 'TOURNAMENT_FULL'
   | 'ALREADY_REGISTERED'
   | 'TOURNAMENT_CLOSED'
-  | 'MATCH_LOCKED';
+  | 'MATCH_LOCKED'
+  | 'RANKED_RESTRICTED'
+  | 'SUSPENDED'
+  | 'CHEAT_REJECTED';
 
 export type ClientToServerMessage =
   | {
@@ -271,6 +284,8 @@ export type ClientToServerMessage =
       type: 'matchmaking:join';
       ruleProfileId: RuleProfileId;
       calledShotsEnabled: boolean;
+      mode?: 'quick' | 'ranked';
+      region?: string;
     }
   | {
       type: 'matchmaking:cancel';
@@ -426,6 +441,11 @@ export type ServerToClientMessage =
       position: number;
       startedAtMs: number;
       timeoutAtMs: number;
+      mode?: 'quick' | 'ranked';
+      elo?: number;
+      eloSpread?: number;
+      region?: string;
+      estimatedWaitSec?: number | null;
     }
   | {
       type: 'matchmaking:matched';

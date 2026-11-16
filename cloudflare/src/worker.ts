@@ -2,20 +2,28 @@ import {
   buildCorsHeaders,
   isOriginAllowed,
   loadWorkerConfig,
+  verifyAdminRequest,
   verifyTournamentAdmin,
   type Env,
 } from './config';
+import { AntiCheatService } from './AntiCheatService';
 import { D1ProgressionService } from './D1ProgressionService';
 import { EconomyService } from './EconomyService';
 import { MatchmakerDurableObject } from './MatchmakerDurableObject';
 import { PoolRoomDurableObject } from './PoolRoomDurableObject';
+import { RankedSeasonService } from './RankedSeasonService';
 import {
   COSMETIC_CATALOG,
   DAILY_LOGIN_SCHEDULE,
   ECONOMY_CONFIG,
   type AiMatchRewardRequest,
 } from '../../src/multiplayer/shared/economy';
-import { ACHIEVEMENTS_CATALOG, type LeaderboardScope } from '../../src/multiplayer/shared/progression';
+import {
+  ACHIEVEMENTS_CATALOG,
+  type LeaderboardScope,
+  type OnlineMatchType,
+} from '../../src/multiplayer/shared/progression';
+import type { PenaltyType } from '../../src/multiplayer/shared/ranked';
 import type { FriendRequestAction, MatchInviteAction } from '../../src/multiplayer/shared/social';
 import {
   TOURNAMENT_TROPHY_CATALOG,
@@ -295,13 +303,16 @@ export default {
     if (url.pathname === '/api/leaderboard' && request.method === 'GET') {
       const rawScope = url.searchParams.get('scope');
       const scope: LeaderboardScope =
-        rawScope === 'weekly' || rawScope === 'monthly' ? rawScope : 'global';
+        rawScope === 'weekly' || rawScope === 'monthly' || rawScope === 'season'
+          ? rawScope
+          : 'global';
+      const seasonId = url.searchParams.get('seasonId')?.trim() || null;
       const page = Number.parseInt(url.searchParams.get('page') ?? '1', 10) || 1;
       const limit = Number.parseInt(url.searchParams.get('limit') ?? '20', 10) || 20;
       const query = url.searchParams.get('q') ?? '';
       const currentPlayerId = url.searchParams.get('playerId');
 
-      const params = { scope, page, limit, query, currentPlayerId };
+      const params = { scope, seasonId, page, limit, query, currentPlayerId };
       const leaderboard = env.DB
         ? await new D1ProgressionService(env.DB).getLeaderboard(params)
         : await getMatchmakerStub().progressionLeaderboard(params);
@@ -310,11 +321,26 @@ export default {
 
     if (url.pathname === '/api/matches/history' && request.method === 'GET') {
       const playerId = url.searchParams.get('playerId');
+      const rawType = url.searchParams.get('matchType');
+      const matchType: OnlineMatchType | 'all' | null =
+        rawType === 'ranked' ||
+        rawType === 'quick' ||
+        rawType === 'private' ||
+        rawType === 'tournament' ||
+        rawType === 'all'
+          ? rawType
+          : null;
+      const seasonId = url.searchParams.get('seasonId')?.trim() || null;
       const limit = Number.parseInt(url.searchParams.get('limit') ?? '30', 10) || 30;
 
       const matches = env.DB
-        ? await new D1ProgressionService(env.DB).getMatchHistory({ playerId, limit })
-        : await getMatchmakerStub().progressionHistory({ playerId, limit });
+        ? await new D1ProgressionService(env.DB).getMatchHistory({
+            playerId,
+            matchType,
+            seasonId,
+            limit,
+          })
+        : await getMatchmakerStub().progressionHistory({ playerId, matchType, seasonId, limit });
       return jsonResponse({ ok: true, matches }, 200, cors);
     }
 
@@ -1097,6 +1123,226 @@ export default {
         }
         return jsonResponse(res, 200, cors);
       }
+    }
+
+    // ===== Phase 10 Ranked Seasons, Fair Play & Anti-Cheat Moderation API =====
+
+    if (url.pathname === '/api/ranked/seasons' && request.method === 'GET') {
+      const data = env.DB
+        ? await new RankedSeasonService(env.DB).listSeasons()
+        : await getMatchmakerStub().rankedGetSeasons();
+      return jsonResponse({ ok: true, ...data }, 200, cors);
+    }
+
+    if (url.pathname.startsWith('/api/ranked/standing/') && request.method === 'GET') {
+      const targetPlayerId = decodeURIComponent(
+        url.pathname.slice('/api/ranked/standing/'.length),
+      ).trim();
+      if (!targetPlayerId) {
+        return jsonResponse({ error: 'INVALID_INPUT', message: 'playerId is required.' }, 400, cors);
+      }
+      const seasonId = url.searchParams.get('seasonId')?.trim() || null;
+      const standing = env.DB
+        ? await new RankedSeasonService(env.DB).getPlayerSeasonStanding(targetPlayerId, seasonId)
+        : await getMatchmakerStub().rankedGetStanding(targetPlayerId, seasonId);
+      return jsonResponse({ ok: true, standing }, 200, cors);
+    }
+
+    if (url.pathname === '/api/moderation/status' && request.method === 'GET') {
+      const playerId = (url.searchParams.get('playerId') ?? '').trim();
+      const token = extractBearerToken(request);
+      if (!playerId || !token) {
+        return jsonResponse(
+          { error: 'UNAUTHORIZED', message: 'Missing player credentials.' },
+          401,
+          cors,
+        );
+      }
+      if (env.DB) {
+        const valid = await new D1ProgressionService(env.DB).verifyPlayerToken(playerId, token);
+        if (!valid) {
+          return jsonResponse({ error: 'UNAUTHORIZED', message: 'Invalid player credentials.' }, 401, cors);
+        }
+        const moderation = await new AntiCheatService(env.DB).getPlayerModerationStatus(playerId);
+        return jsonResponse({ ok: true, moderation }, 200, cors);
+      }
+      const res = await getMatchmakerStub().moderationGetStatus(playerId, token);
+      if (!res.ok) {
+        return jsonResponse({ error: res.code, message: res.message }, res.status, cors);
+      }
+      return jsonResponse(res, 200, cors);
+    }
+
+    if (url.pathname === '/api/moderation/appeals' && request.method === 'POST') {
+      const body = await readJsonBody(request);
+      if (
+        !body ||
+        typeof body.playerId !== 'string' ||
+        typeof body.penaltyId !== 'string' ||
+        typeof body.message !== 'string'
+      ) {
+        return jsonResponse(
+          { error: 'INVALID_INPUT', message: 'playerId, penaltyId, and message are required.' },
+          400,
+          cors,
+        );
+      }
+      const token = extractBearerToken(request, body);
+      if (env.DB) {
+        const valid = await new D1ProgressionService(env.DB).verifyPlayerToken(body.playerId, token);
+        if (!valid) {
+          return jsonResponse({ error: 'UNAUTHORIZED', message: 'Invalid player credentials.' }, 401, cors);
+        }
+        const res = await new AntiCheatService(env.DB).submitAppeal({
+          playerId: body.playerId.trim(),
+          penaltyId: body.penaltyId.trim(),
+          message: body.message,
+        });
+        if (!res.ok) {
+          return jsonResponse({ error: res.code, message: res.message }, res.status, cors);
+        }
+        return jsonResponse(res, 200, cors);
+      }
+      const res = await getMatchmakerStub().moderationSubmitAppeal(
+        body.playerId.trim(),
+        token,
+        body.penaltyId.trim(),
+        body.message,
+      );
+      if (!res.ok) {
+        return jsonResponse({ error: res.code, message: res.message }, res.status, cors);
+      }
+      return jsonResponse(res, 200, cors);
+    }
+
+    // Admin season & moderation endpoints (guarded by server-verified secret)
+    if (url.pathname === '/api/admin/seasons/rollover' && request.method === 'POST') {
+      const adminAuth = verifyAdminRequest(request, env);
+      if (!adminAuth.ok) {
+        return jsonResponse({ error: adminAuth.code, message: adminAuth.message }, adminAuth.status, cors);
+      }
+      const body = await readJsonBody(request);
+      const opts = {
+        newSeasonName: typeof body?.newSeasonName === 'string' ? body.newSeasonName : undefined,
+        newDurationDays:
+          typeof body?.newDurationDays === 'number' ? body.newDurationDays : undefined,
+        softResetAnchor:
+          typeof body?.softResetAnchor === 'number' ? body.softResetAnchor : undefined,
+        softResetFactor:
+          typeof body?.softResetFactor === 'number' ? body.softResetFactor : undefined,
+      };
+      const result = env.DB
+        ? await new RankedSeasonService(env.DB).rolloverSeason(opts)
+        : await getMatchmakerStub().rankedRolloverSeason(opts);
+      return jsonResponse({ ok: true, ...result }, 200, cors);
+    }
+
+    if (url.pathname === '/api/admin/moderation/flags' && request.method === 'GET') {
+      const adminAuth = verifyAdminRequest(request, env);
+      if (!adminAuth.ok) {
+        return jsonResponse({ error: adminAuth.code, message: adminAuth.message }, adminAuth.status, cors);
+      }
+      const limit = Number.parseInt(url.searchParams.get('limit') ?? '50', 10) || 50;
+      const queue = env.DB
+        ? await new AntiCheatService(env.DB).getAdminModerationQueue(limit)
+        : await getMatchmakerStub().moderationAdminQueue(limit);
+      return jsonResponse({ ok: true, ...queue }, 200, cors);
+    }
+
+    if (url.pathname === '/api/admin/moderation/penalties' && request.method === 'POST') {
+      const adminAuth = verifyAdminRequest(request, env);
+      if (!adminAuth.ok) {
+        return jsonResponse({ error: adminAuth.code, message: adminAuth.message }, adminAuth.status, cors);
+      }
+      const body = await readJsonBody(request);
+      if (!body || typeof body.playerId !== 'string' || typeof body.penaltyType !== 'string') {
+        return jsonResponse(
+          { error: 'INVALID_INPUT', message: 'playerId and penaltyType are required.' },
+          400,
+          cors,
+        );
+      }
+      const params = {
+        playerId: body.playerId.trim(),
+        penaltyType: body.penaltyType as PenaltyType,
+        reason: typeof body.reason === 'string' ? body.reason : 'Fair play enforcement.',
+        issuedBy: typeof body.issuedBy === 'string' ? body.issuedBy : 'admin',
+        isAdmin: true,
+        durationMs: typeof body.durationMs === 'number' ? body.durationMs : null,
+      };
+      const res = env.DB
+        ? await new AntiCheatService(env.DB).issuePenalty(params)
+        : await getMatchmakerStub().moderationIssuePenalty(params);
+      if (!res.ok) {
+        return jsonResponse({ error: res.code, message: res.message }, res.status, cors);
+      }
+      return jsonResponse(res, 200, cors);
+    }
+
+    if (
+      url.pathname.startsWith('/api/admin/moderation/penalties/') &&
+      url.pathname.endsWith('/revoke') &&
+      request.method === 'POST'
+    ) {
+      const adminAuth = verifyAdminRequest(request, env);
+      if (!adminAuth.ok) {
+        return jsonResponse({ error: adminAuth.code, message: adminAuth.message }, adminAuth.status, cors);
+      }
+      const inner = url.pathname.slice(
+        '/api/admin/moderation/penalties/'.length,
+        url.pathname.length - '/revoke'.length,
+      );
+      const penaltyId = decodeURIComponent(inner).trim();
+      const body = await readJsonBody(request);
+      const params = {
+        penaltyId,
+        adminActor: typeof body?.adminActor === 'string' ? body.adminActor : 'admin',
+        notes: typeof body?.notes === 'string' ? body.notes : undefined,
+      };
+      const res = env.DB
+        ? await new AntiCheatService(env.DB).revokePenalty(params)
+        : await getMatchmakerStub().moderationRevokePenalty(params);
+      if (!res.ok) {
+        return jsonResponse({ error: res.code, message: res.message }, res.status, cors);
+      }
+      return jsonResponse(res, 200, cors);
+    }
+
+    if (
+      url.pathname.startsWith('/api/admin/moderation/appeals/') &&
+      url.pathname.endsWith('/review') &&
+      request.method === 'POST'
+    ) {
+      const adminAuth = verifyAdminRequest(request, env);
+      if (!adminAuth.ok) {
+        return jsonResponse({ error: adminAuth.code, message: adminAuth.message }, adminAuth.status, cors);
+      }
+      const inner = url.pathname.slice(
+        '/api/admin/moderation/appeals/'.length,
+        url.pathname.length - '/review'.length,
+      );
+      const appealId = decodeURIComponent(inner).trim();
+      const body = await readJsonBody(request);
+      if (!body || (body.decision !== 'approved' && body.decision !== 'rejected')) {
+        return jsonResponse(
+          { error: 'INVALID_INPUT', message: 'decision must be approved or rejected.' },
+          400,
+          cors,
+        );
+      }
+      const params = {
+        appealId,
+        adminActor: typeof body.adminActor === 'string' ? body.adminActor : 'admin',
+        decision: body.decision as 'approved' | 'rejected',
+        adminNotes: typeof body.adminNotes === 'string' ? body.adminNotes : undefined,
+      };
+      const res = env.DB
+        ? await new AntiCheatService(env.DB).reviewAppeal(params)
+        : await getMatchmakerStub().moderationReviewAppeal(params);
+      if (!res.ok) {
+        return jsonResponse({ error: res.code, message: res.message }, res.status, cors);
+      }
+      return jsonResponse(res, 200, cors);
     }
 
     if (url.pathname === '/') {

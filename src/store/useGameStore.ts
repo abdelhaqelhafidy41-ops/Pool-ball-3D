@@ -59,6 +59,11 @@ import type {
   TournamentMatch,
   TournamentRecord,
 } from '../multiplayer/shared/tournaments';
+import type {
+  CompetitiveSeasonRecord,
+  PlayerModerationStatus,
+  PlayerSeasonStanding,
+} from '../multiplayer/shared/ranked';
 
 const PROFILE_STORAGE_KEY = 'ultimate_pool_3d_online_profile_v1';
 const COSMETICS_STORAGE_KEY = 'ultimate_pool_3d_cosmetics_v1';
@@ -148,7 +153,7 @@ const DEFAULT_AI_NAMES = new Set([
 export type GameScreen = 'menu' | 'playing';
 export type CameraPreset = 'threeQuarter' | 'topDown' | 'cueAim' | 'sideView';
 export type FeltTheme = 'tournamentGreen' | 'championshipBlue' | 'burgundyClub';
-export type ProgressionTab = 'profile' | 'leaderboard' | 'achievements' | 'history';
+export type ProgressionTab = 'profile' | 'leaderboard' | 'achievements' | 'history' | 'fairplay';
 export type SocialTab = 'friends' | 'search' | 'requests' | 'messages' | 'blocked';
 export type StoreTab = 'store' | 'inventory' | 'daily' | 'ledger';
 export type StoreCategoryFilter = 'all' | CosmeticCategory;
@@ -178,9 +183,14 @@ export interface GameSettings {
 
 export interface OnlineMatchmakingState {
   active: boolean;
+  mode: 'quick' | 'ranked';
   startedAtMs: number;
   timeoutAtMs: number;
   position: number;
+  elo: number | null;
+  eloSpread: number | null;
+  region: string | null;
+  estimatedWaitSec: number | null;
   timedOutMessage: string | null;
 }
 
@@ -316,6 +326,12 @@ export interface GameState {
   playerTournamentStats: PlayerTournamentStats | null;
   tournamentMatchAlert: TournamentMatchAlert | null;
   tournamentNotice: { type: 'ok' | 'err'; text: string } | null;
+
+  // Ranked Seasons & Anti-Cheat / Moderation (Phase 10)
+  activeSeason: CompetitiveSeasonRecord | null;
+  seasonsList: CompetitiveSeasonRecord[];
+  playerSeasonStanding: PlayerSeasonStanding | null;
+  moderationStatus: PlayerModerationStatus | null;
 
   // Actions
   setScreen: (screen: GameScreen) => void;
@@ -460,6 +476,14 @@ export interface GameState {
     matches?: TournamentMatch[],
   ) => void;
   applyTournamentCompleted: (tournament: TournamentRecord) => void;
+
+  // Ranked Seasons & Moderation Actions (Phase 10)
+  setSeasonsData: (
+    activeSeason: CompetitiveSeasonRecord | null,
+    seasonsList: CompetitiveSeasonRecord[],
+  ) => void;
+  setPlayerSeasonStanding: (standing: PlayerSeasonStanding | null) => void;
+  setModerationStatus: (status: PlayerModerationStatus | null) => void;
 }
 
 export function canLocalPlayerAct(state: GameState): boolean {
@@ -558,9 +582,14 @@ export const useGameStore = create<GameState>((set) => ({
   onlineLocalRole: null,
   onlineMatchmaking: {
     active: false,
+    mode: 'quick',
     startedAtMs: 0,
     timeoutAtMs: 0,
     position: 0,
+    elo: null,
+    eloSpread: null,
+    region: null,
+    estimatedWaitSec: null,
     timedOutMessage: null,
   },
   onlineOpponentStatus: {
@@ -630,6 +659,11 @@ export const useGameStore = create<GameState>((set) => ({
   playerTournamentStats: null,
   tournamentMatchAlert: null,
   tournamentNotice: null,
+
+  activeSeason: null,
+  seasonsList: [],
+  playerSeasonStanding: null,
+  moderationStatus: null,
 
   setScreen: (screen) => set({ screen }),
   setSettingsOpen: (settingsOpen) => set({ settingsOpen }),
@@ -902,9 +936,14 @@ export const useGameStore = create<GameState>((set) => ({
       },
       onlineMatchmaking: {
         active: false,
+        mode: 'quick',
         startedAtMs: 0,
         timeoutAtMs: 0,
         position: 0,
+        elo: null,
+        eloSpread: null,
+        region: null,
+        estimatedWaitSec: null,
         timedOutMessage: null,
       },
       matchConfig:
@@ -1283,4 +1322,8 @@ export const useGameStore = create<GameState>((set) => ({
         tournamentNotice: { type: 'ok', text: championBanner },
       };
     }),
+
+  setSeasonsData: (activeSeason, seasonsList) => set({ activeSeason, seasonsList }),
+  setPlayerSeasonStanding: (playerSeasonStanding) => set({ playerSeasonStanding }),
+  setModerationStatus: (moderationStatus) => set({ moderationStatus }),
 }));

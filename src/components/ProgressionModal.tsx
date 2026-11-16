@@ -1,4 +1,5 @@
 import {
+  AlertTriangle,
   Award,
   Ban,
   Check,
@@ -16,8 +17,11 @@ import {
   LogIn,
   LogOut,
   MessageSquare,
+  Scale,
   Search,
   Shield,
+  ShieldAlert,
+  ShieldCheck,
   Star,
   Swords,
   Target,
@@ -39,6 +43,7 @@ import {
   type AchievementIconId,
   type LeaderboardResponse,
   type LeaderboardScope,
+  type OnlineMatchType,
   type PublicPlayerProfile,
 } from '../multiplayer/shared/progression';
 import { getAvatarVisualMeta } from '../multiplayer/shared/economy';
@@ -47,8 +52,14 @@ import {
   type MatchHistoryRecord,
   type OnlineAvatarId,
 } from '../multiplayer/shared/protocol';
+import {
+  getRankById,
+  SEASON_CONFIG,
+  type PenaltyType,
+} from '../multiplayer/shared/ranked';
 import type { SocialReportReason } from '../multiplayer/shared/social';
 import { type ProgressionTab, useGameStore } from '../store/useGameStore';
+import { RankBadge, RankProgressCard } from './RankBadge';
 
 function formatDuration(sec: number): string {
   const safe = Math.max(0, Math.round(sec));
@@ -67,6 +78,32 @@ function formatShortDate(ms: number): string {
     });
   } catch {
     return '';
+  }
+}
+
+function formatPenaltyType(t: PenaltyType): string {
+  switch (t) {
+    case 'warning':
+      return 'Fair Play Warning';
+    case 'ranked_restriction':
+      return 'Ranked Queue Restriction';
+    case 'temp_suspension':
+      return 'Temporary Suspension';
+    case 'permanent_suspension':
+      return 'Permanent Suspension';
+  }
+}
+
+function formatMatchTypeLabel(t?: OnlineMatchType): string {
+  switch (t) {
+    case 'ranked':
+      return 'Ranked';
+    case 'tournament':
+      return 'Tournament';
+    case 'private':
+      return 'Private';
+    default:
+      return 'Quick';
   }
 }
 
@@ -170,7 +207,8 @@ function ProfileDetailsView({
             </div>
           </div>
 
-          <div className="flex items-center gap-2.5">
+          <div className="flex flex-wrap items-center gap-2">
+            <RankBadge elo={profile.elo} tier={profile.rankTier} size="sm" />
             <div className="rounded-lg border border-white/10 bg-[#0b1017] px-3 py-1.5 text-right">
               <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
                 Global Rank
@@ -392,6 +430,46 @@ function ProfileDetailsView({
         </div>
       </div>
 
+      {/* Competitive Division & Season Standing */}
+      <RankProgressCard
+        elo={profile.elo}
+        peakElo={profile.peakElo}
+        seasonName={profile.seasonStanding?.seasonName}
+        seasonElo={profile.seasonStanding?.seasonElo}
+      />
+
+      {profile.seasonStanding && (
+        <div className="rounded-xl border border-amber-400/25 bg-amber-500/5 px-3.5 py-2.5">
+          <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+            <div className="font-bold text-amber-300">
+              {profile.seasonStanding.seasonName}
+            </div>
+            <div className="font-mono tabular-nums text-[11px] text-slate-300">
+              {profile.seasonStanding.leaderboardRank
+                ? `Season Rank #${profile.seasonStanding.leaderboardRank}`
+                : 'Unplaced this season'}
+              {' · '}
+              {profile.seasonStanding.wins}W–{profile.seasonStanding.losses}L
+              {' · '}
+              Peak {profile.seasonStanding.peakSeasonElo} ELO
+            </div>
+          </div>
+          <div className="mt-1 flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-400">
+            <span>
+              Highest Division:{' '}
+              <span className="font-bold text-slate-200">
+                {getRankById(profile.seasonStanding.highestRankTier).name}
+              </span>
+            </span>
+            <span className="font-mono tabular-nums text-amber-200">
+              Season Tier Reward: +
+              {SEASON_CONFIG.rewardsByTier[profile.seasonStanding.highestRankTier].coins}{' '}
+              POOL COINS
+            </span>
+          </div>
+        </div>
+      )}
+
       {/* Career Metrics Grid */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
         {[
@@ -423,13 +501,14 @@ function ProfileDetailsView({
       </div>
 
       {/* Mode Breakdown */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+      <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
         {(
           [
-            { label: 'Casual Rules', data: stats.byMatchType.casual },
-            { label: 'Strict WPA', data: stats.byMatchType.wpa },
+            { label: 'Ranked', data: stats.byMatchType.ranked ?? { matches: 0, wins: 0 } },
             { label: 'Quick Match', data: stats.byMatchType.quick },
             { label: 'Private Room', data: stats.byMatchType.private },
+            { label: 'Strict WPA', data: stats.byMatchType.wpa },
+            { label: 'Casual Rules', data: stats.byMatchType.casual },
           ] as const
         ).map((m) => (
           <div
@@ -489,6 +568,9 @@ export function ProgressionModal() {
   const setInspectedPlayerId = useGameStore((s) => s.setInspectedPlayerId);
   const ownProfile = useGameStore((s) => s.ownProfile);
   const onlineProfile = useGameStore((s) => s.onlineProfile);
+  const activeSeason = useGameStore((s) => s.activeSeason);
+  const seasonsList = useGameStore((s) => s.seasonsList);
+  const moderationStatus = useGameStore((s) => s.moderationStatus);
 
   const [displayNameInput, setDisplayNameInput] = useState(onlineProfile.displayName);
   const [selectedAvatar, setSelectedAvatar] = useState<OnlineAvatarId>(onlineProfile.avatarId);
@@ -514,6 +596,7 @@ export function ProgressionModal() {
 
   // Leaderboard state
   const [lbScope, setLbScope] = useState<LeaderboardScope>('global');
+  const [lbSeasonId, setLbSeasonId] = useState<string>('');
   const [lbPage, setLbPage] = useState(1);
   const [lbQuery, setLbQuery] = useState('');
   const [lbData, setLbData] = useState<LeaderboardResponse | null>(null);
@@ -521,10 +604,20 @@ export function ProgressionModal() {
 
   // History state
   const [historyFilterOwn, setHistoryFilterOwn] = useState(false);
+  const [historyMatchType, setHistoryMatchType] = useState<OnlineMatchType | 'all'>('all');
   const [historyItems, setHistoryItems] = useState<MatchHistoryRecord[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [sessionLoading, setSessionLoading] = useState(false);
   const [sessionError, setSessionError] = useState<string | null>(null);
+
+  // Fair Play & Appeals state
+  const [fairPlayLoading, setFairPlayLoading] = useState(false);
+  const [appealPenaltyId, setAppealPenaltyId] = useState<string>('');
+  const [appealMessage, setAppealMessage] = useState<string>('');
+  const [appealBusy, setAppealBusy] = useState(false);
+  const [appealFeedback, setAppealFeedback] = useState<{ type: 'ok' | 'err'; text: string } | null>(
+    null,
+  );
 
   const syncOwnSession = useCallback(async () => {
     setSessionLoading(true);
@@ -538,6 +631,8 @@ export function ProgressionModal() {
         progressionClient.getLastSessionError() ?? 'Unable to reach competitive profile service.',
       );
     }
+    void progressionClient.fetchRankedSeasons();
+    void progressionClient.fetchModerationStatus();
   }, [ownProfile]);
 
   useEffect(() => {
@@ -554,6 +649,12 @@ export function ProgressionModal() {
       setSelectedAvatar(onlineProfile.avatarId);
     }
   }, [ownProfile, onlineProfile.displayName, onlineProfile.avatarId]);
+
+  useEffect(() => {
+    if (!lbSeasonId && activeSeason?.seasonId) {
+      setLbSeasonId(activeSeason.seasonId);
+    }
+  }, [lbSeasonId, activeSeason?.seasonId]);
 
   useEffect(() => {
     if (!progressionModalOpen || !inspectedPlayerId) {
@@ -577,13 +678,14 @@ export function ProgressionModal() {
     setLbLoading(true);
     const data = await progressionClient.fetchLeaderboard({
       scope: lbScope,
+      seasonId: lbScope === 'season' ? lbSeasonId || activeSeason?.seasonId || null : null,
       page: lbPage,
       limit: 15,
       query: lbQuery,
     });
     setLbData(data);
     setLbLoading(false);
-  }, [lbScope, lbPage, lbQuery]);
+  }, [lbScope, lbSeasonId, activeSeason?.seasonId, lbPage, lbQuery]);
 
   useEffect(() => {
     if (!progressionModalOpen || inspectedPlayerId || progressionTab !== 'leaderboard') return;
@@ -597,16 +699,41 @@ export function ProgressionModal() {
     setHistoryLoading(true);
     const matches = await progressionClient.fetchMatchHistory({
       playerId: historyFilterOwn && ownProfile ? ownProfile.playerId : null,
+      matchType: historyMatchType,
       limit: 30,
     });
     setHistoryItems(matches);
     setHistoryLoading(false);
-  }, [historyFilterOwn, ownProfile]);
+  }, [historyFilterOwn, historyMatchType, ownProfile]);
 
   useEffect(() => {
     if (!progressionModalOpen || inspectedPlayerId || progressionTab !== 'history') return;
     void loadHistory();
   }, [progressionModalOpen, inspectedPlayerId, progressionTab, loadHistory]);
+
+  const loadFairPlay = useCallback(async () => {
+    setFairPlayLoading(true);
+    await progressionClient.fetchModerationStatus();
+    setFairPlayLoading(false);
+  }, []);
+
+  useEffect(() => {
+    if (!progressionModalOpen || inspectedPlayerId || progressionTab !== 'fairplay') return;
+    void loadFairPlay();
+  }, [progressionModalOpen, inspectedPlayerId, progressionTab, loadFairPlay]);
+
+  useEffect(() => {
+    if (!moderationStatus) return;
+    const pendingPenaltyIds = new Set(
+      moderationStatus.appeals.filter((a) => a.status === 'pending').map((a) => a.penaltyId),
+    );
+    const appealable = moderationStatus.recentPenalties.filter(
+      (p) => !p.revokedAtMs && !pendingPenaltyIds.has(p.penaltyId),
+    );
+    if (appealable.length > 0 && !appealable.some((p) => p.penaltyId === appealPenaltyId)) {
+      setAppealPenaltyId(appealable[0].penaltyId);
+    }
+  }, [moderationStatus, appealPenaltyId]);
 
   if (!progressionModalOpen) return null;
 
@@ -755,13 +882,14 @@ export function ProgressionModal() {
             </button>
           </div>
         ) : (
-          <div className="mt-3.5 grid grid-cols-4 gap-1 rounded-xl border border-white/10 bg-black/35 p-1">
+          <div className="mt-3.5 grid grid-cols-5 gap-1 rounded-xl border border-white/10 bg-black/35 p-1">
             {(
               [
                 { id: 'profile', label: 'My Profile', icon: User },
                 { id: 'leaderboard', label: 'Leaderboard', icon: Trophy },
                 { id: 'achievements', label: 'Achievements', icon: Award },
-                { id: 'history', label: 'Match History', icon: History },
+                { id: 'history', label: 'History', icon: History },
+                { id: 'fairplay', label: 'Fair Play', icon: Scale },
               ] as Array<{ id: ProgressionTab; label: string; icon: typeof User }>
             ).map((tab) => {
               const Icon = tab.icon;
@@ -770,11 +898,12 @@ export function ProgressionModal() {
                 <button
                   key={tab.id}
                   type="button"
+                  data-testid={`progression-tab-${tab.id}`}
                   onClick={() => {
                     soundEngine.playUiClick();
                     setProgressionTab(tab.id);
                   }}
-                  className={`flex items-center justify-center gap-1.5 rounded-lg px-2 py-1.5 text-xs font-bold transition-colors cursor-pointer whitespace-nowrap ${
+                  className={`flex items-center justify-center gap-1.5 rounded-lg px-2 py-1.5 text-xs font-bold transition-colors cursor-pointer whitespace-nowrap shrink-0 ${
                     active
                       ? 'bg-amber-500 text-slate-950'
                       : 'text-slate-300 hover:text-white'
@@ -1107,19 +1236,21 @@ export function ProgressionModal() {
                   {(
                     [
                       { id: 'global', label: 'Global' },
-                      { id: 'weekly', label: 'Weekly (7d)' },
-                      { id: 'monthly', label: 'Monthly (30d)' },
+                      { id: 'season', label: 'Season' },
+                      { id: 'weekly', label: 'Weekly' },
+                      { id: 'monthly', label: 'Monthly' },
                     ] as Array<{ id: LeaderboardScope; label: string }>
                   ).map((s) => (
                     <button
                       key={s.id}
                       type="button"
+                      data-testid={`lb-scope-${s.id}`}
                       onClick={() => {
                         soundEngine.playUiClick();
                         setLbScope(s.id);
                         setLbPage(1);
                       }}
-                      className={`rounded-lg px-3 py-1 text-xs font-bold transition-colors cursor-pointer whitespace-nowrap ${
+                      className={`rounded-lg px-2.5 py-1 text-xs font-bold transition-colors cursor-pointer whitespace-nowrap ${
                         lbScope === s.id
                           ? 'bg-amber-500 text-slate-950'
                           : 'text-slate-300 hover:text-white'
@@ -1130,7 +1261,24 @@ export function ProgressionModal() {
                   ))}
                 </div>
 
-                <div className="relative flex-1 min-w-[180px] max-w-xs">
+                {lbScope === 'season' && seasonsList.length > 0 && (
+                  <select
+                    value={lbSeasonId || activeSeason?.seasonId || seasonsList[0].seasonId}
+                    onChange={(e) => {
+                      setLbSeasonId(e.target.value);
+                      setLbPage(1);
+                    }}
+                    className="rounded-lg border border-white/15 bg-[#0b1017] px-2.5 py-1.5 text-xs font-semibold text-white focus:border-amber-400 focus:outline-none"
+                  >
+                    {seasonsList.map((sec) => (
+                      <option key={sec.seasonId} value={sec.seasonId}>
+                        {sec.name} ({sec.status === 'active' ? 'Active' : 'Completed'})
+                      </option>
+                    ))}
+                  </select>
+                )}
+
+                <div className="relative flex-1 min-w-[160px] max-w-xs">
                   <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" />
                   <input
                     type="text"
@@ -1145,6 +1293,17 @@ export function ProgressionModal() {
                 </div>
               </div>
 
+              {lbScope === 'season' && lbData?.season && (
+                <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-white/10 bg-black/25 px-3.5 py-2 text-[11px]">
+                  <span className="font-bold text-amber-300">{lbData.season.name}</span>
+                  <span className="font-mono tabular-nums text-slate-400">
+                    {formatShortDate(lbData.season.startsAtMs)} –{' '}
+                    {formatShortDate(lbData.season.endsAtMs)} ·{' '}
+                    {lbData.season.status === 'active' ? 'Active Season' : 'Completed'}
+                  </span>
+                </div>
+              )}
+
               {/* Current Player Rank Highlight */}
               {lbData?.currentPlayer && (
                 <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-amber-400/35 bg-amber-500/10 px-3.5 py-2 text-xs">
@@ -1152,8 +1311,13 @@ export function ProgressionModal() {
                     <span className="font-mono font-black text-amber-300">
                       #{lbData.currentPlayer.rank}
                     </span>
+                    <RankBadge
+                      elo={lbData.currentPlayer.elo}
+                      tier={lbData.currentPlayer.rankTier}
+                      size="xs"
+                    />
                     <span className="font-bold text-white">
-                      Your Standing ({lbData.currentPlayer.displayName})
+                      {lbData.currentPlayer.displayName}
                     </span>
                   </div>
                   <div className="flex items-center gap-3 font-mono tabular-nums text-[11px] text-slate-200">
@@ -1175,24 +1339,25 @@ export function ProgressionModal() {
                     <tr className="border-b border-white/10 text-[10px] font-bold uppercase tracking-wider text-slate-400">
                       <th className="px-3 py-2">Rank</th>
                       <th className="px-3 py-2">Player</th>
+                      <th className="px-3 py-2">Division</th>
                       <th className="px-3 py-2 text-right">Lv</th>
                       <th className="px-3 py-2 text-right">W–L</th>
                       <th className="px-3 py-2 text-right">Win %</th>
                       <th className="px-3 py-2 text-right">
-                        {lbScope === 'global' ? 'ELO' : 'Period Δ / ELO'}
+                        {lbScope === 'global' || lbScope === 'season' ? 'ELO' : 'Period Δ / ELO'}
                       </th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-white/5">
                     {lbLoading ? (
                       <tr>
-                        <td colSpan={6} className="py-8 text-center text-slate-400">
+                        <td colSpan={7} className="py-8 text-center text-slate-400">
                           Loading rankings...
                         </td>
                       </tr>
                     ) : !lbData || lbData.items.length === 0 ? (
                       <tr>
-                        <td colSpan={6} className="py-8 text-center text-slate-400">
+                        <td colSpan={7} className="py-8 text-center text-slate-400">
                           No ranked competitors found for this filter.
                         </td>
                       </tr>
@@ -1235,6 +1400,9 @@ export function ProgressionModal() {
                                 )}
                               </button>
                             </td>
+                            <td className="px-3 py-2">
+                              <RankBadge elo={row.elo} tier={row.rankTier} size="xs" />
+                            </td>
                             <td className="px-3 py-2 text-right font-mono tabular-nums text-slate-300">
                               {row.level}
                             </td>
@@ -1245,7 +1413,7 @@ export function ProgressionModal() {
                               {row.winRate.toFixed(1)}%
                             </td>
                             <td className="px-3 py-2 text-right font-mono font-bold tabular-nums">
-                              {lbScope === 'global' ? (
+                              {lbScope === 'global' || lbScope === 'season' ? (
                                 <span className="text-amber-300">{row.elo}</span>
                               ) : (
                                 <span className="inline-flex items-center gap-1.5">
@@ -1365,9 +1533,9 @@ export function ProgressionModal() {
                 })}
               </div>
             </div>
-          ) : (
+          ) : progressionTab === 'history' ? (
             <div className="space-y-3">
-              <div className="flex items-center justify-between gap-2">
+              <div className="flex flex-wrap items-center justify-between gap-2">
                 <div className="flex items-center gap-1 rounded-xl border border-white/10 bg-black/35 p-1">
                   <button
                     type="button"
@@ -1397,6 +1565,35 @@ export function ProgressionModal() {
                   >
                     My Matches
                   </button>
+                </div>
+
+                <div className="flex items-center gap-1 rounded-xl border border-white/10 bg-black/35 p-1">
+                  {(
+                    [
+                      { id: 'all', label: 'All' },
+                      { id: 'ranked', label: 'Ranked' },
+                      { id: 'quick', label: 'Quick' },
+                      { id: 'private', label: 'Private' },
+                      { id: 'tournament', label: 'Tournament' },
+                    ] as Array<{ id: OnlineMatchType | 'all'; label: string }>
+                  ).map((mt) => (
+                    <button
+                      key={mt.id}
+                      type="button"
+                      data-testid={`history-type-${mt.id}`}
+                      onClick={() => {
+                        soundEngine.playUiClick();
+                        setHistoryMatchType(mt.id);
+                      }}
+                      className={`rounded-lg px-2 py-1 text-[11px] font-bold cursor-pointer whitespace-nowrap ${
+                        historyMatchType === mt.id
+                          ? 'bg-amber-500 text-slate-950'
+                          : 'text-slate-300 hover:text-white'
+                      }`}
+                    >
+                      {mt.label}
+                    </button>
+                  ))}
                 </div>
 
                 <button
@@ -1436,6 +1633,7 @@ export function ProgressionModal() {
                           >
                             {m.player1Name}
                           </button>
+                          {m.p1RankTier && <RankBadge tier={m.p1RankTier} size="xs" />}
                           <span className="text-slate-500">vs</span>
                           <button
                             type="button"
@@ -1445,17 +1643,14 @@ export function ProgressionModal() {
                           >
                             {m.player2Name}
                           </button>
+                          {m.p2RankTier && <RankBadge tier={m.p2RankTier} size="xs" />}
                         </div>
                         <div className="mt-0.5 text-[11px] text-slate-400">
                           Winner: <span className="font-semibold text-amber-300">{m.winnerName}</span>
                           {' · '}
                           {m.ruleProfileId === 'wpa' ? 'Strict WPA' : 'Casual'}
                           {' · '}
-                          {m.matchType === 'tournament'
-                            ? 'Tournament'
-                            : m.matchType === 'private'
-                              ? 'Private'
-                              : 'Quick'}
+                          {formatMatchTypeLabel(m.matchType)}
                           {' · '}
                           {m.reason}
                         </div>
@@ -1464,11 +1659,15 @@ export function ProgressionModal() {
                       <div className="flex items-center gap-3 font-mono tabular-nums text-[11px] shrink-0">
                         {m.rankedApplied && (m.p1EloDelta !== undefined || m.p2EloDelta !== undefined) && (
                           <span className="text-slate-300">
-                            {m.p1EloDelta !== undefined &&
-                              (m.p1EloDelta >= 0 ? `+${m.p1EloDelta}` : m.p1EloDelta)}
+                            {m.p1EloBefore !== undefined && m.p1EloAfter !== undefined
+                              ? `${m.p1EloBefore}→${m.p1EloAfter}`
+                              : m.p1EloDelta !== undefined &&
+                                (m.p1EloDelta >= 0 ? `+${m.p1EloDelta}` : m.p1EloDelta)}
                             {' / '}
-                            {m.p2EloDelta !== undefined &&
-                              (m.p2EloDelta >= 0 ? `+${m.p2EloDelta}` : m.p2EloDelta)}{' '}
+                            {m.p2EloBefore !== undefined && m.p2EloAfter !== undefined
+                              ? `${m.p2EloBefore}→${m.p2EloAfter}`
+                              : m.p2EloDelta !== undefined &&
+                                (m.p2EloDelta >= 0 ? `+${m.p2EloDelta}` : m.p2EloDelta)}{' '}
                             ELO
                           </span>
                         )}
@@ -1482,6 +1681,254 @@ export function ProgressionModal() {
                   ))
                 )}
               </div>
+            </div>
+          ) : (
+            <div className="space-y-4">
+              <div className="flex items-center justify-between gap-2">
+                <div className="text-xs font-bold uppercase tracking-wider text-amber-400">
+                  Fair Play Standing &amp; Penalty Appeals
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    soundEngine.playUiClick();
+                    void loadFairPlay();
+                  }}
+                  className="rounded-lg border border-white/12 bg-white/5 px-3 py-1 text-xs font-semibold text-slate-200 hover:bg-white/10 cursor-pointer"
+                >
+                  Refresh
+                </button>
+              </div>
+
+              {fairPlayLoading && !moderationStatus ? (
+                <div className="py-10 text-center text-xs text-slate-400">
+                  Loading Fair Play standing...
+                </div>
+              ) : !moderationStatus ? (
+                <div className="rounded-xl border border-white/10 bg-black/25 p-5 text-center text-xs text-slate-400">
+                  Sign in or establish your competitive session to review Fair Play standing.
+                </div>
+              ) : (
+                <>
+                  {/* Account Standing Card */}
+                  <div
+                    className={`rounded-xl border p-4 ${
+                      moderationStatus.canPlayOnline && moderationStatus.canPlayRanked
+                        ? 'border-emerald-400/35 bg-emerald-500/8'
+                        : 'border-rose-500/40 bg-rose-500/10'
+                    }`}
+                  >
+                    <div className="flex items-start gap-3">
+                      {moderationStatus.canPlayOnline && moderationStatus.canPlayRanked ? (
+                        <ShieldCheck className="h-5 w-5 text-emerald-400 shrink-0 mt-0.5" />
+                      ) : (
+                        <ShieldAlert className="h-5 w-5 text-rose-400 shrink-0 mt-0.5" />
+                      )}
+                      <div className="min-w-0 flex-1">
+                        <div className="text-sm font-extrabold text-white">
+                          {moderationStatus.canPlayOnline && moderationStatus.canPlayRanked
+                            ? 'Account in Good Standing'
+                            : !moderationStatus.canPlayOnline
+                              ? 'Online Play Suspended'
+                              : 'Ranked Queue Restricted'}
+                        </div>
+                        <p className="mt-1 text-xs text-slate-300 leading-relaxed">
+                          {moderationStatus.canPlayOnline && moderationStatus.canPlayRanked
+                            ? 'Your account is eligible for Ranked Matchmaking, Quick Match, Private Rooms, and Official Tournaments.'
+                            : !moderationStatus.canPlayOnline
+                              ? 'Online rooms and matchmaking are temporarily paused while an active suspension is in effect.'
+                              : 'Ranked Matchmaking is restricted while an active Ranked restriction applies. Casual Quick Match and Private Rooms remain available.'}
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Active & Recent Penalties */}
+                  <div className="rounded-xl border border-white/10 bg-black/25 p-3.5 space-y-2.5">
+                    <div className="text-[11px] font-bold uppercase tracking-wider text-slate-300">
+                      Penalties &amp; Warnings ({moderationStatus.recentPenalties.length})
+                    </div>
+
+                    {moderationStatus.recentPenalties.length === 0 ? (
+                      <div className="py-3 text-xs text-slate-400">
+                        No warnings, restrictions, or suspensions recorded on this account.
+                      </div>
+                    ) : (
+                      <div className="space-y-2 max-h-[190px] overflow-y-auto">
+                        {moderationStatus.recentPenalties.map((pen) => (
+                          <div
+                            key={pen.penaltyId}
+                            className="rounded-lg border border-white/10 bg-[#0b1017] px-3 py-2 text-xs space-y-1"
+                          >
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <span className="inline-flex items-center gap-1.5 font-extrabold text-white">
+                                <AlertTriangle
+                                  className={`h-3.5 w-3.5 ${
+                                    pen.active ? 'text-rose-400' : 'text-slate-400'
+                                  }`}
+                                />
+                                {formatPenaltyType(pen.penaltyType)}
+                              </span>
+                              <span
+                                className={`font-mono text-[10px] font-bold uppercase ${
+                                  pen.revokedAtMs
+                                    ? 'text-emerald-300'
+                                    : pen.active
+                                      ? 'text-rose-300'
+                                      : 'text-slate-400'
+                                }`}
+                              >
+                                {pen.revokedAtMs
+                                  ? 'Revoked'
+                                  : pen.active
+                                    ? 'Active'
+                                    : 'Expired'}
+                              </span>
+                            </div>
+                            <p className="text-[11px] text-slate-300">{pen.reason}</p>
+                            <div className="text-[10px] text-slate-400">
+                              Issued {formatShortDate(pen.issuedAtMs)}
+                              {' · '}
+                              By {pen.issuedBy}
+                              {' · '}
+                              {pen.expiresAtMs
+                                ? `Expires ${formatShortDate(pen.expiresAtMs)}`
+                                : 'No automatic expiry'}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Submit Appeal Form (when appealable penalty exists) */}
+                  {(() => {
+                    const pendingIds = new Set(
+                      moderationStatus.appeals
+                        .filter((a) => a.status === 'pending')
+                        .map((a) => a.penaltyId),
+                    );
+                    const appealable = moderationStatus.recentPenalties.filter(
+                      (p) => !p.revokedAtMs && !pendingIds.has(p.penaltyId),
+                    );
+                    if (appealable.length === 0) return null;
+
+                    return (
+                      <form
+                        onSubmit={async (e) => {
+                          e.preventDefault();
+                          if (!appealPenaltyId || appealMessage.trim().length < 5) return;
+                          soundEngine.playUiClick();
+                          setAppealBusy(true);
+                          setAppealFeedback(null);
+                          const res = await progressionClient.submitPenaltyAppeal(
+                            appealPenaltyId,
+                            appealMessage.trim(),
+                          );
+                          setAppealBusy(false);
+                          if (res.ok) {
+                            setAppealMessage('');
+                            setAppealFeedback({
+                              type: 'ok',
+                              text: 'Appeal submitted for moderation review.',
+                            });
+                          } else {
+                            setAppealFeedback({
+                              type: 'err',
+                              text: res.error ?? 'Failed to submit appeal.',
+                            });
+                          }
+                        }}
+                        className="rounded-xl border border-amber-400/25 bg-black/25 p-3.5 space-y-2.5"
+                      >
+                        <div className="text-[11px] font-bold uppercase tracking-wider text-amber-300">
+                          Submit Moderation Appeal
+                        </div>
+                        <select
+                          value={appealPenaltyId}
+                          onChange={(e) => setAppealPenaltyId(e.target.value)}
+                          className="w-full rounded-lg border border-white/15 bg-[#0b1017] px-2.5 py-1.5 text-xs text-white focus:border-amber-400 focus:outline-none"
+                        >
+                          {appealable.map((p) => (
+                            <option key={p.penaltyId} value={p.penaltyId}>
+                              {formatPenaltyType(p.penaltyType)} — {p.reason.slice(0, 48)}
+                            </option>
+                          ))}
+                        </select>
+                        <textarea
+                          rows={2}
+                          required
+                          minLength={5}
+                          maxLength={500}
+                          value={appealMessage}
+                          onChange={(e) => setAppealMessage(e.target.value)}
+                          placeholder="Explain why this penalty should be reviewed or lifted (5–500 chars)..."
+                          className="w-full rounded-lg border border-white/15 bg-[#0b1017] px-2.5 py-1.5 text-xs text-white focus:border-amber-400 focus:outline-none"
+                        />
+                        {appealFeedback && (
+                          <div
+                            className={`text-[11px] font-semibold ${
+                              appealFeedback.type === 'ok' ? 'text-emerald-300' : 'text-rose-300'
+                            }`}
+                          >
+                            {appealFeedback.text}
+                          </div>
+                        )}
+                        <div className="flex justify-end">
+                          <button
+                            type="submit"
+                            data-testid="submit-appeal-btn"
+                            disabled={appealBusy || appealMessage.trim().length < 5}
+                            className="rounded-lg bg-amber-500 px-3.5 py-1.5 text-xs font-extrabold text-slate-950 hover:bg-amber-400 disabled:opacity-45 cursor-pointer"
+                          >
+                            {appealBusy ? 'Submitting...' : 'Submit Appeal'}
+                          </button>
+                        </div>
+                      </form>
+                    );
+                  })()}
+
+                  {/* Submitted Appeals List */}
+                  {moderationStatus.appeals.length > 0 && (
+                    <div className="rounded-xl border border-white/10 bg-black/25 p-3.5 space-y-2">
+                      <div className="text-[11px] font-bold uppercase tracking-wider text-slate-300">
+                        Your Appeals ({moderationStatus.appeals.length})
+                      </div>
+                      <div className="space-y-2 max-h-[160px] overflow-y-auto">
+                        {moderationStatus.appeals.map((ap) => (
+                          <div
+                            key={ap.appealId}
+                            className="rounded-lg border border-white/10 bg-[#0b1017] px-3 py-2 text-xs space-y-1"
+                          >
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="font-mono text-[10px] text-slate-400">
+                                {formatShortDate(ap.submittedAtMs)}
+                              </span>
+                              <span
+                                className={`font-bold uppercase text-[10px] ${
+                                  ap.status === 'approved'
+                                    ? 'text-emerald-300'
+                                    : ap.status === 'rejected'
+                                      ? 'text-rose-300'
+                                      : 'text-amber-300'
+                                }`}
+                              >
+                                {ap.status}
+                              </span>
+                            </div>
+                            <p className="text-[11px] text-slate-200">{ap.message}</p>
+                            {ap.adminNotes && (
+                              <p className="text-[11px] text-slate-400">
+                                Moderator Note: {ap.adminNotes}
+                              </p>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </>
+              )}
             </div>
           )}
         </div>

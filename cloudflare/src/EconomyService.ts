@@ -1082,6 +1082,69 @@ export class EconomyService {
     });
   }
 
+  public async awardSeasonCoins(params: {
+    seasonId: string;
+    seasonName: string;
+    playerId: string;
+    highestTier: string;
+    badgeTitle: string;
+    amount: number;
+    awardedAtMs?: number;
+  }): Promise<{ coinsAwarded: number; alreadyAwarded: boolean; wallet: WalletSummary }> {
+    const now = params.awardedAtMs ?? Date.now();
+    const amount = Math.max(0, Math.floor(params.amount));
+    return this.withPlayerLock(params.playerId, async () => {
+      const db = await this.ensureSchema();
+      const walletRow = await this.ensurePlayerInitialized(db, params.playerId, now);
+      if (amount <= 0) {
+        return { coinsAwarded: 0, alreadyAwarded: false, wallet: this.mapWalletSummary(walletRow) };
+      }
+      const nextBalance = Number(walletRow.balance) + amount;
+      const idempotencyKey = `season_reward:${params.seasonId}:${params.playerId}`;
+      const tx = await db
+        .prepare(
+          `INSERT OR IGNORE INTO coin_transactions (
+            tx_id, player_id, amount, balance_after, reason, reference_type, reference_id, idempotency_key, metadata_json, created_at_ms
+          ) VALUES (?, ?, ?, ?, 'season_reward', 'season', ?, ?, ?, ?)`,
+        )
+        .bind(
+          generateTxId(),
+          params.playerId,
+          amount,
+          nextBalance,
+          params.seasonId,
+          idempotencyKey,
+          JSON.stringify({
+            label: `${params.seasonName} Reward (${params.badgeTitle})`,
+            seasonId: params.seasonId,
+            highestTier: params.highestTier,
+            badgeTitle: params.badgeTitle,
+          }),
+          now,
+        )
+        .run();
+
+      if ((tx.meta?.changes ?? 0) === 0) {
+        return { coinsAwarded: 0, alreadyAwarded: true, wallet: this.mapWalletSummary(walletRow) };
+      }
+
+      await db
+        .prepare(
+          `UPDATE player_wallets
+           SET balance = balance + ?, total_earned = total_earned + ?, updated_at_ms = ?
+           WHERE player_id = ?`,
+        )
+        .bind(amount, amount, now, params.playerId)
+        .run();
+
+      const updated = (await db
+        .prepare('SELECT * FROM player_wallets WHERE player_id = ? LIMIT 1')
+        .bind(params.playerId)
+        .first<WalletDbRow>())!;
+      return { coinsAwarded: amount, alreadyAwarded: false, wallet: this.mapWalletSummary(updated) };
+    });
+  }
+
   public async debitTournamentEntryFee(params: {
     tournamentId: string;
     tournamentTitle: string;

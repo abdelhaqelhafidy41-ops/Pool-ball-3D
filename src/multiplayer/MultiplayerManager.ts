@@ -147,21 +147,43 @@ class MultiplayerManagerImpl {
     this.network.send({ type: 'room:cancel' });
   }
 
-  public startQuickMatch(ruleProfileId: RuleProfileId, calledShotsEnabled: boolean): void {
+  public joinMatchmaking(
+    mode: 'quick' | 'ranked',
+    ruleProfileId: RuleProfileId,
+    calledShotsEnabled: boolean,
+  ): void {
     this.ensureConnected();
     const store = useGameStore.getState();
     store.setOnlineError(null);
-    store.setOnlineMatchmaking({ timedOutMessage: null });
+    store.setOnlineMatchmaking({
+      mode,
+      timedOutMessage: null,
+      eloSpread: null,
+      estimatedWaitSec: null,
+    });
     this.network.send({
       type: 'matchmaking:join',
+      mode,
       ruleProfileId,
       calledShotsEnabled,
     });
   }
 
+  public startQuickMatch(ruleProfileId: RuleProfileId, calledShotsEnabled: boolean): void {
+    this.joinMatchmaking('quick', ruleProfileId, calledShotsEnabled);
+  }
+
+  public startRankedMatch(ruleProfileId: RuleProfileId, calledShotsEnabled: boolean): void {
+    this.joinMatchmaking('ranked', ruleProfileId, calledShotsEnabled);
+  }
+
   public cancelQuickMatch(): void {
     useGameStore.getState().setOnlineMatchmaking({ active: false });
     this.network.send({ type: 'matchmaking:cancel' });
+  }
+
+  public cancelMatchmaking(): void {
+    this.cancelQuickMatch();
   }
 
   public leaveMatchOrRoom(): void {
@@ -389,6 +411,8 @@ class MultiplayerManagerImpl {
         store.setOnlineSessionId(msg.sessionId);
         store.setOnlineError(null);
         void progressionClient.refreshOwnProfile();
+        void progressionClient.fetchModerationStatus();
+        void progressionClient.fetchRankedSeasons();
 
         if (msg.resumedRoom) {
           this.network.bindRoomSocket(msg.resumedRoom.roomId);
@@ -426,8 +450,16 @@ class MultiplayerManagerImpl {
           this.sceneBridge?.onOnlineMatchExited();
         }
         store.setOnlineError({ code: msg.code, message: msg.message });
-        if (msg.code === 'ALREADY_IN_MATCH' || msg.code === 'MATCHMAKING_TIMEOUT') {
+        if (
+          msg.code === 'ALREADY_IN_MATCH' ||
+          msg.code === 'MATCHMAKING_TIMEOUT' ||
+          msg.code === 'RANKED_RESTRICTED' ||
+          msg.code === 'SUSPENDED'
+        ) {
           store.setOnlineMatchmaking({ active: false });
+        }
+        if (msg.code === 'RANKED_RESTRICTED' || msg.code === 'SUSPENDED') {
+          void progressionClient.fetchModerationStatus();
         }
         break;
       }
@@ -457,9 +489,15 @@ class MultiplayerManagerImpl {
       case 'matchmaking:searching': {
         store.setOnlineMatchmaking({
           active: true,
+          mode: msg.mode ?? store.onlineMatchmaking.mode,
           position: msg.position,
           startedAtMs: msg.startedAtMs,
           timeoutAtMs: msg.timeoutAtMs,
+          elo: msg.elo ?? null,
+          eloSpread: msg.eloSpread ?? null,
+          region: msg.region ?? null,
+          estimatedWaitSec:
+            msg.estimatedWaitSec !== undefined ? msg.estimatedWaitSec : null,
           timedOutMessage: null,
         });
         break;

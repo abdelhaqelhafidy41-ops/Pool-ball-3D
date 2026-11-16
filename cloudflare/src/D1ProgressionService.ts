@@ -30,8 +30,16 @@ import {
   type PublicPlayerProfile,
   type UnlockedAchievement,
 } from '../../src/multiplayer/shared/progression';
+import {
+  detectRankTransition,
+  getRankForElo,
+  getRankProgress,
+  type CompetitiveSeasonRecord,
+} from '../../src/multiplayer/shared/ranked';
 import type { MatchHistoryRecord, OnlineAvatarId } from '../../src/multiplayer/shared/protocol';
+import { ANTICHEAT_SCHEMA_STATEMENTS } from './AntiCheatService';
 import { EconomyService } from './EconomyService';
+import { RANKED_SEASON_SCHEMA_STATEMENTS, RankedSeasonService } from './RankedSeasonService';
 
 interface PlayerDbRow {
   player_id: string;
@@ -67,6 +75,8 @@ interface PlayerDbRow {
   quick_wins: number;
   private_matches: number;
   private_wins: number;
+  ranked_matches?: number;
+  ranked_wins?: number;
   created_at_ms: number;
   updated_at_ms: number;
   last_match_at_ms: number | null;
@@ -188,6 +198,22 @@ const SCHEMA_STATEMENTS = [
   `CREATE INDEX IF NOT EXISTS idx_matches_player2 ON matches (player2_id, ended_at_ms DESC)`,
   `CREATE INDEX IF NOT EXISTS idx_achievements_player ON player_achievements (player_id, unlocked_at_ms DESC)`,
   `CREATE INDEX IF NOT EXISTS idx_rating_events_window ON rating_events (created_at_ms, player_id)`,
+  ...RANKED_SEASON_SCHEMA_STATEMENTS,
+  ...ANTICHEAT_SCHEMA_STATEMENTS,
+];
+
+const ALTER_STATEMENTS = [
+  `ALTER TABLE players ADD COLUMN ranked_matches INTEGER NOT NULL DEFAULT 0`,
+  `ALTER TABLE players ADD COLUMN ranked_wins INTEGER NOT NULL DEFAULT 0`,
+  `ALTER TABLE matches ADD COLUMN season_id TEXT`,
+  `ALTER TABLE rating_events ADD COLUMN season_id TEXT`,
+  `ALTER TABLE rating_events ADD COLUMN k_factor INTEGER NOT NULL DEFAULT 24`,
+  `ALTER TABLE rating_events ADD COLUMN expected_score REAL NOT NULL DEFAULT 0.5`,
+  `ALTER TABLE rating_events ADD COLUMN opponent_id TEXT`,
+  `ALTER TABLE rating_events ADD COLUMN opponent_elo_before INTEGER`,
+  `ALTER TABLE rating_events ADD COLUMN rank_before TEXT`,
+  `ALTER TABLE rating_events ADD COLUMN rank_after TEXT`,
+  `ALTER TABLE rating_events ADD COLUMN match_mode TEXT NOT NULL DEFAULT 'quick'`,
 ];
 
 export interface ProgressionPreparedStatement {
@@ -246,6 +272,13 @@ export class D1ProgressionService {
     if (!D1ProgressionService.bootstrappedDbs.has(this.db)) {
       for (const stmt of SCHEMA_STATEMENTS) {
         await db.prepare(stmt).run();
+      }
+      for (const alter of ALTER_STATEMENTS) {
+        try {
+          await db.prepare(alter).run();
+        } catch {
+          // Column already exists
+        }
       }
       D1ProgressionService.bootstrappedDbs.add(this.db);
     }
@@ -643,7 +676,18 @@ export class D1ProgressionService {
       }
     }
 
-    return this.mapRowToPublicProfile(row, Number(rankRow?.higher_count ?? 0) + 1, achievements);
+    const baseProfile = this.mapRowToPublicProfile(
+      row,
+      Number(rankRow?.higher_count ?? 0) + 1,
+      achievements,
+    );
+    try {
+      const seasonSvc = new RankedSeasonService(this.db);
+      baseProfile.seasonStanding = await seasonSvc.getPlayerSeasonStanding(row.player_id);
+    } catch {
+      baseProfile.seasonStanding = null;
+    }
+    return baseProfile;
   }
 
   public async searchPlayers(query: string, limit = 15): Promise<PlayerSearchResult[]> {
@@ -697,6 +741,7 @@ export class D1ProgressionService {
 
   public async getLeaderboard(params: {
     scope: LeaderboardScope;
+    seasonId?: string | null;
     page?: number;
     limit?: number;
     query?: string;
@@ -709,6 +754,17 @@ export class D1ProgressionService {
     const searchClean = (params.query ?? '').trim().toLowerCase().replace(/[%_]/g, '');
     const hasSearch = searchClean.length > 0;
     const likePattern = `%${searchClean}%`;
+
+    if (params.scope === 'season') {
+      const seasonSvc = new RankedSeasonService(this.db);
+      return seasonSvc.getSeasonLeaderboard({
+        seasonId: params.seasonId,
+        page,
+        limit,
+        query: params.query,
+        currentPlayerId: params.currentPlayerId,
+      });
+    }
 
     if (params.scope === 'global') {
       const whereClause = hasSearch
@@ -724,7 +780,7 @@ export class D1ProgressionService {
       const totalPages = Math.max(1, Math.ceil(total / limit));
 
       const sql = `
-        SELECT player_id, username, display_name, avatar_id, is_guest, elo, level, wins, losses, total_matches
+        SELECT player_id, username, display_name, avatar_id, is_guest, elo, level, wins, losses, total_matches, current_streak
         FROM players
         ${whereClause}
         ORDER BY elo DESC, wins DESC, total_matches ASC, created_at_ms ASC
@@ -737,6 +793,7 @@ export class D1ProgressionService {
       const items: LeaderboardEntry[] = (rows.results ?? []).map((r, idx) => {
         const totalMatches = Number(r.total_matches);
         const wins = Number(r.wins);
+        const elo = Number(r.elo);
         return {
           rank: offset + idx + 1,
           playerId: String(r.player_id),
@@ -744,13 +801,15 @@ export class D1ProgressionService {
           displayName: String(r.display_name),
           avatarId: String(r.avatar_id),
           isGuest: Number(r.is_guest) === 1,
-          elo: Number(r.elo),
+          elo,
+          rankTier: getRankForElo(elo),
           periodDelta: 0,
           level: Number(r.level),
           wins,
           losses: Number(r.losses),
           totalMatches,
           winRate: totalMatches > 0 ? Math.round((wins / totalMatches) * 1000) / 10 : 0,
+          currentStreak: Number(r.current_streak ?? 0),
         };
       });
 
@@ -766,12 +825,14 @@ export class D1ProgressionService {
             avatarId: curProfile.avatarId,
             isGuest: curProfile.isGuest,
             elo: curProfile.elo,
+            rankTier: getRankForElo(curProfile.elo),
             periodDelta: 0,
             level: curProfile.level,
             wins: curProfile.stats.wins,
             losses: curProfile.stats.losses,
             totalMatches: curProfile.stats.totalMatches,
             winRate: curProfile.stats.winRate,
+            currentStreak: curProfile.stats.currentStreak,
           };
         }
       }
@@ -822,6 +883,7 @@ export class D1ProgressionService {
     const items: LeaderboardEntry[] = (rows.results ?? []).map((r, idx) => {
       const periodMatches = Number(r.period_matches);
       const periodWins = Number(r.period_wins);
+      const elo = Number(r.elo);
       return {
         rank: offset + idx + 1,
         playerId: String(r.player_id),
@@ -829,7 +891,8 @@ export class D1ProgressionService {
         displayName: String(r.display_name),
         avatarId: String(r.avatar_id),
         isGuest: Number(r.is_guest) === 1,
-        elo: Number(r.elo),
+        elo,
+        rankTier: getRankForElo(elo),
         periodDelta: Number(r.period_delta),
         level: Number(r.level),
         wins: periodWins,
@@ -886,6 +949,7 @@ export class D1ProgressionService {
             avatarId: String(curRow.avatar_id),
             isGuest: Number(curRow.is_guest) === 1,
             elo: curElo,
+            rankTier: getRankForElo(curElo),
             periodDelta,
             level: Number(curRow.level),
             wins: periodWins,
@@ -902,51 +966,79 @@ export class D1ProgressionService {
 
   public async getMatchHistory(params: {
     playerId?: string | null;
+    matchType?: OnlineMatchType | 'all' | null;
+    seasonId?: string | null;
     limit?: number;
   }): Promise<MatchHistoryRecord[]> {
     const db = await this.ensureSchema();
     const safeLimit = Math.max(1, Math.min(100, Math.floor(params.limit ?? 30)));
     const hasPlayer = Boolean(params.playerId && isValidPlayerIdFormat(params.playerId));
 
-    const sql = hasPlayer
-      ? `SELECT * FROM matches WHERE player1_id = ? OR player2_id = ? ORDER BY ended_at_ms DESC LIMIT ?`
-      : `SELECT * FROM matches ORDER BY ended_at_ms DESC LIMIT ?`;
+    const clauses: string[] = [];
+    const binds: unknown[] = [];
+    if (hasPlayer) {
+      clauses.push('(player1_id = ? OR player2_id = ?)');
+      binds.push(params.playerId!.trim(), params.playerId!.trim());
+    }
+    if (params.matchType && params.matchType !== 'all') {
+      clauses.push('match_type = ?');
+      binds.push(params.matchType);
+    }
+    if (params.seasonId) {
+      clauses.push('season_id = ?');
+      binds.push(params.seasonId);
+    }
 
-    const rows = hasPlayer
-      ? await db
-          .prepare(sql)
-          .bind(params.playerId!.trim(), params.playerId!.trim(), safeLimit)
-          .all<Record<string, unknown>>()
-      : await db.prepare(sql).bind(safeLimit).all<Record<string, unknown>>();
+    const where = clauses.length > 0 ? `WHERE ${clauses.join(' AND ')}` : '';
+    const sql = `SELECT * FROM matches ${where} ORDER BY ended_at_ms DESC LIMIT ?`;
+    binds.push(safeLimit);
 
-    return (rows.results ?? []).map((r) => ({
-      matchId: String(r.match_id),
-      roomId: String(r.room_id),
-      player1Id: String(r.player1_id),
-      player2Id: String(r.player2_id),
-      player1Name: String(r.player1_name),
-      player2Name: String(r.player2_name),
-      player1Avatar: sanitizeAvatarId(r.player1_avatar),
-      player2Avatar: sanitizeAvatarId(r.player2_avatar),
-      winnerId: r.winner_id ? String(r.winner_id) : null,
-      winnerName: String(r.winner_name),
-      winnerRole: r.winner_role === 'player2' ? 'player2' : 'player1',
-      ruleProfileId: r.rule_profile_id === 'wpa' ? 'wpa' : 'casual',
-      matchType:
-        r.match_type === 'tournament'
-          ? 'tournament'
-          : r.match_type === 'private'
-            ? 'private'
-            : 'quick',
-      completionType: String(r.completion_type) as MatchHistoryRecord['completionType'],
-      rankedApplied: Number(r.ranked_applied) === 1,
-      p1EloDelta: Number(r.p1_elo_delta),
-      p2EloDelta: Number(r.p2_elo_delta),
-      durationSec: Number(r.duration_sec),
-      reason: String(r.reason),
-      totalShots: Number(r.total_shots),
-      endedAtMs: Number(r.ended_at_ms),
-    }));
+    const rows = await db.prepare(sql).bind(...binds).all<Record<string, unknown>>();
+
+    return (rows.results ?? []).map((r) => {
+      const p1Before = Number(r.p1_elo_before ?? 1200);
+      const p1After = Number(r.p1_elo_after ?? 1200);
+      const p2Before = Number(r.p2_elo_before ?? 1200);
+      const p2After = Number(r.p2_elo_after ?? 1200);
+      const mt =
+        r.match_type === 'ranked'
+          ? 'ranked'
+          : r.match_type === 'tournament'
+            ? 'tournament'
+            : r.match_type === 'private'
+              ? 'private'
+              : 'quick';
+      return {
+        matchId: String(r.match_id),
+        roomId: String(r.room_id),
+        player1Id: String(r.player1_id),
+        player2Id: String(r.player2_id),
+        player1Name: String(r.player1_name),
+        player2Name: String(r.player2_name),
+        player1Avatar: sanitizeAvatarId(r.player1_avatar),
+        player2Avatar: sanitizeAvatarId(r.player2_avatar),
+        winnerId: r.winner_id ? String(r.winner_id) : null,
+        winnerName: String(r.winner_name),
+        winnerRole: r.winner_role === 'player2' ? 'player2' : 'player1',
+        ruleProfileId: r.rule_profile_id === 'wpa' ? 'wpa' : 'casual',
+        matchType: mt,
+        completionType: String(r.completion_type) as MatchHistoryRecord['completionType'],
+        rankedApplied: Number(r.ranked_applied) === 1,
+        p1EloBefore: p1Before,
+        p1EloAfter: p1After,
+        p1EloDelta: Number(r.p1_elo_delta),
+        p2EloBefore: p2Before,
+        p2EloAfter: p2After,
+        p2EloDelta: Number(r.p2_elo_delta),
+        p1RankTier: getRankForElo(p1After),
+        p2RankTier: getRankForElo(p2After),
+        seasonId: r.season_id ? String(r.season_id) : null,
+        durationSec: Number(r.duration_sec),
+        reason: String(r.reason),
+        totalShots: Number(r.total_shots),
+        endedAtMs: Number(r.ended_at_ms),
+      };
+    });
   }
 
   public async recordCompletedMatch(input: {
@@ -986,6 +1078,12 @@ export class D1ProgressionService {
     const winnerName =
       input.winnerRole === 'player1' ? p1Row.display_name : p2Row.display_name;
 
+    const seasonSvc = new RankedSeasonService(this.db);
+    let activeSeason: CompetitiveSeasonRecord | null = null;
+    if (input.matchType === 'ranked') {
+      activeSeason = await seasonSvc.ensureActiveSeason(input.endedAtMs);
+    }
+
     const eloCalc = rankedApplied
       ? calculateEloUpdate({
           player1Elo: p1Row.elo,
@@ -999,6 +1097,10 @@ export class D1ProgressionService {
           player2After: p2Row.elo,
           player1Delta: 0,
           player2Delta: 0,
+          expected1: 0.5,
+          expected2: 0.5,
+          k1: 0,
+          k2: 0,
         };
 
     // Atomic idempotency guard: INSERT OR IGNORE on PRIMARY KEY match_id
@@ -1011,8 +1113,8 @@ export class D1ProgressionService {
           completion_type, reason, ranked_applied, total_shots, duration_sec,
           p1_elo_before, p1_elo_after, p1_elo_delta,
           p2_elo_before, p2_elo_after, p2_elo_delta,
-          p1_xp_gained, p2_xp_gained, ended_at_ms
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?)`,
+          p1_xp_gained, p2_xp_gained, season_id, ended_at_ms
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?)`,
       )
       .bind(
         input.matchId,
@@ -1040,16 +1142,18 @@ export class D1ProgressionService {
         p2Row.elo,
         eloCalc.player2After,
         eloCalc.player2Delta,
+        activeSeason?.seasonId ?? null,
         input.endedAtMs,
       )
       .run();
 
     if ((insertMatch.meta?.changes ?? 0) === 0) {
-      // Match already persisted by a concurrent or earlier call
       return {
         alreadyRecorded: true,
         summary: {
           matchId: input.matchId,
+          matchType: input.matchType,
+          seasonId: activeSeason?.seasonId ?? null,
           rankedApplied,
           durationSec: input.telemetry.durationSec,
           players: {
@@ -1059,6 +1163,9 @@ export class D1ProgressionService {
               eloBefore: p1Row.elo,
               eloAfter: p1Row.elo,
               eloDelta: 0,
+              rankBefore: getRankForElo(p1Row.elo),
+              rankAfter: getRankForElo(p1Row.elo),
+              rankTransition: detectRankTransition(p1Row.elo, p1Row.elo),
               xpBefore: p1Row.xp,
               xpAfter: p1Row.xp,
               xpGained: 0,
@@ -1072,6 +1179,9 @@ export class D1ProgressionService {
               eloBefore: p2Row.elo,
               eloAfter: p2Row.elo,
               eloDelta: 0,
+              rankBefore: getRankForElo(p2Row.elo),
+              rankAfter: getRankForElo(p2Row.elo),
+              rankTransition: detectRankTransition(p2Row.elo, p2Row.elo),
               xpBefore: p2Row.xp,
               xpAfter: p2Row.xp,
               xpGained: 0,
@@ -1084,14 +1194,29 @@ export class D1ProgressionService {
       };
     }
 
+    let seasonStatsUpdate: Awaited<ReturnType<RankedSeasonService['recordRankedMatchForSeason']>> | null =
+      null;
+    if (rankedApplied && input.matchType === 'ranked') {
+      seasonStatsUpdate = await seasonSvc.recordRankedMatchForSeason({
+        player1Id: p1Row.player_id,
+        player2Id: p2Row.player_id,
+        winnerRole: input.winnerRole,
+        endedAtMs: input.endedAtMs,
+      });
+    }
+
     const applySide = async (
       role: PlayerId,
       row: PlayerDbRow,
+      opponentRow: PlayerDbRow,
       eloAfter: number,
       eloDelta: number,
+      expectedScore: number,
+      kFactor: number,
     ): Promise<PlayerProgressionDelta> => {
       const won = input.winnerRole === role;
       const sideTel = role === 'player1' ? input.telemetry.player1 : input.telemetry.player2;
+      const rankBefore = getRankForElo(row.elo);
 
       if (!rankedApplied) {
         return {
@@ -1100,6 +1225,11 @@ export class D1ProgressionService {
           eloBefore: row.elo,
           eloAfter: row.elo,
           eloDelta: 0,
+          expectedScore,
+          kFactor: 0,
+          rankBefore,
+          rankAfter: rankBefore,
+          rankTransition: detectRankTransition(row.elo, row.elo),
           xpBefore: row.xp,
           xpAfter: row.xp,
           xpGained: 0,
@@ -1108,6 +1238,9 @@ export class D1ProgressionService {
           unlockedAchievements: [],
         };
       }
+
+      const rankAfter = getRankForElo(eloAfter);
+      const rankTransition = detectRankTransition(row.elo, eloAfter);
 
       const nextMatches = row.total_matches + 1;
       const nextWins = row.wins + (won ? 1 : 0);
@@ -1187,6 +1320,8 @@ export class D1ProgressionService {
       const quickWinsInc = input.matchType === 'quick' && won ? 1 : 0;
       const privateMatchesInc = input.matchType === 'private' ? 1 : 0;
       const privateWinsInc = input.matchType === 'private' && won ? 1 : 0;
+      const rankedMatchesInc = input.matchType === 'ranked' ? 1 : 0;
+      const rankedWinsInc = input.matchType === 'ranked' && won ? 1 : 0;
 
       await db
         .prepare(
@@ -1201,6 +1336,7 @@ export class D1ProgressionService {
             wpa_matches = wpa_matches + ?, wpa_wins = wpa_wins + ?,
             quick_matches = quick_matches + ?, quick_wins = quick_wins + ?,
             private_matches = private_matches + ?, private_wins = private_wins + ?,
+            ranked_matches = ranked_matches + ?, ranked_wins = ranked_wins + ?,
             updated_at_ms = ?, last_match_at_ms = ?
            WHERE player_id = ?`,
         )
@@ -1230,6 +1366,8 @@ export class D1ProgressionService {
           quickWinsInc,
           privateMatchesInc,
           privateWinsInc,
+          rankedMatchesInc,
+          rankedWinsInc,
           input.endedAtMs,
           input.endedAtMs,
           row.player_id,
@@ -1239,8 +1377,10 @@ export class D1ProgressionService {
       await db
         .prepare(
           `INSERT OR IGNORE INTO rating_events (
-            match_id, player_id, elo_before, elo_after, elo_delta, xp_gained, won, created_at_ms
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+            match_id, player_id, elo_before, elo_after, elo_delta, xp_gained, won,
+            season_id, k_factor, expected_score, opponent_id, opponent_elo_before,
+            rank_before, rank_after, match_mode, created_at_ms
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .bind(
           input.matchId,
@@ -1250,6 +1390,14 @@ export class D1ProgressionService {
           eloDelta,
           xpGained,
           won ? 1 : 0,
+          activeSeason?.seasonId ?? null,
+          kFactor,
+          Math.round(expectedScore * 10000) / 10000,
+          opponentRow.player_id,
+          opponentRow.elo,
+          rankBefore.id,
+          rankAfter.id,
+          input.matchType,
           input.endedAtMs,
         )
         .run();
@@ -1265,12 +1413,32 @@ export class D1ProgressionService {
         endedAtMs: input.endedAtMs,
       });
 
+      const seasonBefore =
+        role === 'player1' ? seasonStatsUpdate?.player1Before : seasonStatsUpdate?.player2Before;
+      const seasonAfter =
+        role === 'player1' ? seasonStatsUpdate?.player1After : seasonStatsUpdate?.player2After;
+      const seasonDelta =
+        role === 'player1' ? seasonStatsUpdate?.player1Delta : seasonStatsUpdate?.player2Delta;
+      const seasonTransition =
+        role === 'player1'
+          ? seasonStatsUpdate?.player1Transition
+          : seasonStatsUpdate?.player2Transition;
+
       return {
         playerId: row.player_id,
         role,
         eloBefore: row.elo,
         eloAfter,
         eloDelta,
+        expectedScore,
+        kFactor,
+        rankBefore,
+        rankAfter,
+        rankTransition,
+        seasonEloBefore: seasonBefore ?? null,
+        seasonEloAfter: seasonAfter ?? null,
+        seasonEloDelta: seasonDelta ?? null,
+        seasonRankTransition: seasonTransition ?? null,
         xpBefore: row.xp,
         xpAfter,
         xpGained,
@@ -1282,8 +1450,24 @@ export class D1ProgressionService {
       };
     };
 
-    const p1Delta = await applySide('player1', p1Row, eloCalc.player1After, eloCalc.player1Delta);
-    const p2Delta = await applySide('player2', p2Row, eloCalc.player2After, eloCalc.player2Delta);
+    const p1Delta = await applySide(
+      'player1',
+      p1Row,
+      p2Row,
+      eloCalc.player1After,
+      eloCalc.player1Delta,
+      eloCalc.expected1,
+      eloCalc.k1,
+    );
+    const p2Delta = await applySide(
+      'player2',
+      p2Row,
+      p1Row,
+      eloCalc.player2After,
+      eloCalc.player2Delta,
+      eloCalc.expected2,
+      eloCalc.k2,
+    );
 
     await db
       .prepare('UPDATE matches SET p1_xp_gained = ?, p2_xp_gained = ? WHERE match_id = ?')
@@ -1294,6 +1478,8 @@ export class D1ProgressionService {
       alreadyRecorded: false,
       summary: {
         matchId: input.matchId,
+        matchType: input.matchType,
+        seasonId: seasonStatsUpdate?.season.seasonId ?? activeSeason?.seasonId ?? null,
         rankedApplied,
         durationSec: input.telemetry.durationSec,
         players: {
@@ -1315,6 +1501,7 @@ export class D1ProgressionService {
     const breaksAttempted = Number(row.breaks_attempted);
     const breaksSuccessful = Number(row.breaks_successful);
     const totalDuration = Number(row.total_match_duration_sec);
+    const elo = Number(row.elo);
 
     return {
       playerId: row.player_id,
@@ -1322,8 +1509,10 @@ export class D1ProgressionService {
       displayName: row.display_name,
       avatarId: row.avatar_id,
       isGuest: Number(row.is_guest) === 1,
-      elo: Number(row.elo),
+      elo,
       peakElo: Number(row.peak_elo),
+      rankTier: getRankForElo(elo),
+      rankProgress: getRankProgress(elo),
       xp: Number(row.xp),
       level: levelProgress.level,
       levelProgress,
@@ -1350,6 +1539,10 @@ export class D1ProgressionService {
           wpa: { matches: Number(row.wpa_matches), wins: Number(row.wpa_wins) },
           quick: { matches: Number(row.quick_matches), wins: Number(row.quick_wins) },
           private: { matches: Number(row.private_matches), wins: Number(row.private_wins) },
+          ranked: {
+            matches: Number(row.ranked_matches ?? 0),
+            wins: Number(row.ranked_wins ?? 0),
+          },
         },
       },
       achievements,
@@ -1358,3 +1551,4 @@ export class D1ProgressionService {
     };
   }
 }
+

@@ -4,7 +4,9 @@ import { computeAverageBallsPerTurn } from '../game/rules/MatchStatistics';
 import { soundEngine } from '../game/utils/SoundEngine';
 import { economyClient } from '../multiplayer/EconomyClient';
 import { multiplayerManager } from '../multiplayer/MultiplayerManager';
+import { getRankForElo } from '../multiplayer/shared/ranked';
 import { useGameStore } from '../store/useGameStore';
+import { RankBadge } from './RankBadge';
 
 interface MatchEndModalProps {
   onPlayAgain: () => void;
@@ -195,11 +197,38 @@ export function MatchEndModal({ onPlayAgain, onMainMenu, onWatchReplay }: MatchE
 
                 {lastOnlineMatchProgression.rankedApplied ? (
                   <>
+                    <div className="flex flex-wrap items-center justify-between gap-2 pb-1">
+                      <RankBadge
+                        tier={myDelta.rankAfter ?? getRankForElo(myDelta.eloAfter)}
+                        elo={myDelta.eloAfter}
+                        size="sm"
+                      />
+                      {myDelta.expectedScore !== undefined && myDelta.kFactor !== undefined && (
+                        <span className="font-mono tabular-nums text-[10px] text-slate-300">
+                          Expected {Math.round(myDelta.expectedScore * 100)}% · K={myDelta.kFactor}
+                        </span>
+                      )}
+                    </div>
+
+                    {myDelta.rankTransition && myDelta.rankTransition.direction !== 'none' && (
+                      <div
+                        className={`rounded-lg border px-2.5 py-1.5 text-xs font-extrabold ${
+                          myDelta.rankTransition.direction === 'promoted'
+                            ? 'border-emerald-400/50 bg-emerald-500/15 text-emerald-200'
+                            : 'border-rose-400/45 bg-rose-500/15 text-rose-200'
+                        }`}
+                      >
+                        {myDelta.rankTransition.direction === 'promoted'
+                          ? `Rank Promoted: ${myDelta.rankTransition.fromTier.name} → ${myDelta.rankTransition.toTier.name}`
+                          : `Rank Demoted: ${myDelta.rankTransition.fromTier.name} → ${myDelta.rankTransition.toTier.name}`}
+                      </div>
+                    )}
+
                     <div className="grid grid-cols-3 gap-2 font-mono tabular-nums text-xs">
                       <div className="rounded-lg border border-white/10 bg-black/30 px-2.5 py-1.5">
                         <div className="text-[10px] text-slate-400">ELO Rating</div>
                         <div className="font-extrabold text-white">
-                          {myDelta.eloAfter}{' '}
+                          {myDelta.eloBefore} → {myDelta.eloAfter}{' '}
                           <span
                             className={
                               myDelta.eloDelta >= 0 ? 'text-emerald-300' : 'text-rose-300'
@@ -221,6 +250,32 @@ export function MatchEndModal({ onPlayAgain, onMainMenu, onWatchReplay }: MatchE
                         </div>
                       </div>
                     </div>
+
+                    {lastOnlineMatchProgression.matchType === 'ranked' &&
+                      myDelta.seasonEloAfter !== undefined &&
+                      myDelta.seasonEloAfter !== null && (
+                        <div className="flex items-center justify-between rounded-lg border border-white/10 bg-black/30 px-2.5 py-1.5 text-[11px] font-mono tabular-nums">
+                          <span className="text-slate-300 font-sans font-semibold">
+                            Ranked Season ELO
+                          </span>
+                          <span className="font-extrabold text-amber-300">
+                            {myDelta.seasonEloAfter}{' '}
+                            {myDelta.seasonEloDelta !== undefined &&
+                              myDelta.seasonEloDelta !== null && (
+                                <span
+                                  className={
+                                    myDelta.seasonEloDelta >= 0
+                                      ? 'text-emerald-300'
+                                      : 'text-rose-300'
+                                  }
+                                >
+                                  ({myDelta.seasonEloDelta >= 0 ? '+' : ''}
+                                  {myDelta.seasonEloDelta})
+                                </span>
+                              )}
+                          </span>
+                        </div>
+                      )}
 
                     {myDelta.coinsEarned !== undefined && myDelta.coinsEarned > 0 && (
                       <div className="rounded-lg border border-amber-400/35 bg-black/35 px-2.5 py-2 space-y-1">

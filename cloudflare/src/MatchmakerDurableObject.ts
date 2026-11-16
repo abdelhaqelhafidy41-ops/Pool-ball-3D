@@ -45,8 +45,15 @@ import {
 } from './config';
 import { createDurableObjectSqlDb, D1ProgressionService } from './D1ProgressionService';
 import { EconomyService } from './EconomyService';
+import { AntiCheatService, type AntiCheatMatchInspectionInput } from './AntiCheatService';
+import { RankedSeasonService } from './RankedSeasonService';
 import { SocialService, type SocialError } from './SocialService';
 import { TournamentService, type TournamentServiceError } from './TournamentService';
+import {
+  computeAllowedRankedEloSpread,
+  RANKED_MATCHMAKING_CONFIG,
+  type PenaltyType,
+} from '../../src/multiplayer/shared/ranked';
 import type {
   CreateTournamentInput,
   TournamentMatch,
@@ -60,6 +67,7 @@ interface LobbySocketAttachment {
   sessionId: string | null;
   playerId: string | null;
   subscribedTournamentId?: string | null;
+  region?: string | null;
 }
 
 interface SessionRow {
@@ -77,6 +85,10 @@ interface SessionRow {
 
 interface QueueRow {
   session_id: string;
+  player_id: string;
+  queue_mode: 'quick' | 'ranked';
+  elo: number;
+  region: string;
   rule_profile_id: string;
   called_shots_enabled: number;
   joined_at_ms: number;
@@ -89,6 +101,7 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
   private schemaReady = false;
   private rateMap = new Map<WebSocket, number[]>();
   private matchingBusy = false;
+  private lastRankedSpreadSent = new Map<string, number>();
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -116,6 +129,7 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
         room_code TEXT UNIQUE NOT NULL,
         host_session_id TEXT NOT NULL,
         is_private INTEGER NOT NULL,
+        match_type TEXT NOT NULL DEFAULT 'quick',
         rule_profile_id TEXT NOT NULL,
         called_shots_enabled INTEGER NOT NULL,
         status TEXT NOT NULL,
@@ -124,6 +138,10 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
       );
       CREATE TABLE IF NOT EXISTS match_queue (
         session_id TEXT PRIMARY KEY,
+        player_id TEXT,
+        queue_mode TEXT NOT NULL DEFAULT 'quick',
+        elo INTEGER NOT NULL DEFAULT 1200,
+        region TEXT NOT NULL DEFAULT 'global',
         rule_profile_id TEXT NOT NULL,
         called_shots_enabled INTEGER NOT NULL,
         joined_at_ms INTEGER NOT NULL,
@@ -150,6 +168,11 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
       'ALTER TABLE match_history ADD COLUMN player1_id TEXT',
       'ALTER TABLE match_history ADD COLUMN player2_id TEXT',
       'ALTER TABLE match_history ADD COLUMN payload_json TEXT',
+      "ALTER TABLE rooms ADD COLUMN match_type TEXT NOT NULL DEFAULT 'quick'",
+      'ALTER TABLE match_queue ADD COLUMN player_id TEXT',
+      "ALTER TABLE match_queue ADD COLUMN queue_mode TEXT NOT NULL DEFAULT 'quick'",
+      'ALTER TABLE match_queue ADD COLUMN elo INTEGER NOT NULL DEFAULT 1200',
+      "ALTER TABLE match_queue ADD COLUMN region TEXT NOT NULL DEFAULT 'global'",
     ];
     for (const stmt of alterStatements) {
       try {
@@ -167,9 +190,17 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
       return new Response('Expected WebSocket upgrade', { status: 426 });
     }
 
+    const cf = (request as Request & { cf?: { continent?: string; country?: string } }).cf;
+    const detectedRegion = this.normalizeRegion(cf?.continent ?? cf?.country ?? 'global');
+
     const pair = new WebSocketPair();
     const [client, server] = Object.values(pair);
-    const att: LobbySocketAttachment = { sessionId: null, playerId: null };
+    const att: LobbySocketAttachment = {
+      sessionId: null,
+      playerId: null,
+      subscribedTournamentId: null,
+      region: detectedRegion,
+    };
     this.ctx.acceptWebSocket(server);
     server.serializeAttachment(att);
 
@@ -587,6 +618,15 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
 
       case 'room:create': {
         await this.pruneExpiredWaitingRooms();
+        const restriction = await this.getAntiCheatService().getPlayerRestriction(playerId);
+        if (restriction.blockedFromOnline) {
+          this.sendError(
+            ws,
+            'SUSPENDED',
+            'Your account is currently suspended from online multiplayer. Review status in Fair Play & Appeals.',
+          );
+          return;
+        }
         if (session.active_room_id || session.in_matchmaking === 1) {
           this.sendError(
             ws,
@@ -605,9 +645,9 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
 
         this.ctx.storage.sql.exec(
           `INSERT INTO rooms (
-            room_id, room_code, host_session_id, is_private, rule_profile_id,
+            room_id, room_code, host_session_id, is_private, match_type, rule_profile_id,
             called_shots_enabled, status, created_at_ms, expires_at_ms
-          ) VALUES (?, ?, ?, ?, ?, ?, 'waiting', ?, ?)`,
+          ) VALUES (?, ?, ?, ?, 'private', ?, ?, 'waiting', ?, ?)`,
           roomId,
           roomCode,
           session.session_id,
@@ -651,6 +691,15 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
 
       case 'room:join': {
         await this.pruneExpiredWaitingRooms();
+        const restriction = await this.getAntiCheatService().getPlayerRestriction(playerId);
+        if (restriction.blockedFromOnline) {
+          this.sendError(
+            ws,
+            'SUSPENDED',
+            'Your account is currently suspended from online multiplayer. Review status in Fair Play & Appeals.',
+          );
+          return;
+        }
         if (typeof msg.roomCode !== 'string' || msg.roomCode.trim().length < 4) {
           this.sendError(ws, 'INVALID_ROOM', 'Enter a valid 6-character room code.');
           return;
@@ -738,8 +787,20 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
       }
 
       case 'matchmaking:join': {
-        const ruleProfileId: RuleProfileId = msg.ruleProfileId === 'wpa' ? 'wpa' : 'casual';
-        const calledShotsEnabled = Boolean(msg.calledShotsEnabled);
+        const mode: 'quick' | 'ranked' = msg.mode === 'ranked' ? 'ranked' : 'quick';
+        const ruleProfileId: RuleProfileId =
+          msg.ruleProfileId === 'wpa'
+            ? 'wpa'
+            : msg.ruleProfileId === 'casual'
+              ? 'casual'
+              : mode === 'ranked'
+                ? RANKED_MATCHMAKING_CONFIG.defaultRuleProfile
+                : 'casual';
+        const calledShotsEnabled =
+          msg.calledShotsEnabled !== undefined
+            ? Boolean(msg.calledShotsEnabled)
+            : mode === 'ranked';
+
         if (session.active_room_id) {
           this.sendError(ws, 'ALREADY_IN_MATCH', 'You are already in an active room or match.');
           return;
@@ -749,13 +810,62 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
           return;
         }
 
+        const restriction = await this.getAntiCheatService().getPlayerRestriction(playerId);
+        if (restriction.blockedFromOnline) {
+          this.sendError(
+            ws,
+            'SUSPENDED',
+            'Your account is suspended from online play. View Fair Play & Appeals for details.',
+          );
+          return;
+        }
+        if (mode === 'ranked' && restriction.blockedFromRanked) {
+          const activePenalty = restriction.activePenalties.find(
+            (p) => p.penaltyType === 'ranked_restriction',
+          );
+          this.sendError(
+            ws,
+            'RANKED_RESTRICTED',
+            activePenalty
+              ? `Ranked queue restricted: ${activePenalty.reason}`
+              : 'Your account is currently restricted from Ranked play.',
+          );
+          return;
+        }
+
+        const dupPlayerQueue = this.ctx.storage.sql
+          .exec<{ session_id: string }>(
+            'SELECT session_id FROM match_queue WHERE player_id = ? LIMIT 1',
+            playerId,
+          )
+          .toArray();
+        if (dupPlayerQueue.length > 0 && dupPlayerQueue[0].session_id !== session.session_id) {
+          this.sendError(
+            ws,
+            'ALREADY_IN_MATCH',
+            'Your account is already queued in another active session.',
+          );
+          return;
+        }
+
+        const profile = await this.getProgressionService().getPublicProfile(playerId);
+        const playerElo = profile?.elo ?? 1200;
+        const region = this.normalizeRegion(msg.region ?? att.region ?? 'global');
+        const initialSpread = computeAllowedRankedEloSpread(0);
+        const estimatedWaitSec = await this.getEstimatedQueueWaitSec(mode);
+
         const now = Date.now();
         const timeoutAtMs = now + this.config.matchmakingTimeoutMs;
         this.ctx.storage.sql.exec(
           `INSERT OR REPLACE INTO match_queue (
-            session_id, rule_profile_id, called_shots_enabled, joined_at_ms, timeout_at_ms, latency_ms
-          ) VALUES (?, ?, ?, ?, ?, ?)`,
+            session_id, player_id, queue_mode, elo, region,
+            rule_profile_id, called_shots_enabled, joined_at_ms, timeout_at_ms, latency_ms
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           session.session_id,
+          playerId,
+          mode,
+          playerElo,
+          region,
           ruleProfileId,
           calledShotsEnabled ? 1 : 0,
           now,
@@ -766,13 +876,21 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
           'UPDATE sessions SET in_matchmaking = 1 WHERE session_id = ?',
           session.session_id,
         );
+        if (mode === 'ranked') {
+          this.lastRankedSpreadSent.set(session.session_id, initialSpread);
+        }
 
-        const queueCount = this.getQueueCount();
+        const queueCount = this.getQueueCount(mode);
         this.sendSocket(ws, {
           type: 'matchmaking:searching',
           position: queueCount,
           startedAtMs: now,
           timeoutAtMs,
+          mode,
+          elo: playerElo,
+          eloSpread: mode === 'ranked' ? initialSpread : undefined,
+          region,
+          estimatedWaitSec,
         });
 
         await this.processQueue();
@@ -1152,6 +1270,20 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
     return new TournamentService(createDurableObjectSqlDb(this.ctx.storage.sql));
   }
 
+  private getRankedSeasonService(): RankedSeasonService {
+    if (this.env.DB) {
+      return new RankedSeasonService(this.env.DB);
+    }
+    return new RankedSeasonService(createDurableObjectSqlDb(this.ctx.storage.sql));
+  }
+
+  private getAntiCheatService(): AntiCheatService {
+    if (this.env.DB) {
+      return new AntiCheatService(this.env.DB);
+    }
+    return new AntiCheatService(createDurableObjectSqlDb(this.ctx.storage.sql));
+  }
+
   private async authenticateRestPlayer(
     playerId: unknown,
     playerToken: unknown,
@@ -1219,6 +1351,7 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
 
   public async progressionLeaderboard(params: {
     scope: LeaderboardScope;
+    seasonId?: string | null;
     page?: number;
     limit?: number;
     query?: string;
@@ -1228,7 +1361,12 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
     return this.getProgressionService().getLeaderboard(params);
   }
 
-  public async progressionHistory(params: { playerId?: string | null; limit?: number }) {
+  public async progressionHistory(params: {
+    playerId?: string | null;
+    matchType?: OnlineMatchType | 'all' | null;
+    seasonId?: string | null;
+    limit?: number;
+  }) {
     this.ensureSchema();
     return this.getProgressionService().getMatchHistory(params);
   }
@@ -1252,6 +1390,94 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
   }> {
     this.ensureSchema();
     return this.getProgressionService().recordCompletedMatch(input);
+  }
+
+  // ===== Phase 10 Ranked Seasons & Anti-Cheat / Moderation RPC Methods =====
+
+  public async rankedGetSeasons() {
+    this.ensureSchema();
+    return this.getRankedSeasonService().listSeasons();
+  }
+
+  public async rankedGetStanding(playerId: string, seasonId?: string | null) {
+    this.ensureSchema();
+    return this.getRankedSeasonService().getPlayerSeasonStanding(playerId, seasonId);
+  }
+
+  public async rankedRolloverSeason(options?: {
+    nowMs?: number;
+    newSeasonName?: string;
+    newDurationDays?: number;
+    softResetAnchor?: number;
+    softResetFactor?: number;
+  }) {
+    this.ensureSchema();
+    return this.getRankedSeasonService().rolloverSeason(options);
+  }
+
+  public async inspectCompletedMatch(input: AntiCheatMatchInspectionInput) {
+    this.ensureSchema();
+    return this.getAntiCheatService().inspectCompletedMatch(input);
+  }
+
+  public async moderationGetStatus(playerId: string, playerToken: string) {
+    this.ensureSchema();
+    const auth = await this.authenticateRestPlayer(playerId, playerToken);
+    if (!auth.ok) return auth;
+    const status = await this.getAntiCheatService().getPlayerModerationStatus(auth.playerId);
+    return { ok: true as const, moderation: status };
+  }
+
+  public async moderationSubmitAppeal(
+    playerId: string,
+    playerToken: string,
+    penaltyId: string,
+    message: string,
+  ) {
+    this.ensureSchema();
+    const auth = await this.authenticateRestPlayer(playerId, playerToken);
+    if (!auth.ok) return auth;
+    return this.getAntiCheatService().submitAppeal({
+      playerId: auth.playerId,
+      penaltyId,
+      message,
+    });
+  }
+
+  public async moderationAdminQueue(limit = 50) {
+    this.ensureSchema();
+    return this.getAntiCheatService().getAdminModerationQueue(limit);
+  }
+
+  public async moderationIssuePenalty(params: {
+    playerId: string;
+    penaltyType: PenaltyType;
+    reason: string;
+    issuedBy: string;
+    isAdmin: boolean;
+    durationMs?: number | null;
+  }) {
+    this.ensureSchema();
+    return this.getAntiCheatService().issuePenalty(params);
+  }
+
+  public async moderationRevokePenalty(params: {
+    penaltyId: string;
+    adminActor: string;
+    notes?: string;
+  }) {
+    this.ensureSchema();
+    return this.getAntiCheatService().revokePenalty(params);
+  }
+
+  public async moderationReviewAppeal(params: {
+    appealId: string;
+    adminActor: string;
+    decision: 'approved' | 'rejected';
+    adminNotes?: string;
+  }) {
+    this.ensureSchema();
+    return this.getAntiCheatService().reviewAppeal(params);
   }
 
   // ===== Phase 7 Social RPC Methods =====
@@ -2999,9 +3225,13 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
 
   private bindSocketToSession(ws: WebSocket, sessionId: string, playerId: string): void {
     let preservedSubscription: string | null = null;
+    let preservedRegion: string | null = null;
     const prevSelf = this.getAttachment(ws);
     if (prevSelf.subscribedTournamentId) {
       preservedSubscription = prevSelf.subscribedTournamentId;
+    }
+    if (prevSelf.region) {
+      preservedRegion = prevSelf.region;
     }
     for (const existing of this.ctx.getWebSockets()) {
       if (existing === ws) continue;
@@ -3022,6 +3252,7 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
       sessionId,
       playerId,
       subscribedTournamentId: preservedSubscription,
+      region: preservedRegion,
     } satisfies LobbySocketAttachment);
   }
 
@@ -3056,6 +3287,65 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
     }
   }
 
+  private normalizeRegion(raw: unknown): string {
+    if (typeof raw !== 'string') return 'global';
+    const cleaned = raw.trim().toUpperCase().replace(/[^A-Z0-9_-]/g, '').slice(0, 12);
+    return cleaned || 'global';
+  }
+
+  private async getEstimatedQueueWaitSec(mode: 'quick' | 'ranked'): Promise<number | null> {
+    try {
+      const db = this.env.DB ?? createDurableObjectSqlDb(this.ctx.storage.sql);
+      await this.getRankedSeasonService().ensureSchema();
+      const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+      const rows = await (db as unknown as ReturnType<typeof createDurableObjectSqlDb>)
+        .prepare(
+          `SELECT wait_ms FROM ranked_matchmaking_metrics
+           WHERE mode = ? AND matched_at_ms >= ?
+           ORDER BY matched_at_ms DESC LIMIT 25`,
+        )
+        .bind(mode, cutoff)
+        .all<{ wait_ms: number }>();
+      const list = rows.results ?? [];
+      if (list.length < RANKED_MATCHMAKING_CONFIG.minWaitSamplesForEstimate) {
+        return null;
+      }
+      const avgMs =
+        list.reduce((acc, row) => acc + Math.max(0, Number(row.wait_ms ?? 0)), 0) / list.length;
+      return Math.max(1, Math.round(avgMs / 1000));
+    } catch {
+      return null;
+    }
+  }
+
+  private async recordMatchmakingMetric(params: {
+    mode: 'quick' | 'ranked';
+    region: string;
+    waitMs: number;
+    eloGap: number;
+    matchedAtMs: number;
+  }): Promise<void> {
+    try {
+      await this.getRankedSeasonService().ensureSchema();
+      const db = this.env.DB ?? createDurableObjectSqlDb(this.ctx.storage.sql);
+      await (db as unknown as ReturnType<typeof createDurableObjectSqlDb>)
+        .prepare(
+          `INSERT INTO ranked_matchmaking_metrics (mode, region, wait_ms, elo_gap, matched_at_ms)
+           VALUES (?, ?, ?, ?, ?)`,
+        )
+        .bind(
+          params.mode,
+          params.region,
+          Math.max(0, Math.round(params.waitMs)),
+          Math.max(0, Math.round(params.eloGap)),
+          params.matchedAtMs,
+        )
+        .run();
+    } catch {
+      // Non-blocking queue metric write
+    }
+  }
+
   private cancelMatchmaking(sessionId: string, reason: string): boolean {
     const existing = this.ctx.storage.sql
       .exec<{ session_id: string }>(
@@ -3064,6 +3354,7 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
       )
       .toArray();
 
+    this.lastRankedSpreadSent.delete(sessionId);
     this.ctx.storage.sql.exec('DELETE FROM match_queue WHERE session_id = ?', sessionId);
     this.ctx.storage.sql.exec(
       'UPDATE sessions SET in_matchmaking = 0 WHERE session_id = ?',
@@ -3095,6 +3386,7 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
         const sess = this.getSession(sid);
         const ws = this.findSocketBySession(sid);
         if (!sess || !ws || sess.active_room_id) {
+          this.lastRankedSpreadSent.delete(sid);
           this.ctx.storage.sql.exec('DELETE FROM match_queue WHERE session_id = ?', sid);
           this.ctx.storage.sql.exec(
             'UPDATE sessions SET in_matchmaking = 0 WHERE session_id = ?',
@@ -3104,6 +3396,7 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
         }
         const timeoutAtMs = Number(r.timeout_at_ms);
         if (now >= timeoutAtMs) {
+          this.lastRankedSpreadSent.delete(sid);
           this.ctx.storage.sql.exec('DELETE FROM match_queue WHERE session_id = ?', sid);
           this.ctx.storage.sql.exec(
             'UPDATE sessions SET in_matchmaking = 0 WHERE session_id = ?',
@@ -3118,6 +3411,10 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
 
         queue.push({
           session_id: sid,
+          player_id: r.player_id ? String(r.player_id) : sess.player_id ?? sid,
+          queue_mode: r.queue_mode === 'ranked' ? 'ranked' : 'quick',
+          elo: Number(r.elo ?? 1200),
+          region: this.normalizeRegion(r.region ?? 'global'),
           rule_profile_id: r.rule_profile_id === 'wpa' ? 'wpa' : 'casual',
           called_shots_enabled: Number(r.called_shots_enabled),
           joined_at_ms: Number(r.joined_at_ms),
@@ -3136,16 +3433,40 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
           for (let j = i + 1; j < queue.length; j++) {
             const b = queue[j];
             if (a.session_id === b.session_id) continue;
+            // Strictly prevent self-matching on same account
+            if (a.player_id === b.player_id) continue;
+            // Strictly isolate Ranked and Quick matchmaking queues
+            if (a.queue_mode !== b.queue_mode) continue;
 
-            const waitSecBoth = Math.min(waitSecA, Math.max(0, (now - b.joined_at_ms) / 1000));
+            const waitSecB = Math.max(0, (now - b.joined_at_ms) / 1000);
+            const waitSecBoth = Math.min(waitSecA, waitSecB);
             const sameRules =
               a.rule_profile_id === b.rule_profile_id &&
               a.called_shots_enabled === b.called_shots_enabled;
-            if (!sameRules && waitSecBoth < 10) continue;
+
+            if (a.queue_mode === 'ranked') {
+              if (!sameRules) continue;
+
+              const spreadA = computeAllowedRankedEloSpread(waitSecA);
+              const spreadB = computeAllowedRankedEloSpread(waitSecB);
+              const allowedEloSpread = Math.max(spreadA, spreadB);
+              if (Math.abs(a.elo - b.elo) > allowedEloSpread) continue;
+
+              if (
+                waitSecBoth < RANKED_MATCHMAKING_CONFIG.regionPreferenceWindowSec &&
+                a.region !== 'GLOBAL' &&
+                b.region !== 'GLOBAL' &&
+                a.region !== b.region
+              ) {
+                continue;
+              }
+            } else {
+              if (!sameRules && waitSecBoth < 10) continue;
+            }
 
             const latencyDiff = Math.abs(a.latency_ms - b.latency_ms);
-            const allowedSpread = this.config.maxLatencySpreadMs + waitSecBoth * 25;
-            if (latencyDiff <= allowedSpread) {
+            const allowedLatencySpread = this.config.maxLatencySpreadMs + waitSecBoth * 25;
+            if (latencyDiff <= allowedLatencySpread) {
               matchedPair = [i, j];
               break;
             }
@@ -3164,6 +3485,8 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
         const wsA = this.findSocketBySession(entryA.session_id);
         const wsB = this.findSocketBySession(entryB.session_id);
 
+        this.lastRankedSpreadSent.delete(entryA.session_id);
+        this.lastRankedSpreadSent.delete(entryB.session_id);
         this.ctx.storage.sql.exec(
           'DELETE FROM match_queue WHERE session_id IN (?, ?)',
           entryA.session_id,
@@ -3181,6 +3504,7 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
 
         const roomId = `room_${crypto.randomUUID().replace(/-/g, '').slice(0, 12)}`;
         const roomCode = this.generateUniqueCode();
+        const matchType: 'quick' | 'ranked' = entryA.queue_mode === 'ranked' ? 'ranked' : 'quick';
         const ruleProfileId: RuleProfileId =
           entryA.rule_profile_id === 'wpa' ? 'wpa' : 'casual';
         const calledShotsEnabled = entryA.called_shots_enabled === 1;
@@ -3188,12 +3512,13 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
 
         this.ctx.storage.sql.exec(
           `INSERT INTO rooms (
-            room_id, room_code, host_session_id, is_private, rule_profile_id,
+            room_id, room_code, host_session_id, is_private, match_type, rule_profile_id,
             called_shots_enabled, status, created_at_ms, expires_at_ms
-          ) VALUES (?, ?, ?, 0, ?, ?, 'playing', ?, ?)`,
+          ) VALUES (?, ?, ?, 0, ?, ?, ?, 'playing', ?, ?)`,
           roomId,
           roomCode,
           sessA.session_id,
+          matchType,
           ruleProfileId,
           calledShotsEnabled ? 1 : 0,
           now,
@@ -3206,6 +3531,17 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
           sessB.session_id,
         );
 
+        const avgWaitMs = Math.round(
+          (Math.max(0, now - entryA.joined_at_ms) + Math.max(0, now - entryB.joined_at_ms)) / 2,
+        );
+        await this.recordMatchmakingMetric({
+          mode: matchType,
+          region: entryA.region === entryB.region ? entryA.region : 'GLOBAL',
+          waitMs: avgWaitMs,
+          eloGap: Math.abs(entryA.elo - entryB.elo),
+          matchedAtMs: now,
+        });
+
         const p1Id = sessA.player_id ?? sessA.session_id;
         const p2Id = sessB.player_id ?? sessB.session_id;
         const [p1Cosmetics, p2Cosmetics] = await Promise.all([
@@ -3217,6 +3553,7 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
         const started = await roomStub.initMatchedRoom({
           roomId,
           roomCode,
+          matchType,
           ruleProfileId,
           calledShotsEnabled,
           createdAtMs: now,
@@ -3248,6 +3585,33 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
 
         this.sendSocket(wsA, { type: 'matchmaking:matched', room: started.room });
         this.sendSocket(wsB, { type: 'matchmaking:matched', room: started.room });
+      }
+
+      // Broadcast live ELO spread expansions for waiting ranked competitors
+      if (queue.length > 0) {
+        for (let idx = 0; idx < queue.length; idx++) {
+          const entry = queue[idx];
+          if (entry.queue_mode !== 'ranked') continue;
+          const waitSec = Math.max(0, (now - entry.joined_at_ms) / 1000);
+          const currentSpread = computeAllowedRankedEloSpread(waitSec);
+          const prevSent = this.lastRankedSpreadSent.get(entry.session_id);
+          if (prevSent !== undefined && prevSent === currentSpread) continue;
+          const ws = this.findSocketBySession(entry.session_id);
+          if (!ws) continue;
+          this.lastRankedSpreadSent.set(entry.session_id, currentSpread);
+          const estimatedWaitSec = await this.getEstimatedQueueWaitSec('ranked');
+          this.sendSocket(ws, {
+            type: 'matchmaking:searching',
+            position: idx + 1,
+            startedAtMs: entry.joined_at_ms,
+            timeoutAtMs: entry.timeout_at_ms,
+            mode: 'ranked',
+            elo: entry.elo,
+            eloSpread: currentSpread,
+            region: entry.region,
+            estimatedWaitSec,
+          });
+        }
       }
     } finally {
       this.matchingBusy = false;
@@ -3326,7 +3690,14 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
     await this.ctx.storage.setAlarm(Math.min(...candidates));
   }
 
-  private getQueueCount(): number {
+  private getQueueCount(mode?: 'quick' | 'ranked'): number {
+    if (mode) {
+      return Number(
+        this.ctx.storage.sql
+          .exec<{ c: number }>('SELECT COUNT(*) AS c FROM match_queue WHERE queue_mode = ?', mode)
+          .one().c,
+      );
+    }
     return Number(
       this.ctx.storage.sql.exec<{ c: number }>('SELECT COUNT(*) AS c FROM match_queue').one().c,
     );
@@ -3376,8 +3747,9 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
           sessionId: raw.sessionId ?? null,
           playerId: raw.playerId ?? null,
           subscribedTournamentId: raw.subscribedTournamentId ?? null,
+          region: raw.region ?? null,
         }
-      : { sessionId: null, playerId: null, subscribedTournamentId: null };
+      : { sessionId: null, playerId: null, subscribedTournamentId: null, region: null };
   }
 
   private sendSocket(ws: WebSocket, msg: ServerToClientMessage): void {

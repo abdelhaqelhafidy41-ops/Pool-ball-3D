@@ -5,9 +5,11 @@ import {
   Globe,
   History,
   KeyRound,
+  Loader2,
   Play,
   PlusCircle,
   Search,
+  ShieldAlert,
   Swords,
   Trophy,
   User,
@@ -21,6 +23,7 @@ import { useEffect, useState } from 'react';
 import type { RuleProfileId } from '../game/rules/types';
 import { soundEngine } from '../game/utils/SoundEngine';
 import { multiplayerManager } from '../multiplayer/MultiplayerManager';
+import { progressionClient } from '../multiplayer/ProgressionClient';
 import {
   getAvatarVisualMeta,
   getBadgeVisualMeta,
@@ -31,9 +34,20 @@ import {
   type OnlineAvatarId,
   type OnlineModeIntent,
 } from '../multiplayer/shared/protocol';
+import { getRankForElo, RANKED_MATCHMAKING_CONFIG } from '../multiplayer/shared/ranked';
 import { useGameStore } from '../store/useGameStore';
+import { RankBadge, RankProgressCard } from './RankBadge';
 
 type LobbyTab = OnlineModeIntent | 'history';
+
+function formatSeasonRemaining(endsAtMs: number, nowMs: number): string {
+  const diffSec = Math.max(0, Math.floor((endsAtMs - nowMs) / 1000));
+  const days = Math.floor(diffSec / 86400);
+  const hours = Math.floor((diffSec % 86400) / 3600);
+  if (days > 0) return `${days}d ${hours}h left`;
+  const mins = Math.floor((diffSec % 3600) / 60);
+  return `${hours}h ${mins}m left`;
+}
 
 export function OnlineLobbyUI() {
   const onlineLobbyOpen = useGameStore((s) => s.onlineLobbyOpen);
@@ -50,6 +64,8 @@ export function OnlineLobbyUI() {
   const setOnlineError = useGameStore((s) => s.setOnlineError);
   const onlineHistory = useGameStore((s) => s.onlineHistory);
   const ownProfile = useGameStore((s) => s.ownProfile);
+  const activeSeason = useGameStore((s) => s.activeSeason);
+  const moderationStatus = useGameStore((s) => s.moderationStatus);
   const openProgressionModal = useGameStore((s) => s.openProgressionModal);
   const openSocialModal = useGameStore((s) => s.openSocialModal);
   const openTournamentModal = useGameStore((s) => s.openTournamentModal);
@@ -61,13 +77,18 @@ export function OnlineLobbyUI() {
   const [activeTab, setActiveTab] = useState<LobbyTab>(onlineModeIntent);
   const [nameInput, setNameInput] = useState(onlineProfile.displayName);
   const [joinCodeInput, setJoinCodeInput] = useState('');
-  const [ruleProfileId, setRuleProfileId] = useState<RuleProfileId>('casual');
+  const [ruleProfileId, setRuleProfileId] = useState<RuleProfileId>(
+    onlineModeIntent === 'ranked' ? RANKED_MATCHMAKING_CONFIG.defaultRuleProfile : 'casual',
+  );
   const [copiedCode, setCopiedCode] = useState(false);
   const [nowMs, setNowMs] = useState(() => Date.now());
 
   useEffect(() => {
     setActiveTab(onlineModeIntent);
-  }, [onlineModeIntent]);
+    if (onlineModeIntent === 'ranked' && !onlineMatchmaking.active) {
+      setRuleProfileId(RANKED_MATCHMAKING_CONFIG.defaultRuleProfile);
+    }
+  }, [onlineModeIntent, onlineMatchmaking.active]);
 
   useEffect(() => {
     setNameInput(onlineProfile.displayName);
@@ -76,6 +97,8 @@ export function OnlineLobbyUI() {
   useEffect(() => {
     if (!onlineLobbyOpen) return;
     multiplayerManager.ensureConnected();
+    void progressionClient.fetchRankedSeasons();
+    void progressionClient.fetchModerationStatus();
   }, [onlineLobbyOpen]);
 
   useEffect(() => {
@@ -179,9 +202,9 @@ export function OnlineLobbyUI() {
                 }}
                 className="hidden sm:inline-flex items-center gap-1.5 rounded-lg border border-amber-400/35 bg-amber-500/10 px-2.5 py-1 text-[11px] font-bold text-amber-200 hover:bg-amber-500/20 cursor-pointer whitespace-nowrap"
               >
-                <User className="h-3.5 w-3.5 text-amber-400" />
+                <RankBadge elo={ownProfile.elo} size="xs" />
                 <span>Lv {ownProfile.level}</span>
-                <span className="font-mono">{ownProfile.elo} ELO</span>
+                <span className="font-mono tabular-nums">{ownProfile.elo} ELO</span>
               </button>
             )}
             <button
@@ -341,9 +364,11 @@ export function OnlineLobbyUI() {
                 <div className="text-[10px] font-bold uppercase tracking-wider text-amber-300">
                   {onlineRoom.tournament
                     ? `${onlineRoom.tournament.tournamentTitle} · ${onlineRoom.tournament.roundLabel}`
-                    : onlineRoom.isPrivate
-                      ? 'Private Room Code'
-                      : 'Matched Room'}
+                    : onlineRoom.matchType === 'ranked'
+                      ? 'Ranked Competitive Room'
+                      : onlineRoom.isPrivate
+                        ? 'Private Room Code'
+                        : 'Matched Quick Room'}
                 </div>
                 {onlineRoom.tournament ? (
                   <div className="mt-0.5 text-xs font-extrabold text-white">
@@ -559,11 +584,12 @@ export function OnlineLobbyUI() {
         ) : (
           <>
             {/* Navigation Tabs */}
-            <div className="mt-4 grid grid-cols-4 gap-1 rounded-xl border border-white/10 bg-black/35 p-1">
+            <div className="mt-4 grid grid-cols-5 gap-1 rounded-xl border border-white/10 bg-black/35 p-1">
               {(
                 [
-                  { id: 'quick', label: 'Quick Match', icon: Search },
-                  { id: 'create', label: 'Private Room', icon: PlusCircle },
+                  { id: 'ranked', label: 'Ranked', icon: Swords },
+                  { id: 'quick', label: 'Quick', icon: Search },
+                  { id: 'create', label: 'Private', icon: PlusCircle },
                   { id: 'join', label: 'Join Code', icon: KeyRound },
                   { id: 'history', label: 'History', icon: History },
                 ] as const
@@ -574,14 +600,18 @@ export function OnlineLobbyUI() {
                   <button
                     key={tab.id}
                     type="button"
+                    data-testid={`lobby-tab-${tab.id}`}
                     onClick={() => {
                       soundEngine.playUiClick();
                       setActiveTab(tab.id);
                       if (tab.id !== 'history') {
                         setOnlineModeIntent(tab.id);
                       }
+                      if (tab.id === 'ranked' && !onlineMatchmaking.active) {
+                        setRuleProfileId(RANKED_MATCHMAKING_CONFIG.defaultRuleProfile);
+                      }
                     }}
-                    className={`flex items-center justify-center gap-1 rounded-lg px-2 py-1.5 text-[11px] font-bold transition-colors cursor-pointer whitespace-nowrap ${
+                    className={`flex items-center justify-center gap-1 rounded-lg px-2 py-1.5 text-[11px] font-bold transition-colors cursor-pointer whitespace-nowrap shrink-0 ${
                       active
                         ? 'bg-amber-500 text-slate-950'
                         : 'text-slate-300 hover:text-white'
@@ -594,8 +624,33 @@ export function OnlineLobbyUI() {
               })}
             </div>
 
-            {/* Rule Profile Selector for Quick Match & Create Room */}
-            {(activeTab === 'quick' || activeTab === 'create' || activeTab === 'friend') && (
+            {/* Fair Play Account Restriction Notice */}
+            {moderationStatus && (!moderationStatus.canPlayOnline || !moderationStatus.canPlayRanked) && (
+              <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-rose-500/40 bg-rose-500/10 px-3.5 py-2.5 text-xs text-rose-200">
+                <div className="flex items-center gap-2 min-w-0">
+                  <ShieldAlert className="h-4 w-4 text-rose-400 shrink-0" />
+                  <span className="min-w-0">
+                    {!moderationStatus.canPlayOnline
+                      ? 'Your account has an active online suspension.'
+                      : 'Ranked matchmaking is currently restricted for this account.'}
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    soundEngine.playUiClick();
+                    closeOnlineLobby();
+                    openProgressionModal('fairplay');
+                  }}
+                  className="rounded-lg border border-rose-400/40 bg-rose-500/20 px-2.5 py-1 text-[11px] font-bold text-rose-100 hover:bg-rose-500/30 cursor-pointer whitespace-nowrap"
+                >
+                  Fair Play & Appeal
+                </button>
+              </div>
+            )}
+
+            {/* Rule Profile Selector for Ranked, Quick Match & Create Room */}
+            {(activeTab === 'ranked' || activeTab === 'quick' || activeTab === 'create' || activeTab === 'friend') && (
               <div className="mt-3.5 grid grid-cols-2 gap-2">
                 <button
                   type="button"
@@ -632,13 +687,121 @@ export function OnlineLobbyUI() {
               </div>
             )}
 
-            {/* Tab Panels */}
-            {activeTab === 'quick' && (
-              <div className="mt-4 space-y-3 rounded-xl border border-white/10 bg-black/25 p-4">
-                {onlineMatchmaking.active ? (
+            {/* Ranked Competitive Queue Panel */}
+            {activeTab === 'ranked' && (
+              <div className="mt-4 space-y-3 rounded-xl border border-amber-400/25 bg-black/25 p-4">
+                {activeSeason && (
+                  <div className="flex flex-wrap items-center justify-between gap-2 border-b border-white/10 pb-2.5 text-[11px]">
+                    <div className="font-bold text-amber-300">
+                      {activeSeason.name}
+                    </div>
+                    <div className="font-mono tabular-nums text-slate-400">
+                      {formatSeasonRemaining(activeSeason.endsAtMs, nowMs)}
+                    </div>
+                  </div>
+                )}
+
+                {ownProfile && (
+                  <RankProgressCard
+                    elo={ownProfile.elo}
+                    peakElo={ownProfile.peakElo}
+                    seasonName={ownProfile.seasonStanding?.seasonName}
+                    seasonElo={ownProfile.seasonStanding?.seasonElo}
+                  />
+                )}
+
+                {onlineMatchmaking.active && onlineMatchmaking.mode === 'ranked' ? (
                   <div className="flex flex-col items-center text-center gap-2.5 py-2">
                     <div className="inline-flex items-center gap-2 text-xs font-bold text-amber-300">
-                      <span className="h-2 w-2 rounded-full bg-amber-400 animate-pulse" />
+                      <Loader2 className="h-4 w-4 animate-spin text-amber-400" />
+                      Searching Ranked Opponent... ({searchElapsedSec}s)
+                    </div>
+                    <div className="flex flex-wrap items-center justify-center gap-2 font-mono tabular-nums text-[11px] text-slate-300">
+                      <span>
+                        {getRankForElo(onlineMatchmaking.elo ?? ownProfile?.elo ?? 1200).name}{' '}
+                        ({onlineMatchmaking.elo ?? ownProfile?.elo ?? 1200} ELO)
+                      </span>
+                      <span aria-hidden="true">·</span>
+                      <span>
+                        Spread ±{onlineMatchmaking.eloSpread ?? RANKED_MATCHMAKING_CONFIG.initialEloSpread}
+                      </span>
+                      {onlineMatchmaking.region && (
+                        <>
+                          <span aria-hidden="true">·</span>
+                          <span>Region {onlineMatchmaking.region}</span>
+                        </>
+                      )}
+                      <span aria-hidden="true">·</span>
+                      <span>
+                        Est. Wait{' '}
+                        {onlineMatchmaking.estimatedWaitSec !== null
+                          ? `~${onlineMatchmaking.estimatedWaitSec}s`
+                          : 'Calculating...'}
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-slate-400">
+                      Skill spread widens automatically over time while prioritizing lowest latency & regional proximity.
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        soundEngine.playUiClick();
+                        multiplayerManager.cancelMatchmaking();
+                      }}
+                      className="rounded-xl border border-rose-500/40 bg-rose-500/10 px-4 py-2 text-xs font-bold text-rose-200 hover:bg-rose-500/20 cursor-pointer"
+                    >
+                      Cancel Search
+                    </button>
+                  </div>
+                ) : (
+                  <div className="flex flex-col gap-3">
+                    {onlineMatchmaking.timedOutMessage && (
+                      <div className="rounded-lg border border-amber-400/35 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
+                        {onlineMatchmaking.timedOutMessage}
+                      </div>
+                    )}
+                    <p className="text-xs text-slate-300 leading-relaxed">
+                      Skill-based ranked matchmaking pairs competitors within progressive ELO bands under identical rule settings. Isolated from casual Quick Match.
+                    </p>
+                    <button
+                      type="button"
+                      data-testid="find-ranked-match-btn"
+                      disabled={
+                        !isConnected ||
+                        (moderationStatus !== null &&
+                          (!moderationStatus.canPlayOnline || !moderationStatus.canPlayRanked))
+                      }
+                      onClick={() => {
+                        soundEngine.playUiClick();
+                        commitProfile(nameInput);
+                        multiplayerManager.startRankedMatch(ruleProfileId, calledShotsEnabled);
+                      }}
+                      className="inline-flex items-center justify-center gap-2 rounded-xl bg-amber-500 px-5 py-2.5 text-xs font-extrabold uppercase tracking-wider text-slate-950 hover:bg-amber-400 disabled:opacity-45 disabled:cursor-not-allowed transition-colors cursor-pointer"
+                    >
+                      {isConnected ? (
+                        <>
+                          <Swords className="h-4 w-4" />
+                          Enter Ranked Queue
+                        </>
+                      ) : (
+                        <>
+                          <WifiOff className="h-4 w-4" />
+                          Connecting to Server...
+                        </>
+                      )}
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Quick Match Panel */}
+            {activeTab === 'quick' && (
+              <div className="mt-4 space-y-3 rounded-xl border border-white/10 bg-black/25 p-4">
+                {onlineMatchmaking.active && onlineMatchmaking.mode === 'quick' ? (
+                  <div className="flex flex-col items-center text-center gap-2.5 py-2">
+                    <div className="inline-flex items-center gap-2 text-xs font-bold text-amber-300">
+                      <Loader2 className="h-4 w-4 animate-spin text-amber-400" />
                       Searching for an online opponent... ({searchElapsedSec}s)
                     </div>
                     <p className="text-[11px] text-slate-400">
@@ -667,7 +830,10 @@ export function OnlineLobbyUI() {
                     </p>
                     <button
                       type="button"
-                      disabled={!isConnected}
+                      disabled={
+                        !isConnected ||
+                        (moderationStatus !== null && !moderationStatus.canPlayOnline)
+                      }
                       onClick={() => {
                         soundEngine.playUiClick();
                         commitProfile(nameInput);
