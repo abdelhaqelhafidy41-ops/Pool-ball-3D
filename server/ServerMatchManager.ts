@@ -419,12 +419,6 @@ export class ServerMatchManager {
     if (this.phase !== 'BALLS_MOVING') return;
 
     this.totalMatchShots++;
-    for (const evt of telemetry.pocketEvents) {
-      if (evt.ballNumber !== 0) {
-        this.pocketedSet.add(evt.ballNumber);
-      }
-    }
-
     const canShootEightMap: Record<PlayerId, boolean> = {
       player1: canTargetEightBall(this.pocketedSet, this.playerGroups.player1),
       player2: canTargetEightBall(this.pocketedSet, this.playerGroups.player2),
@@ -436,6 +430,12 @@ export class ServerMatchManager {
       playerGroups: { ...this.playerGroups },
       playerCanShootEight: canShootEightMap,
     });
+
+    for (const evt of telemetry.pocketEvents) {
+      if (evt.ballNumber !== 0) {
+        this.pocketedSet.add(evt.ballNumber);
+      }
+    }
 
     if (evaluation.respotEightBall) {
       this.pocketedSet.delete(8);
@@ -547,7 +547,12 @@ export class ServerMatchManager {
         }
       } else {
         this.phase = 'GROUPS_ASSIGNED';
-        this.statusHeadline = 'Groups Assigned';
+        this.statusHeadline = canTargetEightBall(
+          this.pocketedSet,
+          this.playerGroups[evaluation.nextPlayer],
+        )
+          ? '8-Ball Target'
+          : 'Groups Assigned';
         if (evaluation.assignedGroupsNow) {
           const assignedGroup = evaluation.assignedGroupsNow[telemetry.shooter];
           this.emitBanner(

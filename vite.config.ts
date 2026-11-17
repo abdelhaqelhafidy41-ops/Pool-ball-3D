@@ -26,6 +26,9 @@ export default defineConfig(({command}) => {
   return {
     base: command === 'build' ? resolveBasePath() : '/',
     plugins: [react(), tailwindcss()],
+    worker: {
+      format: 'es',
+    },
     resolve: {
       alias: {
         '@': path.resolve(import.meta.dirname, '.'),

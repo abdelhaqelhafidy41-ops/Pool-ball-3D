@@ -157,6 +157,7 @@ export class PoolScene {
   private lastAppliedTableId = DEFAULT_EQUIPPED_COSMETICS.tableId;
   private lastAppliedDecorId = DEFAULT_EQUIPPED_COSMETICS.decorationId;
   private lastMatchPhaseForVictory = useGameStore.getState().matchPhase;
+  private lastSettingsOpen = useGameStore.getState().settingsOpen;
 
   private resizeObserver: ResizeObserver | null = null;
   private resizeRafId = 0;
@@ -513,6 +514,20 @@ export class PoolScene {
             } else if (!this.physics.areAnyBallsMoving() && !this.strikeAnim.active) {
               this.scheduleAiTurnIfNeeded();
             }
+          }
+        }
+
+        if (state.settingsOpen !== this.lastSettingsOpen) {
+          this.lastSettingsOpen = state.settingsOpen;
+          if (state.settingsOpen) {
+            this.aiTurnController?.cancel();
+          } else if (
+            state.screen === 'playing' &&
+            state.matchConfig.opponentType === 'ai' &&
+            !this.physics.areAnyBallsMoving() &&
+            !this.strikeAnim.active
+          ) {
+            this.scheduleAiTurnIfNeeded();
           }
         }
 
@@ -1710,8 +1725,10 @@ export class PoolScene {
           this.shotRecorder.cancelActiveRecording();
         }
       } else if (movingNow !== this.wasBallsMoving) {
-        this.wasBallsMoving = movingNow;
-        store.setBallsMoving(movingNow);
+        if (movingNow || (!this.strikeAnim.active && this.matchManager.getPhase() !== 'BALLS_MOVING')) {
+          this.wasBallsMoving = movingNow;
+          store.setBallsMoving(movingNow);
+        }
       }
 
       // Safety respot in Free Play if cue ball was pocketed without moving state

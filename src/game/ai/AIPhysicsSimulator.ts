@@ -14,12 +14,15 @@ export type { SimShotInput, SimShotOutput };
 interface PendingRequest {
   resolve: (results: SimShotOutput[]) => void;
   reject: (err: Error) => void;
+  timeoutId: ReturnType<typeof setTimeout> | null;
 }
+
+const WORKER_BATCH_TIMEOUT_MS = 10000;
 
 /**
  * Isolated physics-based shot simulator for the AI opponent.
  * Runs candidate shots in a dedicated Rapier3D Web Worker (with automatic
- * isolated async chunked fallback if Worker is unavailable).
+ * isolated async chunked fallback if Worker is unavailable or stalls).
  * Never mutates the live PhysicsWorld.
  */
 export class AIPhysicsSimulator {
@@ -30,6 +33,25 @@ export class AIPhysicsSimulator {
   private requestSeq = 0;
   private activeMinValidId = 0;
   private pending = new Map<number, PendingRequest>();
+
+  private failWorker(reason: string): void {
+    this.workerFailed = true;
+    if (this.worker) {
+      try {
+        this.worker.terminate();
+      } catch {
+        // ignore termination errors
+      }
+      this.worker = null;
+    }
+    for (const [id, req] of this.pending) {
+      if (req.timeoutId !== null) {
+        clearTimeout(req.timeoutId);
+      }
+      req.reject(new Error(reason));
+      this.pending.delete(id);
+    }
+  }
 
   private ensureWorker(): Worker | null {
     if (this.workerFailed || typeof Worker === 'undefined') {
@@ -47,6 +69,9 @@ export class AIPhysicsSimulator {
         const req = this.pending.get(msg.requestId);
         if (!req) return;
         this.pending.delete(msg.requestId);
+        if (req.timeoutId !== null) {
+          clearTimeout(req.timeoutId);
+        }
         if (msg.error) {
           req.reject(new Error(msg.error));
         } else {
@@ -54,12 +79,10 @@ export class AIPhysicsSimulator {
         }
       };
       w.onerror = () => {
-        this.workerFailed = true;
-        this.worker = null;
-        for (const [id, req] of this.pending) {
-          req.reject(new Error('AI simulation worker error'));
-          this.pending.delete(id);
-        }
+        this.failWorker('AI simulation worker error');
+      };
+      w.onmessageerror = () => {
+        this.failWorker('AI simulation worker message error');
       };
       this.worker = w;
       return w;
@@ -74,7 +97,10 @@ export class AIPhysicsSimulator {
       this.fallbackEngine = new RapierIsolatedSimEngine();
     }
     if (!this.fallbackInit) {
-      this.fallbackInit = this.fallbackEngine.init();
+      this.fallbackInit = this.fallbackEngine.init().catch((err) => {
+        this.fallbackInit = null;
+        throw err;
+      });
     }
     await this.fallbackInit;
     return this.fallbackEngine;
@@ -83,6 +109,9 @@ export class AIPhysicsSimulator {
   public cancelPending(): void {
     this.activeMinValidId = this.requestSeq + 1;
     for (const [id, req] of this.pending) {
+      if (req.timeoutId !== null) {
+        clearTimeout(req.timeoutId);
+      }
       req.resolve([]);
       this.pending.delete(id);
     }
@@ -108,17 +137,30 @@ export class AIPhysicsSimulator {
             return;
           }
           const onAbort = () => {
+            const entry = this.pending.get(reqId);
+            if (entry?.timeoutId !== null && entry?.timeoutId !== undefined) {
+              clearTimeout(entry.timeoutId);
+            }
             this.pending.delete(reqId);
             resolve([]);
           };
           signal?.addEventListener('abort', onAbort, { once: true });
 
+          const timeoutId = setTimeout(() => {
+            if (this.pending.has(reqId)) {
+              this.failWorker('AI simulation worker timed out');
+            }
+          }, WORKER_BATCH_TIMEOUT_MS);
+
           this.pending.set(reqId, {
+            timeoutId,
             resolve: (res) => {
+              clearTimeout(timeoutId);
               signal?.removeEventListener('abort', onAbort);
               resolve(res);
             },
             reject: (err) => {
+              clearTimeout(timeoutId);
               signal?.removeEventListener('abort', onAbort);
               reject(err);
             },

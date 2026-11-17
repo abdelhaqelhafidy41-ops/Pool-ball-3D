@@ -243,7 +243,11 @@ export class MatchManager {
   public confirmBallInHandPlacement(): MatchSnapshot {
     if (this.phase !== 'BALL_IN_HAND') return this.getSnapshot();
     this.phase = this.tableOpen ? 'OPEN_TABLE' : 'GROUPS_ASSIGNED';
-    this.statusHeadline = this.tableOpen ? 'Open Table' : 'Groups Assigned';
+    this.statusHeadline = this.tableOpen
+      ? 'Open Table'
+      : canTargetEightBall(this.pocketedSet, this.playerGroups[this.getActivePlayer()])
+        ? '8-Ball Target'
+        : 'Groups Assigned';
     return this.getSnapshot();
   }
 
@@ -259,18 +263,14 @@ export class MatchManager {
     this.totalMatchShots++;
     this.stats.totalShots++;
 
-    // Record pocketed object balls into authoritative set (except cue ball 0)
-    const newlyPocketedObjects: number[] = [];
-    for (const evt of telemetry.pocketEvents) {
-      if (evt.ballNumber !== 0 && !this.pocketedSet.has(evt.ballNumber)) {
-        newlyPocketedObjects.push(evt.ballNumber);
-        this.pocketedSet.add(evt.ballNumber);
-      }
-    }
-    this.stats.ballsPocketed += newlyPocketedObjects.length;
-
     // Free Play bypasses 8-ball match rules
     if (this.config.gameMode === 'freePlay') {
+      for (const evt of telemetry.pocketEvents) {
+        if (evt.ballNumber !== 0 && !this.pocketedSet.has(evt.ballNumber)) {
+          this.pocketedSet.add(evt.ballNumber);
+          this.stats.ballsPocketed++;
+        }
+      }
       this.isBreakShot = false;
       this.phase = 'WAITING_FOR_TURN';
       this.statusHeadline = 'Free Play Practice';
@@ -279,6 +279,7 @@ export class MatchManager {
       return { snapshot: this.getSnapshot(), evaluation: null };
     }
 
+    // Evaluate 8-ball eligibility strictly from balls already pocketed BEFORE this shot
     const canShootEightMap: Record<PlayerId, boolean> = {
       player1: canTargetEightBall(this.pocketedSet, this.playerGroups.player1),
       player2: canTargetEightBall(this.pocketedSet, this.playerGroups.player2),
@@ -290,6 +291,16 @@ export class MatchManager {
       playerGroups: { ...this.playerGroups },
       playerCanShootEight: canShootEightMap,
     });
+
+    // Record pocketed object balls into authoritative set after shot evaluation (except cue ball 0)
+    const newlyPocketedObjects: number[] = [];
+    for (const evt of telemetry.pocketEvents) {
+      if (evt.ballNumber !== 0 && !this.pocketedSet.has(evt.ballNumber)) {
+        newlyPocketedObjects.push(evt.ballNumber);
+        this.pocketedSet.add(evt.ballNumber);
+      }
+    }
+    this.stats.ballsPocketed += newlyPocketedObjects.length;
 
     // If 8-ball was pocketed on break and respotted, remove 8 from pocketedSet!
     if (evaluation.respotEightBall) {
@@ -391,7 +402,12 @@ export class MatchManager {
     } else {
       this.phase = 'GROUPS_ASSIGNED';
       this.lastFoulMessage = null;
-      this.statusHeadline = 'Groups Assigned';
+      this.statusHeadline = canTargetEightBall(
+        this.pocketedSet,
+        this.playerGroups[evaluation.nextPlayer],
+      )
+        ? '8-Ball Target'
+        : 'Groups Assigned';
 
       if (evaluation.assignedGroupsNow) {
         const assignedGroup = evaluation.assignedGroupsNow[shooter];

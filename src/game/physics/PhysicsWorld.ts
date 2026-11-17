@@ -486,6 +486,33 @@ export class PhysicsWorld {
     return { x: D.headSpotX, z: 0 };
   }
 
+  /**
+   * Non-colliding kinematic translation used during AI Ball-in-Hand visual glide
+   * so moving across the table never bumps object balls or falsely triggers motion.
+   */
+  public setCueBallVisualGlide(x: number, z: number) {
+    if (!this.initialized) return;
+    const cue = this.balls.get(0);
+    if (!cue) return;
+    const y = TABLE_DIMENSIONS.surfaceY + BALL_SPECS.radius;
+
+    cue.pocketed = false;
+    cue.dropping = false;
+    cue.dropPocketId = null;
+    cue.dropVelY = 0;
+    cue.dropY = y;
+    cue.lastValidX = x;
+    cue.lastValidY = y;
+    cue.lastValidZ = z;
+
+    const collider = this.world.getCollider(cue.colliderHandle);
+    collider?.setCollisionGroups(0);
+    cue.body.setBodyType(RAPIER.RigidBodyType.KinematicPositionBased, true);
+    cue.body.setTranslation({ x, y, z }, true);
+    cue.body.setLinvel({ x: 0, y: 0, z: 0 }, true);
+    cue.body.setAngvel({ x: 0, y: 0, z: 0 }, true);
+  }
+
   public setCueBallPlacement(x: number, z: number) {
     if (!this.initialized) return;
     const cue = this.balls.get(0);
@@ -500,6 +527,8 @@ export class PhysicsWorld {
     cue.lastValidX = x;
     cue.lastValidY = y;
     cue.lastValidZ = z;
+    const collider = this.world.getCollider(cue.colliderHandle);
+    collider?.setCollisionGroups(BALL_COLLISION_GROUPS);
     cue.body.setBodyType(RAPIER.RigidBodyType.Dynamic, true);
     cue.body.setTranslation({ x, y, z }, true);
     cue.body.setLinvel({ x: 0, y: 0, z: 0 }, true);
@@ -656,6 +685,7 @@ export class PhysicsWorld {
     cue.lastValidX = spotX;
     cue.lastValidY = y;
     cue.lastValidZ = spotZ;
+    this.world.getCollider(cue.colliderHandle)?.setCollisionGroups(BALL_COLLISION_GROUPS);
     cue.body.setBodyType(RAPIER.RigidBodyType.Dynamic, true);
     cue.body.setTranslation({ x: spotX, y, z: spotZ }, true);
     cue.body.setLinvel({ x: 0, y: 0, z: 0 }, true);
@@ -677,6 +707,7 @@ export class PhysicsWorld {
       entry.lastValidX = pos.x;
       entry.lastValidY = pos.y;
       entry.lastValidZ = pos.z;
+      this.world.getCollider(entry.colliderHandle)?.setCollisionGroups(BALL_COLLISION_GROUPS);
       entry.body.setBodyType(RAPIER.RigidBodyType.Dynamic, true);
       entry.body.setTranslation({ x: pos.x, y: pos.y, z: pos.z }, true);
       entry.body.setRotation({ x: 0, y: 0, z: 0, w: 1 }, true);
@@ -987,8 +1018,10 @@ export class PhysicsWorld {
       if (entry.pocketed) continue;
       const v = entry.body.linvel();
       const w = entry.body.angvel();
+      const horizSpeed = Math.hypot(v.x, v.z);
       if (
-        Math.hypot(v.x, v.y, v.z) > BALL_SPECS.sleepThreshold ||
+        horizSpeed > BALL_SPECS.sleepThreshold ||
+        Math.abs(v.y) > 0.05 ||
         Math.hypot(w.x, w.y, w.z) > 0.35
       ) {
         return true;
