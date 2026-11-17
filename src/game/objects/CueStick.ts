@@ -363,6 +363,17 @@ export class CueStick {
         this.ringMat.color.setHex(0xfef08a);
         this.buttRingMat.color.setHex(0xfbbf24);
         break;
+      case 'cue_season1_eclipse':
+      case 'cue_season1_solar_apex':
+        this.tipMat.color.setHex(0xd97706);
+        this.ferruleMat.color.setHex(0xfef3c7);
+        this.shaftMat.color.setHex(targetId === 'cue_season1_solar_apex' ? 0xf3d48a : 0xdfe4ee);
+        this.shaftMat.metalness = 0.22;
+        this.shaftMat.roughness = 0.17;
+        this.jointMat.color.setHex(0xfbbf24);
+        this.ringMat.color.setHex(0xfde68a);
+        this.buttRingMat.color.setHex(0xfbbf24);
+        break;
       case 'cue_classic_maple':
       default:
         this.tipMat.color.setHex(0x1b5299);

@@ -14,6 +14,7 @@ export interface EightBallEvaluationContext {
   tableOpen: boolean;
   playerGroups: Record<PlayerId, BallGroup>;
   playerCanShootEight: Record<PlayerId, boolean>;
+  shooterRemainingGroupCount?: number;
 }
 
 export function createEffectiveRuleProfile(
@@ -297,9 +298,11 @@ export function evaluateEightBallShot(
       (e) => getBallCategory(e.ballNumber) === shooterGroup,
     );
     if (ctx.profile.calledShotsEnabled) {
+      const singleRemainingFallback =
+        telemetry.calledShot.targetBall === null && ctx.shooterRemainingGroupCount === 1;
       turnContinues = matchingGroupPots.some(
         (e) =>
-          telemetry.calledShot.targetBall === e.ballNumber &&
+          (telemetry.calledShot.targetBall === e.ballNumber || singleRemainingFallback) &&
           telemetry.calledShot.targetPocket === e.pocketId,
       );
     } else {

@@ -104,7 +104,10 @@ export class VictoryEffects {
       this.haloMat.color.setHex(0x22d3ee);
       this.shockMat.color.setHex(0xec4899);
       this.emberMat.color.setHex(0x67e8f9);
-    } else if (this.currentId === 'victory_championship_spotlight') {
+    } else if (
+      this.currentId === 'victory_championship_spotlight' ||
+      this.currentId === 'victory_season1_solar_crown'
+    ) {
       this.haloMat.color.setHex(0xfef08a);
       this.shockMat.color.setHex(0xf59e0b);
       this.emberMat.color.setHex(0xfde047);

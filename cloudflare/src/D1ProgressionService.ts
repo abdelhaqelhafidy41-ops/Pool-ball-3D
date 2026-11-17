@@ -39,6 +39,7 @@ import {
 import type { MatchHistoryRecord, OnlineAvatarId } from '../../src/multiplayer/shared/protocol';
 import { ANTICHEAT_SCHEMA_STATEMENTS } from './AntiCheatService';
 import { EconomyService } from './EconomyService';
+import { BattlePassService } from './BattlePassService';
 import { RANKED_SEASON_SCHEMA_STATEMENTS, RankedSeasonService } from './RankedSeasonService';
 
 interface PlayerDbRow {
@@ -1412,6 +1413,27 @@ export class D1ProgressionService {
         unlockedAchievementIds: unlockedList.map((a) => a.id),
         endedAtMs: input.endedAtMs,
       });
+
+      try {
+        await new BattlePassService(this.db).recordOnlineMatchProgress({
+          matchId: input.matchId,
+          playerId: row.player_id,
+          matchType: input.matchType,
+          won,
+          rankedValid: rankedApplied,
+          totalShotsInMatch: input.totalShots,
+          playerShotsTaken: sideTel.shotsTaken,
+          ballsPocketed: sideTel.ballsPocketed,
+          foulsCommitted: sideTel.fouls,
+          legalEightBallWin: sideTel.legalEightBallWin,
+          durationSec: input.telemetry.durationSec,
+          playerEloBefore: row.elo,
+          opponentEloBefore: opponentRow.elo,
+          nowMs: input.endedAtMs,
+        });
+      } catch (err) {
+        console.error('[D1ProgressionService] BattlePass update failed:', err);
+      }
 
       const seasonBefore =
         role === 'player1' ? seasonStatsUpdate?.player1Before : seasonStatsUpdate?.player2Before;

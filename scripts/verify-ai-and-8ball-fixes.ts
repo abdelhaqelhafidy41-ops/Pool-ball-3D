@@ -1151,6 +1151,239 @@ async function runTests() {
     return 'Verified end-to-end AI-mode 7th->8th physics win + ServerMatchManager + WorkerMatchManager parity';
   });
 
+  await test('8B-11', 'Player 2 (PvP & AI) retains turn after pocketing 7th ball and schedules 8-ball follow-up', async () => {
+    // 11a. PvP Player 2 clears final stripe (15)
+    const mmP2 = new MatchManager({
+      opponentType: 'pvp',
+      ruleProfileId: 'casual',
+      calledShotsEnabled: false,
+      startingBreaker: 'player1',
+    });
+    mmP2.startMatch();
+    // Break without pocket -> turn switches to player2
+    mmP2.beginShot();
+    mmP2.settleShot({
+      shotId: 1,
+      isBreakShot: true,
+      shooter: 'player1',
+      calledShot: { targetBall: null, targetPocket: null },
+      firstBallContacted: 1,
+      allBallsContacted: [1],
+      pocketEvents: [],
+      cueBallPocketed: false,
+      railContactBalls: [1, 2, 3, 4],
+      anyBallContactedRail: true,
+      settledPositions: [],
+    });
+    assert.equal(mmP2.getActivePlayer(), 'player2');
+
+    // Player 2 assigns stripes by pocketing 9..14
+    for (let i = 0; i < 6; i++) {
+      const b = 9 + i;
+      mmP2.beginShot();
+      mmP2.settleShot({
+        shotId: 2 + i,
+        isBreakShot: false,
+        shooter: 'player2',
+        calledShot: { targetBall: b, targetPocket: 'corner-br' },
+        firstBallContacted: b,
+        allBallsContacted: [b],
+        pocketEvents: [pe(2 + i, b, 'corner-br', 1)],
+        cueBallPocketed: false,
+        railContactBalls: [],
+        anyBallContactedRail: false,
+        settledPositions: [],
+      });
+    }
+    assert.equal(mmP2.getActivePlayer(), 'player2');
+    assert.equal(mmP2.canPlayerShootEight('player2'), false);
+
+    // Player 2 pockets 7th stripe (#15)
+    mmP2.beginShot();
+    const { snapshot: p2After7, evaluation: p2Eval } = mmP2.settleShot({
+      shotId: 8,
+      isBreakShot: false,
+      shooter: 'player2',
+      calledShot: { targetBall: 15, targetPocket: 'corner-tl' },
+      firstBallContacted: 15,
+      allBallsContacted: [15],
+      pocketEvents: [pe(8, 15, 'corner-tl', 1)],
+      cueBallPocketed: false,
+      railContactBalls: [],
+      anyBallContactedRail: false,
+      settledPositions: [],
+    });
+    assert.equal(p2Eval?.isLegal, true);
+    assert.equal(p2Eval?.turnContinues, true);
+    assert.equal(p2After7.activePlayer, 'player2', 'Player 2 must keep turn after clearing 7th ball');
+    assert.equal(p2After7.statusHeadline, '8-Ball Target');
+    assert.deepEqual(
+      getLegalTargetBalls(new Set(p2After7.pocketedNumbers), p2After7.tableOpen, p2After7.playerGroups.player2),
+      [8],
+    );
+
+    // 11b. AI mode: AI (player2) pockets its 7th stripe and schedules follow-up 8-ball strike
+    const mmAiP2 = new MatchManager({
+      opponentType: 'ai',
+      aiDifficulty: 'pro',
+      aiThinkingSpeed: 'fast',
+      ruleProfileId: 'casual',
+      calledShotsEnabled: false,
+      startingBreaker: 'player1',
+    });
+    mmAiP2.startMatch();
+    mmAiP2.beginShot();
+    mmAiP2.settleShot({
+      shotId: 101,
+      isBreakShot: true,
+      shooter: 'player1',
+      calledShot: { targetBall: null, targetPocket: null },
+      firstBallContacted: 1,
+      allBallsContacted: [1],
+      pocketEvents: [],
+      cueBallPocketed: false,
+      railContactBalls: [1, 2, 3, 4],
+      anyBallContactedRail: true,
+      settledPositions: [],
+    });
+    for (let i = 0; i < 6; i++) {
+      const b = 9 + i;
+      mmAiP2.beginShot();
+      mmAiP2.settleShot({
+        shotId: 102 + i,
+        isBreakShot: false,
+        shooter: 'player2',
+        calledShot: { targetBall: b, targetPocket: 'corner-br' },
+        firstBallContacted: b,
+        allBallsContacted: [b],
+        pocketEvents: [pe(102 + i, b, 'corner-br', 1)],
+        cueBallPocketed: false,
+        railContactBalls: [],
+        anyBallContactedRail: false,
+        settledPositions: [],
+      });
+    }
+    mmAiP2.beginShot();
+    const { snapshot: aiAfter7 } = mmAiP2.settleShot({
+      shotId: 108,
+      isBreakShot: false,
+      shooter: 'player2',
+      calledShot: { targetBall: 15, targetPocket: 'corner-tl' },
+      firstBallContacted: 15,
+      allBallsContacted: [15],
+      pocketEvents: [pe(108, 15, 'corner-tl', 1)],
+      cueBallPocketed: false,
+      railContactBalls: [],
+      anyBallContactedRail: false,
+      settledPositions: [],
+    });
+    assert.equal(aiAfter7.activePlayer, 'player2', 'AI must retain turn after pocketing its 7th ball');
+    assert.equal(mmAiP2.isActivePlayerAi(), true);
+
+    setupClearBoard(physics, [
+      { number: 0, x: -0.45, z: -0.22 },
+      { number: 8, x: -0.88, z: -0.44 },
+      { number: 4, x: 0.4, z: 0.25 },
+    ]);
+    useGameStore.getState().setScreen('playing');
+    useGameStore.getState().syncFromMatchSnapshot(aiAfter7);
+    let aiFollowUpFired = 0;
+    const aiCtrl = new AITurnController(mmAiP2, physics, {
+      isDisposed: () => false,
+      onExecuteStrike: () => {
+        aiFollowUpFired++;
+      },
+    });
+    await waitForStrike(() => aiCtrl.scheduleTurnIfNeeded(), () => aiFollowUpFired, 1, 8000);
+    assert.equal(aiFollowUpFired, 1, 'AI must execute follow-up 8-ball strike after clearing its 7th ball');
+    aiCtrl.dispose();
+
+    return 'Player 2 (PvP & AI) retained turn cleanly after 7th ball and AI scheduled 8-ball shot';
+  });
+
+  await test('8B-12', 'Premature 8-ball loss, duplicate settleShot idempotency, and WPA pocket-only call on last group ball', () => {
+    // 12a. Premature 8-ball loss while remaining group ball (7) is still on table
+    const mmPremature = setupLocalMatchWithAssignedGroup('solids', [7]);
+    mmPremature.beginShot();
+    const prematureRes = mmPremature.settleShot({
+      shotId: 201,
+      isBreakShot: false,
+      shooter: 'player1',
+      calledShot: { targetBall: 7, targetPocket: 'corner-br' },
+      firstBallContacted: 7,
+      allBallsContacted: [7, 8],
+      pocketEvents: [pe(201, 8, 'corner-tl', 1)],
+      cueBallPocketed: false,
+      railContactBalls: [],
+      anyBallContactedRail: false,
+      settledPositions: [],
+    });
+    assert.equal(prematureRes.evaluation?.isLegal, false);
+    assert.equal(prematureRes.snapshot.phase, 'GAME_OVER');
+    assert.equal(prematureRes.snapshot.winner, 'player2', 'Premature 8-ball pot with 1 group ball remaining must lose');
+
+    // 12b. Duplicate settleShot idempotency guard: second call must not mutate activePlayer or toggle turn
+    const mmDup = setupLocalMatchWithAssignedGroup('solids', [7]);
+    mmDup.beginShot();
+    const firstSettle = mmDup.settleShot({
+      shotId: 202,
+      isBreakShot: false,
+      shooter: 'player1',
+      calledShot: { targetBall: 7, targetPocket: 'corner-br' },
+      firstBallContacted: 7,
+      allBallsContacted: [7],
+      pocketEvents: [pe(202, 7, 'corner-br', 1)],
+      cueBallPocketed: false,
+      railContactBalls: [],
+      anyBallContactedRail: false,
+      settledPositions: [],
+    });
+    assert.equal(firstSettle.snapshot.activePlayer, 'player1');
+    const secondSettle = mmDup.settleShot({
+      shotId: 202,
+      isBreakShot: false,
+      shooter: 'player1',
+      calledShot: { targetBall: 7, targetPocket: 'corner-br' },
+      firstBallContacted: 7,
+      allBallsContacted: [7],
+      pocketEvents: [pe(202, 7, 'corner-br', 1)],
+      cueBallPocketed: false,
+      railContactBalls: [],
+      anyBallContactedRail: false,
+      settledPositions: [],
+    });
+    assert.equal(secondSettle.evaluation, null, 'Duplicate settleShot must return evaluation=null');
+    assert.equal(secondSettle.snapshot.activePlayer, 'player1', 'Duplicate settleShot must never change activePlayer');
+
+    // 12c. Strict Called (WPA) mode: pocket-only call (targetBall: null, targetPocket: 'corner-br') on last remaining ball
+    const mmWpaPocketOnly = setupLocalMatchWithAssignedGroup('solids', [7], { calledShotsEnabled: true });
+    mmWpaPocketOnly.setCalledShot(null, 'corner-br');
+    mmWpaPocketOnly.beginShot();
+    const wpaRes = mmWpaPocketOnly.settleShot({
+      shotId: 203,
+      isBreakShot: false,
+      shooter: 'player1',
+      calledShot: { targetBall: null, targetPocket: 'corner-br' },
+      firstBallContacted: 7,
+      allBallsContacted: [7],
+      pocketEvents: [pe(203, 7, 'corner-br', 1)],
+      cueBallPocketed: false,
+      railContactBalls: [],
+      anyBallContactedRail: false,
+      settledPositions: [],
+    });
+    assert.equal(wpaRes.evaluation?.isLegal, true);
+    assert.equal(
+      wpaRes.evaluation?.turnContinues,
+      true,
+      'WPA pocket-only call on sole remaining group ball must retain turn',
+    );
+    assert.equal(wpaRes.snapshot.activePlayer, 'player1');
+    assert.equal(mmWpaPocketOnly.canPlayerShootEight('player1'), true);
+
+    return 'Verified premature 8-ball loss, duplicate settleShot idempotency, and WPA pocket-only last-ball call';
+  });
+
   physics.dispose();
 
   const failed = results.filter((r) => !r.passed);

@@ -37,6 +37,8 @@ const VALID_AVATARS = new Set<OnlineAvatarId>([
   'avatar_neon_phoenix',
   'avatar_golden_crown',
   'avatar_void_samurai',
+  'avatar_eclipse_grandmaster',
+  'avatar_solar_sovereign',
 ]);
 
 function readIntVar(raw: string | undefined, fallback: number, min = 1): number {

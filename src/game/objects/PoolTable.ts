@@ -781,7 +781,10 @@ export class PoolTable {
       return;
     }
 
-    if (effectiveDecor === 'decor_championship_crest') {
+    if (
+      effectiveDecor === 'decor_championship_crest' ||
+      effectiveDecor === 'decor_season1_obsidian_gold'
+    ) {
       const goldMat = new THREE.MeshPhysicalMaterial({
         color: 0xfbbf24,
         metalness: 0.96,

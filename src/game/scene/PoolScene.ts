@@ -17,6 +17,7 @@ import { ReplayAnalysisOverlay } from '../replay/ReplayAnalysisOverlay';
 import { formatCollisionLabel, ReplayController } from '../replay/ReplayController';
 import { ShotRecorder } from '../replay/ShotRecorder';
 import type { ReplayBallFrame, ReplaySpeed } from '../replay/types';
+import { getLegalTargetBalls } from '../rules/BallGroupManager';
 import { MatchManager } from '../rules/MatchManager';
 import { generateOfficialEightBallRack } from '../rules/RackGenerator';
 import type { MatchConfig, PocketId } from '../rules/types';
@@ -876,7 +877,14 @@ export class PoolScene {
         if (Math.hypot(hit.x - pocket.x, hit.z - pocket.z) <= pocket.radius * 1.15) {
           soundEngine.unlock();
           soundEngine.playUiClick();
-          this.setCalledShot(store.calledShot.targetBall, pocket.id as PocketId);
+          const legalBalls = getLegalTargetBalls(
+            store.pocketedNumbers,
+            store.tableOpen,
+            store.playerGroups[store.activePlayer],
+          );
+          const autoTargetBall =
+            store.calledShot.targetBall ?? (legalBalls.length === 1 ? legalBalls[0] : null);
+          this.setCalledShot(autoTargetBall, pocket.id as PocketId);
           return;
         }
       }

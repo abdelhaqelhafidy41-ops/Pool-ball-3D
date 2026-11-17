@@ -70,6 +70,10 @@ export type CoinTransactionReason =
   | 'achievement_unlock'
   | 'ai_match_win'
   | 'daily_login'
+  | 'mission_reward'
+  | 'weekly_challenge_reward'
+  | 'battle_pass_reward'
+  | 'battle_pass_premium'
   | 'tournament_reward'
   | 'tournament_entry'
   | 'tournament_refund'
@@ -287,6 +291,30 @@ export const COSMETIC_CATALOG: CosmeticItemDef[] = [
     description: 'Hand-engraved imperial crimson lacquer crowned with filigree gold bands.',
     previewColors: ['#dc2626', '#fbbf24', '#16090b'],
   },
+  {
+    id: 'cue_season1_eclipse',
+    name: 'Eclipse Sovereign Cue',
+    category: 'cue',
+    subCategory: 'Battle Pass Season I',
+    rarity: 'epic',
+    price: 0,
+    isStarter: false,
+    isRewardExclusive: true,
+    description: 'Obsidian carbon barrel inlaid with molten eclipse gold rings. Unlocked via Battle Pass.',
+    previewColors: ['#f59e0b', '#0d1119', '#fde68a'],
+  },
+  {
+    id: 'cue_season1_solar_apex',
+    name: 'Solar Apex Cue',
+    category: 'cue',
+    subCategory: 'Battle Pass Season I',
+    rarity: 'legendary',
+    price: 0,
+    isStarter: false,
+    isRewardExclusive: true,
+    description: 'Tier 30 Grandmaster Battle Pass cue forged with solar gold lattice and obsidian grip.',
+    previewColors: ['#fbbf24', '#1a1206', '#fef08a'],
+  },
 
   // B. Ball Skins
   {
@@ -366,6 +394,18 @@ export const COSMETIC_CATALOG: CosmeticItemDef[] = [
     description: 'Living iridescent emissive shimmer cycling subtly across every ball surface.',
     previewColors: ['#34d399', '#818cf8', '#f472b6'],
   },
+  {
+    id: 'ball_season1_eclipse',
+    name: 'Eclipse Obsidian Balls',
+    category: 'ball',
+    subCategory: 'Battle Pass Season I',
+    rarity: 'epic',
+    price: 0,
+    isStarter: false,
+    isRewardExclusive: true,
+    description: 'Matte obsidian cores framed by molten gold rings. Exclusive Battle Pass reward.',
+    previewColors: ['#0f141d', '#f59e0b', '#fef3c7'],
+  },
 
   // C. Pool Tables
   {
@@ -434,6 +474,18 @@ export const COSMETIC_CATALOG: CosmeticItemDef[] = [
     description: 'Sleek matte obsidian chassis illuminated by razor-sharp cyan perimeter neon.',
     previewColors: ['#0c222d', '#090d14', '#22d3ee'],
   },
+  {
+    id: 'table_season1_champions',
+    name: 'Midnight Eclipse Table',
+    category: 'table',
+    subCategory: 'Battle Pass Season I',
+    rarity: 'legendary',
+    price: 0,
+    isStarter: false,
+    isRewardExclusive: true,
+    description: 'Championship midnight slate cloth with gilded eclipse rails. Exclusive Battle Pass reward.',
+    previewColors: ['#18202c', '#0b0e14', '#fbbf24'],
+  },
 
   // D1. Profile Avatars (starter + premium)
   ...STARTER_AVATAR_ITEMS,
@@ -472,6 +524,32 @@ export const COSMETIC_CATALOG: CosmeticItemDef[] = [
     description: 'High-contrast violet crest signaling unmatched break discipline.',
     previewColors: ['#c084fc', '#140f24', '#f472b6'],
     glyph: '⚔',
+  },
+  {
+    id: 'avatar_eclipse_grandmaster',
+    name: 'Eclipse Master Avatar',
+    category: 'avatar',
+    subCategory: 'Battle Pass Season I',
+    rarity: 'rare',
+    price: 0,
+    isStarter: false,
+    isRewardExclusive: true,
+    description: 'Exclusive Season I Free Track milestone emblem.',
+    previewColors: ['#f59e0b', '#0d131c', '#fef3c7'],
+    glyph: '◐',
+  },
+  {
+    id: 'avatar_solar_sovereign',
+    name: 'Solar Sovereign Avatar',
+    category: 'avatar',
+    subCategory: 'Battle Pass Season I',
+    rarity: 'legendary',
+    price: 0,
+    isStarter: false,
+    isRewardExclusive: true,
+    description: 'Radiant gilded sun crest reserved for Premium Battle Pass contenders.',
+    previewColors: ['#fbbf24', '#1a1106', '#fef08a'],
+    glyph: '☀',
   },
 
   // D2. Nameplate Designs
@@ -529,6 +607,18 @@ export const COSMETIC_CATALOG: CosmeticItemDef[] = [
     isStarter: false,
     description: 'Dual-tone cyan and magenta futuristic nameplate frame.',
     previewColors: ['#22d3ee', '#ec4899', '#090d16'],
+  },
+  {
+    id: 'nameplate_season1_eclipse',
+    name: 'Eclipse Gold Nameplate',
+    category: 'nameplate',
+    subCategory: 'Battle Pass Season I',
+    rarity: 'epic',
+    price: 0,
+    isStarter: false,
+    isRewardExclusive: true,
+    description: 'Gilded obsidian Season I championship nameplate unlocked via Battle Pass.',
+    previewColors: ['#fbbf24', '#120f08', '#fef08a'],
   },
 
   // D3. Player Badges
@@ -631,6 +721,32 @@ export const COSMETIC_CATALOG: CosmeticItemDef[] = [
     previewColors: ['#fbbf24', '#2b1b06', '#fef08a'],
     glyph: '🏆',
   },
+  {
+    id: 'badge_season1_challenger',
+    name: 'Season I Challenger',
+    category: 'badge',
+    subCategory: 'Battle Pass Season I',
+    rarity: 'rare',
+    price: 0,
+    isStarter: false,
+    isRewardExclusive: true,
+    description: 'Earned on the Season I Battle Pass Free Track for dedicated play.',
+    previewColors: ['#38bdf8', '#0c1d2e', '#bae6fd'],
+    glyph: '◈',
+  },
+  {
+    id: 'badge_season1_sovereign',
+    name: 'Season I Sovereign',
+    category: 'badge',
+    subCategory: 'Battle Pass Season I',
+    rarity: 'legendary',
+    price: 0,
+    isStarter: false,
+    isRewardExclusive: true,
+    description: 'Prestigious Season I Sovereign crest from the Premium Battle Pass.',
+    previewColors: ['#fbbf24', '#261705', '#fef08a'],
+    glyph: '✦',
+  },
 
   // D4. Victory Animations
   {
@@ -676,6 +792,18 @@ export const COSMETIC_CATALOG: CosmeticItemDef[] = [
     isStarter: false,
     description: 'Dual championship spotlights with rising gold-and-platinum starlight pillars.',
     previewColors: ['#fde047', '#e2e8f0', '#0b1019'],
+  },
+  {
+    id: 'victory_season1_solar_crown',
+    name: 'Solar Crown Finale',
+    category: 'victory',
+    subCategory: 'Battle Pass Season I',
+    rarity: 'legendary',
+    price: 0,
+    isStarter: false,
+    isRewardExclusive: true,
+    description: 'Radiant golden-amber solar shockwave rising above the pocketed 8-ball.',
+    previewColors: ['#fbbf24', '#f59e0b', '#0d0a04'],
   },
 
   // D5. Table Decorations
@@ -733,6 +861,18 @@ export const COSMETIC_CATALOG: CosmeticItemDef[] = [
     isStarter: false,
     description: 'Dual-tone gold & obsidian apron filigree with championship floor emblem.',
     previewColors: ['#fbbf24', '#0b1019', '#38bdf8'],
+  },
+  {
+    id: 'decor_season1_obsidian_gold',
+    name: 'Obsidian Gold Rail Crest',
+    category: 'decoration',
+    subCategory: 'Battle Pass Season I',
+    rarity: 'epic',
+    price: 0,
+    isStarter: false,
+    isRewardExclusive: true,
+    description: 'Signature Season I gilded apron rail trim and corner pocket inlays.',
+    previewColors: ['#f59e0b', '#14110b', '#fde68a'],
   },
 ];
 
@@ -1012,6 +1152,12 @@ export function getNameplateVisualClass(nameplateId: string | null | undefined):
         bgClass: 'bg-[#0b1526]/85',
         accentHex: '#22d3ee',
       };
+    case 'nameplate_season1_eclipse':
+      return {
+        borderClass: 'border-amber-400/80 shadow-[0_0_18px_-5px_rgba(251,191,36,0.55)]',
+        bgClass: 'bg-[#171209]/90',
+        accentHex: '#fbbf24',
+      };
     default:
       return {
         borderClass: 'border-white/12',
@@ -1075,6 +1221,20 @@ export function getBadgeVisualMeta(badgeId: string | null | undefined): {
         id: badgeId,
         shortLabel: 'CHAMP',
         glyph: '🏆',
+        className: 'border-amber-400/80 bg-amber-500/25 text-amber-200',
+      };
+    case 'badge_season1_challenger':
+      return {
+        id: badgeId,
+        shortLabel: 'S1',
+        glyph: '◈',
+        className: 'border-sky-400/55 bg-sky-500/15 text-sky-200',
+      };
+    case 'badge_season1_sovereign':
+      return {
+        id: badgeId,
+        shortLabel: 'S1 PRO',
+        glyph: '✦',
         className: 'border-amber-400/80 bg-amber-500/25 text-amber-200',
       };
     default:

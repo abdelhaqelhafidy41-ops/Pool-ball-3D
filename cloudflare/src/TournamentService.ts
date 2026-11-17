@@ -1,6 +1,7 @@
 import { sanitizeAvatarId, sanitizeDisplayName } from './config';
 import { D1ProgressionService, type ProgressionSqlDb } from './D1ProgressionService';
 import { EconomyService } from './EconomyService';
+import { BattlePassService } from './BattlePassService';
 import type { OnlineAvatarId } from '../../src/multiplayer/shared/protocol';
 import {
   buildSingleEliminationBracket,
@@ -2039,6 +2040,17 @@ export class TournamentService {
               nowMs,
             );
           }
+        }
+
+        try {
+          await new BattlePassService(this.db).recordTournamentFinish({
+            tournamentId: row.tournament_id,
+            playerId: p.playerId,
+            placement: placementType,
+            nowMs,
+          });
+        } catch (err) {
+          console.error('[TournamentService] BattlePass tournament finish failed:', err);
         }
       }
     }

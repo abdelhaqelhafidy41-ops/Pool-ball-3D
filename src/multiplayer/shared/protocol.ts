@@ -46,7 +46,9 @@ export type StarterAvatarId =
 export type StoreAvatarId =
   | 'avatar_neon_phoenix'
   | 'avatar_golden_crown'
-  | 'avatar_void_samurai';
+  | 'avatar_void_samurai'
+  | 'avatar_eclipse_grandmaster'
+  | 'avatar_solar_sovereign';
 
 export type OnlineAvatarId = StarterAvatarId | StoreAvatarId;
 

@@ -64,6 +64,10 @@ import type {
   PlayerModerationStatus,
   PlayerSeasonStanding,
 } from '../multiplayer/shared/ranked';
+import type {
+  AiMatchProgressResponse,
+  BattlePassOverview,
+} from '../multiplayer/shared/battlePass';
 
 const PROFILE_STORAGE_KEY = 'ultimate_pool_3d_online_profile_v1';
 const COSMETICS_STORAGE_KEY = 'ultimate_pool_3d_cosmetics_v1';
@@ -158,6 +162,23 @@ export type SocialTab = 'friends' | 'search' | 'requests' | 'messages' | 'blocke
 export type StoreTab = 'store' | 'inventory' | 'daily' | 'ledger';
 export type StoreCategoryFilter = 'all' | CosmeticCategory;
 export type TournamentTab = 'discover' | 'bracket' | 'leaderboard' | 'career' | 'admin';
+export type BattlePassTab = 'pass' | 'daily' | 'weekly' | 'stats';
+
+export type ProgressionNotificationKind =
+  | 'mission_completed'
+  | 'weekly_completed'
+  | 'tier_unlocked'
+  | 'reward_claimed'
+  | 'season_started'
+  | 'season_ending_soon';
+
+export interface ProgressionNotificationItem {
+  id: string;
+  kind: ProgressionNotificationKind;
+  title: string;
+  detail: string;
+  createdAtMs: number;
+}
 
 export interface TournamentMatchAlert {
   tournamentId: string;
@@ -333,6 +354,17 @@ export interface GameState {
   playerSeasonStanding: PlayerSeasonStanding | null;
   moderationStatus: PlayerModerationStatus | null;
 
+  // Daily Missions, Weekly Challenges & Battle Pass (Phase 11)
+  matchPlayer1BallsPocketed: number;
+  matchPlayer1Fouls: number;
+  matchPlayer1LegalEightBallWin: boolean;
+  battlePassOverview: BattlePassOverview | null;
+  battlePassModalOpen: boolean;
+  battlePassTab: BattlePassTab;
+  battlePassNotice: { type: 'ok' | 'err'; text: string } | null;
+  lastAiBattlePassClaim: AiMatchProgressResponse | null;
+  progressionNotifications: ProgressionNotificationItem[];
+
   // Actions
   setScreen: (screen: GameScreen) => void;
   setSettingsOpen: (open: boolean) => void;
@@ -484,6 +516,18 @@ export interface GameState {
   ) => void;
   setPlayerSeasonStanding: (standing: PlayerSeasonStanding | null) => void;
   setModerationStatus: (status: PlayerModerationStatus | null) => void;
+
+  // Daily Missions, Weekly Challenges & Battle Pass Actions (Phase 11)
+  openBattlePassModal: (tab?: BattlePassTab) => void;
+  closeBattlePassModal: () => void;
+  setBattlePassTab: (tab: BattlePassTab) => void;
+  setBattlePassOverview: (overview: BattlePassOverview | null) => void;
+  setBattlePassNotice: (notice: { type: 'ok' | 'err'; text: string } | null) => void;
+  setLastAiBattlePassClaim: (claim: AiMatchProgressResponse | null) => void;
+  pushProgressionNotification: (
+    item: Omit<ProgressionNotificationItem, 'id' | 'createdAtMs'>,
+  ) => void;
+  dismissProgressionNotification: (id: string) => void;
 }
 
 export function canLocalPlayerAct(state: GameState): boolean {
@@ -665,6 +709,16 @@ export const useGameStore = create<GameState>((set) => ({
   playerSeasonStanding: null,
   moderationStatus: null,
 
+  matchPlayer1BallsPocketed: 0,
+  matchPlayer1Fouls: 0,
+  matchPlayer1LegalEightBallWin: false,
+  battlePassOverview: null,
+  battlePassModalOpen: false,
+  battlePassTab: 'pass',
+  battlePassNotice: null,
+  lastAiBattlePassClaim: null,
+  progressionNotifications: [],
+
   setScreen: (screen) => set({ screen }),
   setSettingsOpen: (settingsOpen) => set({ settingsOpen }),
   setLoading: (isLoading) => set({ isLoading }),
@@ -727,6 +781,10 @@ export const useGameStore = create<GameState>((set) => ({
       aiMatchClientId: makeClientMatchId(),
       aiMatchStartedAtMs: Date.now(),
       lastAiRewardClaim: null,
+      lastAiBattlePassClaim: null,
+      matchPlayer1BallsPocketed: 0,
+      matchPlayer1Fouls: 0,
+      matchPlayer1LegalEightBallWin: false,
     }),
   updateSettings: (partial) =>
     set((state) => ({
@@ -752,6 +810,9 @@ export const useGameStore = create<GameState>((set) => ({
       matchBanner: snapshot.banner,
       matchStats: snapshot.stats,
       shotCount: snapshot.totalMatchShots,
+      matchPlayer1BallsPocketed: snapshot.player1BallsPocketed,
+      matchPlayer1Fouls: snapshot.player1Fouls,
+      matchPlayer1LegalEightBallWin: snapshot.player1LegalEightBallWin,
     }),
 
   updateMatchConfig: (partial) =>
@@ -1326,4 +1387,35 @@ export const useGameStore = create<GameState>((set) => ({
   setSeasonsData: (activeSeason, seasonsList) => set({ activeSeason, seasonsList }),
   setPlayerSeasonStanding: (playerSeasonStanding) => set({ playerSeasonStanding }),
   setModerationStatus: (moderationStatus) => set({ moderationStatus }),
+
+  openBattlePassModal: (tab) =>
+    set((state) => ({
+      battlePassModalOpen: true,
+      battlePassTab: tab ?? state.battlePassTab,
+      battlePassNotice: null,
+    })),
+  closeBattlePassModal: () => set({ battlePassModalOpen: false, battlePassNotice: null }),
+  setBattlePassTab: (battlePassTab) => set({ battlePassTab, battlePassNotice: null }),
+  setBattlePassOverview: (battlePassOverview) => set({ battlePassOverview }),
+  setBattlePassNotice: (battlePassNotice) => set({ battlePassNotice }),
+  setLastAiBattlePassClaim: (lastAiBattlePassClaim) => set({ lastAiBattlePassClaim }),
+  pushProgressionNotification: (item) =>
+    set((state) => {
+      const deduped = state.progressionNotifications.some(
+        (existing) => existing.kind === item.kind && existing.title === item.title,
+      );
+      if (deduped) return state;
+      const next: ProgressionNotificationItem = {
+        ...item,
+        id: `prog_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+        createdAtMs: Date.now(),
+      };
+      return {
+        progressionNotifications: [...state.progressionNotifications.slice(-3), next],
+      };
+    }),
+  dismissProgressionNotification: (id) =>
+    set((state) => ({
+      progressionNotifications: state.progressionNotifications.filter((n) => n.id !== id),
+    })),
 }));

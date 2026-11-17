@@ -89,6 +89,17 @@ const TABLE_SKIN_SPECS: Record<string, TableSkinVisualSpec> = {
     woodFinish: 'obsidian_neon',
     trimMetal: 'cyan_chrome',
   },
+  table_season1_champions: {
+    id: 'table_season1_champions',
+    clothBase: '#161c26',
+    clothHighlight: '#1e2736',
+    clothShadow: '#0c1018',
+    cushionHex: 0x161c26,
+    markingColor: 'rgba(251, 191, 36, 0.56)',
+    spotColor: 'rgba(254, 240, 138, 0.85)',
+    woodFinish: 'ebony',
+    trimMetal: 'gold',
+  },
 };
 
 export function getTableSkinVisualSpec(
@@ -167,7 +178,7 @@ function buildFeltTextureSetFromSpec(
     ctx.strokeStyle = 'rgba(34, 211, 238, 0.14)';
     ctx.lineWidth = 2;
     ctx.strokeRect(18, 18, width - 36, height - 36);
-  } else if (spec.id === 'table_royal_gold') {
+  } else if (spec.id === 'table_royal_gold' || spec.id === 'table_season1_champions') {
     ctx.strokeStyle = 'rgba(251, 191, 36, 0.24)';
     ctx.lineWidth = 2.5;
     ctx.strokeRect(18, 18, width - 36, height - 36);
@@ -386,9 +397,22 @@ export function createBallTexture(
   const isGolden = ballSkinId === 'ball_golden';
   const isCrystal = ballSkinId === 'ball_crystal';
   const isAurora = ballSkinId === 'ball_aurora_chroma';
+  const isEclipse = ballSkinId === 'ball_season1_eclipse';
 
   if (def.number === 0) {
-    if (isNeon) {
+    if (isEclipse) {
+      ctx.fillStyle = '#0f141d';
+      ctx.fillRect(0, 0, width, height);
+      ctx.strokeStyle = '#f59e0b';
+      ctx.lineWidth = 5;
+      ctx.strokeRect(0, height * 0.5 - 6, width, 12);
+      ctx.fillStyle = '#fbbf24';
+      for (const uFrac of [0.125, 0.375, 0.625, 0.875]) {
+        ctx.beginPath();
+        ctx.arc(width * uFrac, height * 0.5, 11, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    } else if (isNeon) {
       ctx.fillStyle = '#0e1726';
       ctx.fillRect(0, 0, width, height);
       ctx.strokeStyle = '#22d3ee';
@@ -483,13 +507,15 @@ export function createBallTexture(
     // Object balls 1..15
     const baseFill = isNeon
       ? '#0a0f1a'
-      : isGolden
-        ? '#f3cf72'
-        : isCrystal
-          ? '#e0f2fe'
-          : isMetallic
-            ? '#d8e0ea'
-            : ivory;
+      : isEclipse
+        ? '#0f141d'
+        : isGolden
+          ? '#f3cf72'
+          : isCrystal
+            ? '#e0f2fe'
+            : isMetallic
+              ? '#d8e0ea'
+              : ivory;
     ctx.fillStyle = baseFill;
     ctx.fillRect(0, 0, width, height);
 
@@ -540,6 +566,12 @@ export function createBallTexture(
         sg.addColorStop(1, def.color);
         ctx.fillStyle = sg;
         ctx.fillRect(0, height * 0.5 - bandHalfHeight, width, bandHalfHeight * 2);
+      } else if (isEclipse) {
+        ctx.fillStyle = def.color;
+        ctx.fillRect(0, height * 0.5 - bandHalfHeight + 8, width, bandHalfHeight * 2 - 16);
+        ctx.fillStyle = '#fbbf24';
+        ctx.fillRect(0, height * 0.5 - bandHalfHeight, width, 8);
+        ctx.fillRect(0, height * 0.5 + bandHalfHeight - 8, width, 8);
       } else if (isAurora) {
         const g = ctx.createLinearGradient(0, height * 0.5 - bandHalfHeight, width, height * 0.5 + bandHalfHeight);
         g.addColorStop(0, def.color);
@@ -589,6 +621,15 @@ export function createBallTexture(
         cg.addColorStop(1, def.color);
         ctx.fillStyle = cg;
         ctx.fillRect(0, 0, width, height);
+      } else if (isEclipse) {
+        const eg = ctx.createLinearGradient(0, 0, width, height);
+        eg.addColorStop(0, '#0f141d');
+        eg.addColorStop(0.5, def.number === 8 ? '#1c1917' : def.color);
+        eg.addColorStop(1, '#0f141d');
+        ctx.fillStyle = eg;
+        ctx.fillRect(0, 0, width, height);
+        ctx.fillStyle = '#fbbf24';
+        ctx.fillRect(0, height * 0.5 - 6, width, 12);
       } else if (isAurora) {
         const g = ctx.createLinearGradient(0, 0, width, height);
         g.addColorStop(0, def.color);
@@ -826,6 +867,28 @@ export function createCueButtTexture(
       ctx.closePath();
       ctx.fill();
     }
+  } else if (cueSkinId === 'cue_season1_eclipse' || cueSkinId === 'cue_season1_solar_apex') {
+    const isApex = cueSkinId === 'cue_season1_solar_apex';
+    ctx.fillStyle = isApex ? '#161006' : '#0c1018';
+    ctx.fillRect(0, 0, width, height);
+    ctx.fillStyle = isApex ? '#fbbf24' : '#d97706';
+    for (let i = 0; i < 4; i++) {
+      const cx = (i + 0.5) * (width / 4);
+      ctx.beginPath();
+      ctx.moveTo(cx - 42, 0);
+      ctx.lineTo(cx, 194);
+      ctx.lineTo(cx + 42, 0);
+      ctx.closePath();
+      ctx.fill();
+    }
+    ctx.fillStyle = '#fde68a';
+    ctx.fillRect(0, 198, width, 14);
+    ctx.fillStyle = '#11151f';
+    ctx.fillRect(0, 212, width, 196);
+    ctx.fillStyle = '#fbbf24';
+    ctx.fillRect(0, 408, width, 14);
+    ctx.fillStyle = isApex ? '#b45309' : '#1b2232';
+    ctx.fillRect(0, 422, width, 90);
   } else {
     // Classic Maple or Walnut Heritage
     const isWalnut = cueSkinId === 'cue_walnut_heritage';

@@ -191,6 +191,15 @@ export class BilliardBalls {
           mat.emissive.setHex(0x38bdf8);
           mat.emissiveIntensity = 0.16;
           break;
+        case 'ball_season1_eclipse':
+          mat.metalness = 0.45;
+          mat.roughness = 0.15;
+          mat.clearcoat = 0.95;
+          mat.clearcoatRoughness = 0.06;
+          mat.envMapIntensity = 1.45;
+          mat.emissive.setHex(0xf59e0b);
+          mat.emissiveIntensity = def.number === 8 ? 0.12 : 0.07;
+          break;
         case 'ball_classic':
         default:
           mat.metalness = 0.02;

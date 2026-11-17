@@ -66,6 +66,14 @@ function formatTxReason(reason: CoinTransactionReason): string {
       return 'AI Match Victory';
     case 'daily_login':
       return 'Daily Login Streak';
+    case 'mission_reward':
+      return 'Daily Mission Reward';
+    case 'weekly_challenge_reward':
+      return 'Weekly Challenge Reward';
+    case 'battle_pass_reward':
+      return 'Battle Pass Tier Reward';
+    case 'battle_pass_premium':
+      return 'Battle Pass Premium Unlock';
     case 'tournament_reward':
       return 'Tournament Payout';
     case 'tournament_entry':
@@ -473,7 +481,9 @@ export function StoreModal() {
             </button>
           ) : item.isRewardExclusive ? (
             <div className="rounded-lg border border-amber-400/35 bg-amber-500/10 px-3 py-2.5 text-center text-xs font-bold text-amber-200">
-              Unlocked exclusively through Championship &amp; Tournament placements.
+              {item.subCategory.includes('Battle Pass')
+                ? 'Unlocked exclusively via Seasonal Battle Pass Tiers.'
+                : 'Unlocked exclusively through Championship & Tournament placements.'}
             </div>
           ) : (
             <div className="space-y-2">
@@ -791,7 +801,9 @@ export function StoreModal() {
                                 </span>
                               ) : item.isRewardExclusive ? (
                                 <span className="text-[10px] font-bold uppercase tracking-wider text-amber-300 whitespace-nowrap">
-                                  Tournament Prize
+                                  {item.subCategory.includes('Battle Pass')
+                                    ? 'Battle Pass'
+                                    : 'Tournament Prize'}
                                 </span>
                               ) : (
                                 <span className="inline-flex items-center gap-1 font-mono text-xs font-black tabular-nums text-amber-300 whitespace-nowrap">

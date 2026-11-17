@@ -9,9 +9,15 @@ import {
 import { AntiCheatService } from './AntiCheatService';
 import { D1ProgressionService } from './D1ProgressionService';
 import { EconomyService } from './EconomyService';
+import { BattlePassService } from './BattlePassService';
 import { MatchmakerDurableObject } from './MatchmakerDurableObject';
 import { PoolRoomDurableObject } from './PoolRoomDurableObject';
 import { RankedSeasonService } from './RankedSeasonService';
+import type {
+  AiMatchProgressRequest,
+  BattlePassTrack,
+  MissionCadence,
+} from '../../src/multiplayer/shared/battlePass';
 import {
   COSMETIC_CATALOG,
   DAILY_LOGIN_SCHEDULE,
@@ -833,6 +839,197 @@ export default {
       return jsonResponse(res, 200, cors);
     }
 
+    // ===== Phase 11 Daily Missions, Weekly Challenges & Battle Pass API =====
+
+    if (url.pathname === '/api/battle-pass/overview' && request.method === 'GET') {
+      const playerId = (url.searchParams.get('playerId') ?? '').trim();
+      const token = extractBearerToken(request);
+      if (!playerId || !token) {
+        return jsonResponse(
+          { error: 'UNAUTHORIZED', message: 'Missing player credentials.' },
+          401,
+          cors,
+        );
+      }
+      if (env.DB) {
+        const valid = await new D1ProgressionService(env.DB).verifyPlayerToken(playerId, token);
+        if (!valid) {
+          return jsonResponse({ error: 'UNAUTHORIZED', message: 'Invalid player credentials.' }, 401, cors);
+        }
+        const overview = await new BattlePassService(env.DB).getOverview(playerId);
+        return jsonResponse({ ok: true, overview }, 200, cors);
+      }
+      const res = await getMatchmakerStub().battlePassGetOverview(playerId, token);
+      if (!res.ok) {
+        return jsonResponse({ error: res.code, message: res.message }, res.status, cors);
+      }
+      return jsonResponse(res, 200, cors);
+    }
+
+    if (url.pathname === '/api/battle-pass/missions/claim' && request.method === 'POST') {
+      const body = await readJsonBody(request);
+      if (!body || typeof body.playerId !== 'string' || typeof body.missionId !== 'string') {
+        return jsonResponse(
+          { error: 'INVALID_INPUT', message: 'playerId and missionId are required.' },
+          400,
+          cors,
+        );
+      }
+      const token = extractBearerToken(request, body);
+      const input = {
+        missionId: body.missionId.trim(),
+        cadence:
+          body.cadence === 'daily' || body.cadence === 'weekly'
+            ? (body.cadence as MissionCadence)
+            : undefined,
+        periodKey: typeof body.periodKey === 'string' ? body.periodKey.trim() : undefined,
+      };
+      if (env.DB) {
+        const valid = await new D1ProgressionService(env.DB).verifyPlayerToken(body.playerId, token);
+        if (!valid) {
+          return jsonResponse({ error: 'UNAUTHORIZED', message: 'Invalid player credentials.' }, 401, cors);
+        }
+        const res = await new BattlePassService(env.DB).claimMission(body.playerId.trim(), input);
+        if (!res.ok) {
+          return jsonResponse({ error: res.code, message: res.message }, res.status, cors);
+        }
+        return jsonResponse(res, 200, cors);
+      }
+      const res = await getMatchmakerStub().battlePassClaimMission(body.playerId, token, input);
+      if (!res.ok) {
+        return jsonResponse({ error: res.code, message: res.message }, res.status, cors);
+      }
+      return jsonResponse(res, 200, cors);
+    }
+
+    if (url.pathname === '/api/battle-pass/premium/unlock' && request.method === 'POST') {
+      const body = await readJsonBody(request);
+      if (!body || typeof body.playerId !== 'string') {
+        return jsonResponse(
+          { error: 'INVALID_INPUT', message: 'playerId is required.' },
+          400,
+          cors,
+        );
+      }
+      const token = extractBearerToken(request, body);
+      if (env.DB) {
+        const valid = await new D1ProgressionService(env.DB).verifyPlayerToken(body.playerId, token);
+        if (!valid) {
+          return jsonResponse({ error: 'UNAUTHORIZED', message: 'Invalid player credentials.' }, 401, cors);
+        }
+        const res = await new BattlePassService(env.DB).unlockPremium(body.playerId.trim());
+        if (!res.ok) {
+          return jsonResponse({ error: res.code, message: res.message }, res.status, cors);
+        }
+        return jsonResponse(res, 200, cors);
+      }
+      const res = await getMatchmakerStub().battlePassUnlockPremium(body.playerId, token);
+      if (!res.ok) {
+        return jsonResponse({ error: res.code, message: res.message }, res.status, cors);
+      }
+      return jsonResponse(res, 200, cors);
+    }
+
+    if (url.pathname === '/api/battle-pass/tiers/claim' && request.method === 'POST') {
+      const body = await readJsonBody(request);
+      if (
+        !body ||
+        typeof body.playerId !== 'string' ||
+        typeof body.level !== 'number' ||
+        (body.track !== 'free' && body.track !== 'premium')
+      ) {
+        return jsonResponse(
+          { error: 'INVALID_INPUT', message: 'playerId, level, and track (free|premium) are required.' },
+          400,
+          cors,
+        );
+      }
+      const token = extractBearerToken(request, body);
+      const input = {
+        level: Math.floor(body.level),
+        track: body.track as BattlePassTrack,
+      };
+      if (env.DB) {
+        const valid = await new D1ProgressionService(env.DB).verifyPlayerToken(body.playerId, token);
+        if (!valid) {
+          return jsonResponse({ error: 'UNAUTHORIZED', message: 'Invalid player credentials.' }, 401, cors);
+        }
+        const res = await new BattlePassService(env.DB).claimTierReward(body.playerId.trim(), input);
+        if (!res.ok) {
+          return jsonResponse({ error: res.code, message: res.message }, res.status, cors);
+        }
+        return jsonResponse(res, 200, cors);
+      }
+      const res = await getMatchmakerStub().battlePassClaimTier(body.playerId, token, input);
+      if (!res.ok) {
+        return jsonResponse({ error: res.code, message: res.message }, res.status, cors);
+      }
+      return jsonResponse(res, 200, cors);
+    }
+
+    if (url.pathname === '/api/battle-pass/claim-all' && request.method === 'POST') {
+      const body = await readJsonBody(request);
+      if (!body || typeof body.playerId !== 'string') {
+        return jsonResponse(
+          { error: 'INVALID_INPUT', message: 'playerId is required.' },
+          400,
+          cors,
+        );
+      }
+      const token = extractBearerToken(request, body);
+      if (env.DB) {
+        const valid = await new D1ProgressionService(env.DB).verifyPlayerToken(body.playerId, token);
+        if (!valid) {
+          return jsonResponse({ error: 'UNAUTHORIZED', message: 'Invalid player credentials.' }, 401, cors);
+        }
+        const res = await new BattlePassService(env.DB).claimAllAvailable(body.playerId.trim());
+        return jsonResponse(res, 200, cors);
+      }
+      const res = await getMatchmakerStub().battlePassClaimAll(body.playerId, token);
+      if (!res.ok) {
+        return jsonResponse({ error: res.code, message: res.message }, res.status, cors);
+      }
+      return jsonResponse(res, 200, cors);
+    }
+
+    if (url.pathname === '/api/battle-pass/ai-match' && request.method === 'POST') {
+      const body = await readJsonBody(request);
+      if (!body || typeof body.playerId !== 'string') {
+        return jsonResponse(
+          { error: 'INVALID_INPUT', message: 'playerId is required.' },
+          400,
+          cors,
+        );
+      }
+      const token = extractBearerToken(request, body);
+      const payload: Partial<AiMatchProgressRequest> = {
+        clientMatchId: typeof body.clientMatchId === 'string' ? body.clientMatchId : '',
+        difficulty: body.difficulty as AiMatchProgressRequest['difficulty'],
+        won: Boolean(body.won),
+        totalShots: Number(body.totalShots ?? 0),
+        ballsPocketed: Number(body.ballsPocketed ?? 0),
+        foulsCommitted: Number(body.foulsCommitted ?? 0),
+        legalEightBallWin: Boolean(body.legalEightBallWin),
+        durationSec: Number(body.durationSec ?? 0),
+      };
+      if (env.DB) {
+        const valid = await new D1ProgressionService(env.DB).verifyPlayerToken(body.playerId, token);
+        if (!valid) {
+          return jsonResponse({ error: 'UNAUTHORIZED', message: 'Invalid player credentials.' }, 401, cors);
+        }
+        const res = await new BattlePassService(env.DB).recordAiMatchProgress(body.playerId.trim(), payload);
+        if (!res.ok) {
+          return jsonResponse({ error: res.code, message: res.message }, res.status, cors);
+        }
+        return jsonResponse(res, 200, cors);
+      }
+      const res = await getMatchmakerStub().battlePassRecordAiMatch(body.playerId, token, payload);
+      if (!res.ok) {
+        return jsonResponse({ error: res.code, message: res.message }, res.status, cors);
+      }
+      return jsonResponse(res, 200, cors);
+    }
+
     // ===== Phase 9 Global Tournaments & Championships API =====
 
     if (url.pathname === '/api/tournaments' && request.method === 'GET') {
@@ -1343,6 +1540,26 @@ export default {
         return jsonResponse({ error: res.code, message: res.message }, res.status, cors);
       }
       return jsonResponse(res, 200, cors);
+    }
+
+    if (url.pathname === '/api/admin/battle-pass/rollover' && request.method === 'POST') {
+      const adminAuth = verifyAdminRequest(request, env);
+      if (!adminAuth.ok) {
+        return jsonResponse({ error: adminAuth.code, message: adminAuth.message }, adminAuth.status, cors);
+      }
+      const body = (await readJsonBody(request)) ?? {};
+      const options = {
+        nowMs: typeof body.nowMs === 'number' ? body.nowMs : undefined,
+        newSeasonName: typeof body.newSeasonName === 'string' ? body.newSeasonName : undefined,
+        newSeasonTheme: typeof body.newSeasonTheme === 'string' ? body.newSeasonTheme : undefined,
+        durationDays: typeof body.durationDays === 'number' ? body.durationDays : undefined,
+        premiumPriceCoins:
+          typeof body.premiumPriceCoins === 'number' ? body.premiumPriceCoins : undefined,
+      };
+      const result = env.DB
+        ? await new BattlePassService(env.DB).adminRolloverSeason(options)
+        : await getMatchmakerStub().battlePassAdminRollover(options);
+      return jsonResponse({ ok: true, ...result }, 200, cors);
     }
 
     if (url.pathname === '/') {

@@ -405,8 +405,10 @@ export class AuthoritativePhysicsManager {
       if (entry.pocketed) continue;
       const v = entry.body.linvel();
       const w = entry.body.angvel();
+      const horizSpeed = Math.hypot(v.x, v.z);
       if (
-        Math.hypot(v.x, v.y, v.z) > BALL_SPECS.sleepThreshold ||
+        horizSpeed > BALL_SPECS.sleepThreshold ||
+        Math.abs(v.y) > 0.05 ||
         Math.hypot(w.x, w.y, w.z) > 0.35
       ) {
         return true;

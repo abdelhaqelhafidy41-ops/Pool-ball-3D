@@ -49,6 +49,12 @@ import { AntiCheatService, type AntiCheatMatchInspectionInput } from './AntiChea
 import { RankedSeasonService } from './RankedSeasonService';
 import { SocialService, type SocialError } from './SocialService';
 import { TournamentService, type TournamentServiceError } from './TournamentService';
+import { BattlePassService } from './BattlePassService';
+import type {
+  AiMatchProgressRequest,
+  BattlePassTrack,
+  MissionCadence,
+} from '../../src/multiplayer/shared/battlePass';
 import {
   computeAllowedRankedEloSpread,
   RANKED_MATCHMAKING_CONFIG,
@@ -1284,6 +1290,13 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
     return new AntiCheatService(createDurableObjectSqlDb(this.ctx.storage.sql));
   }
 
+  private getBattlePassService(): BattlePassService {
+    if (this.env.DB) {
+      return new BattlePassService(this.env.DB);
+    }
+    return new BattlePassService(createDurableObjectSqlDb(this.ctx.storage.sql));
+  }
+
   private async authenticateRestPlayer(
     playerId: unknown,
     playerToken: unknown,
@@ -1798,6 +1811,74 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
         // Ignore if room already closed
       }
     }
+  }
+
+  // ===== Phase 11 Daily Missions, Weekly Challenges & Battle Pass RPC Methods =====
+
+  public async battlePassGetOverview(playerId: string, playerToken: string) {
+    this.ensureSchema();
+    const auth = await this.authenticateRestPlayer(playerId, playerToken);
+    if (!auth.ok) return auth;
+    const overview = await this.getBattlePassService().getOverview(auth.playerId);
+    return { ok: true as const, overview };
+  }
+
+  public async battlePassClaimMission(
+    playerId: string,
+    playerToken: string,
+    input: { missionId: string; cadence?: MissionCadence; periodKey?: string },
+  ) {
+    this.ensureSchema();
+    const auth = await this.authenticateRestPlayer(playerId, playerToken);
+    if (!auth.ok) return auth;
+    return this.getBattlePassService().claimMission(auth.playerId, input);
+  }
+
+  public async battlePassUnlockPremium(playerId: string, playerToken: string) {
+    this.ensureSchema();
+    const auth = await this.authenticateRestPlayer(playerId, playerToken);
+    if (!auth.ok) return auth;
+    return this.getBattlePassService().unlockPremium(auth.playerId);
+  }
+
+  public async battlePassClaimTier(
+    playerId: string,
+    playerToken: string,
+    input: { level: number; track: BattlePassTrack },
+  ) {
+    this.ensureSchema();
+    const auth = await this.authenticateRestPlayer(playerId, playerToken);
+    if (!auth.ok) return auth;
+    return this.getBattlePassService().claimTierReward(auth.playerId, input);
+  }
+
+  public async battlePassClaimAll(playerId: string, playerToken: string) {
+    this.ensureSchema();
+    const auth = await this.authenticateRestPlayer(playerId, playerToken);
+    if (!auth.ok) return auth;
+    return this.getBattlePassService().claimAllAvailable(auth.playerId);
+  }
+
+  public async battlePassRecordAiMatch(
+    playerId: string,
+    playerToken: string,
+    input: Partial<AiMatchProgressRequest>,
+  ) {
+    this.ensureSchema();
+    const auth = await this.authenticateRestPlayer(playerId, playerToken);
+    if (!auth.ok) return auth;
+    return this.getBattlePassService().recordAiMatchProgress(auth.playerId, input);
+  }
+
+  public async battlePassAdminRollover(options?: {
+    nowMs?: number;
+    newSeasonName?: string;
+    newSeasonTheme?: string;
+    durationDays?: number;
+    premiumPriceCoins?: number;
+  }) {
+    this.ensureSchema();
+    return this.getBattlePassService().adminRolloverSeason(options);
   }
 
   // ===== Phase 9 Global Tournaments & Championships RPC Methods =====

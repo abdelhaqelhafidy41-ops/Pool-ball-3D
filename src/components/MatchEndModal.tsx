@@ -1,7 +1,8 @@
-import { Award, Coins, Crown, Film, Globe, Home, RotateCcw, ShoppingBag, Trophy } from 'lucide-react';
+import { Award, Coins, Crown, Film, Globe, Home, RotateCcw, ShoppingBag, Target, Trophy } from 'lucide-react';
 import { useEffect, useRef } from 'react';
 import { computeAverageBallsPerTurn } from '../game/rules/MatchStatistics';
 import { soundEngine } from '../game/utils/SoundEngine';
+import { battlePassClient } from '../multiplayer/BattlePassClient';
 import { economyClient } from '../multiplayer/EconomyClient';
 import { multiplayerManager } from '../multiplayer/MultiplayerManager';
 import { getRankForElo } from '../multiplayer/shared/ranked';
@@ -35,17 +36,69 @@ export function MatchEndModal({ onPlayAgain, onMainMenu, onWatchReplay }: MatchE
   const aiMatchClientId = useGameStore((s) => s.aiMatchClientId);
   const aiMatchStartedAtMs = useGameStore((s) => s.aiMatchStartedAtMs);
   const lastAiRewardClaim = useGameStore((s) => s.lastAiRewardClaim);
+  const lastAiBattlePassClaim = useGameStore((s) => s.lastAiBattlePassClaim);
+  const matchPlayer1BallsPocketed = useGameStore((s) => s.matchPlayer1BallsPocketed);
+  const matchPlayer1Fouls = useGameStore((s) => s.matchPlayer1Fouls);
+  const matchPlayer1LegalEightBallWin = useGameStore((s) => s.matchPlayer1LegalEightBallWin);
   const openStoreModal = useGameStore((s) => s.openStoreModal);
+  const openBattlePassModal = useGameStore((s) => s.openBattlePassModal);
   const claimedAiMatchIdsRef = useRef<Set<string>>(new Set());
   const claimingAiMatchIdsRef = useRef<Set<string>>(new Set());
+  const reportedAiBpIdsRef = useRef<Set<string>>(new Set());
+  const reportingAiBpIdsRef = useRef<Set<string>>(new Set());
 
-  const isEligibleAiWin =
+  const isCompletedAiEightBall =
     screen === 'playing' &&
     matchPhase === 'GAME_OVER' &&
-    winner === 'player1' &&
+    winner !== null &&
     !replayActive &&
     matchConfig.opponentType === 'ai' &&
     matchConfig.gameMode === 'eightBall';
+
+  const isEligibleAiWin = isCompletedAiEightBall && winner === 'player1';
+
+  useEffect(() => {
+    if (!isCompletedAiEightBall) return;
+    if (
+      !aiMatchClientId ||
+      reportedAiBpIdsRef.current.has(aiMatchClientId) ||
+      reportingAiBpIdsRef.current.has(aiMatchClientId)
+    ) {
+      return;
+    }
+    reportingAiBpIdsRef.current.add(aiMatchClientId);
+    const durationSec = Math.max(0, Math.round((Date.now() - aiMatchStartedAtMs) / 1000));
+    void battlePassClient
+      .recordAiMatch({
+        clientMatchId: aiMatchClientId,
+        difficulty: matchConfig.aiDifficulty,
+        won: winner === 'player1',
+        totalShots: shotCount,
+        ballsPocketed: matchPlayer1BallsPocketed,
+        foulsCommitted: matchPlayer1Fouls,
+        legalEightBallWin: matchPlayer1LegalEightBallWin,
+        durationSec,
+      })
+      .then((res) => {
+        reportingAiBpIdsRef.current.delete(aiMatchClientId);
+        if (res.ok) {
+          reportedAiBpIdsRef.current.add(aiMatchClientId);
+        }
+      })
+      .catch(() => {
+        reportingAiBpIdsRef.current.delete(aiMatchClientId);
+      });
+  }, [
+    isCompletedAiEightBall,
+    aiMatchClientId,
+    aiMatchStartedAtMs,
+    matchConfig.aiDifficulty,
+    winner,
+    shotCount,
+    matchPlayer1BallsPocketed,
+    matchPlayer1Fouls,
+    matchPlayer1LegalEightBallWin,
+  ]);
 
   useEffect(() => {
     if (!isEligibleAiWin) return;
@@ -110,9 +163,9 @@ export function MatchEndModal({ onPlayAgain, onMainMenu, onWatchReplay }: MatchE
       role="dialog"
       aria-modal="true"
       aria-label="Match Result"
-      className="fixed inset-0 z-40 flex items-center justify-center bg-black/70 p-4"
+      className="fixed inset-0 z-40 flex items-center justify-center bg-black/70 p-3 sm:p-4"
     >
-      <div className="w-full max-w-md rounded-2xl border border-amber-400/35 bg-[#0e151e] p-6 text-slate-100 shadow-2xl">
+      <div className="modal-scroll-y max-h-[92dvh] w-full max-w-md rounded-2xl border border-amber-400/35 bg-[#0e151e] p-5 sm:p-6 text-slate-100 shadow-2xl">
         <div className="flex flex-col items-center text-center">
           <div className="flex h-12 w-12 items-center justify-center rounded-xl border border-amber-400/40 bg-amber-500/15">
             <Trophy className="h-6 w-6 text-amber-400" />
@@ -363,6 +416,41 @@ export function MatchEndModal({ onPlayAgain, onMainMenu, onWatchReplay }: MatchE
             </div>
           )}
 
+        {/* AI Match Battle Pass & Missions Progress */}
+        {!isOnline &&
+          matchConfig.opponentType === 'ai' &&
+          matchConfig.gameMode === 'eightBall' &&
+          lastAiBattlePassClaim && (
+            <div className="mt-3 rounded-xl border border-white/12 bg-white/[0.04] p-3">
+              <div className="flex items-center justify-between gap-2 text-xs">
+                <span className="inline-flex items-center gap-1.5 font-bold text-slate-100">
+                  <Crown className="h-3.5 w-3.5 text-amber-400" />
+                  Battle Pass · Lv {lastAiBattlePassClaim.overview.playerState.seasonLevel}/
+                  {lastAiBattlePassClaim.overview.season.maxLevel}
+                </span>
+                <span className="font-mono font-extrabold tabular-nums text-emerald-300">
+                  +{lastAiBattlePassClaim.seasonXpAwarded} Season XP
+                </span>
+              </div>
+              <div className="mt-1 flex items-center justify-between text-[10px] text-slate-300 font-mono tabular-nums">
+                <span>
+                  {lastAiBattlePassClaim.rejectedReason
+                    ? lastAiBattlePassClaim.rejectedReason
+                    : lastAiBattlePassClaim.capReached
+                      ? 'Daily AI Season XP cap reached'
+                      : lastAiBattlePassClaim.completedMissionIds.length > 0
+                        ? `${lastAiBattlePassClaim.completedMissionIds.length} mission(s) completed!`
+                        : 'Missions & weekly progress updated'}
+                </span>
+                <span>
+                  {lastAiBattlePassClaim.overview.claimableCounts.total > 0
+                    ? `${lastAiBattlePassClaim.overview.claimableCounts.total} claimable`
+                    : `${lastAiBattlePassClaim.overview.playerState.dailyAiXpEarned}/${lastAiBattlePassClaim.overview.config.dailyAiMatchXpCap} AI XP`}
+                </span>
+              </div>
+            </div>
+          )}
+
         <div className="mt-4 flex flex-wrap items-center gap-2">
           {replayShots.length > 0 && (
             <button
@@ -381,9 +469,20 @@ export function MatchEndModal({ onPlayAgain, onMainMenu, onWatchReplay }: MatchE
             type="button"
             onClick={() => {
               soundEngine.playUiClick();
+              openBattlePassModal('daily');
+            }}
+            className="inline-flex flex-1 items-center justify-center gap-2 rounded-xl border border-white/15 bg-white/5 px-3 py-2 text-xs font-bold uppercase tracking-wider text-slate-200 hover:bg-white/10 transition-colors cursor-pointer whitespace-nowrap"
+          >
+            <Target className="h-4 w-4 text-amber-400" />
+            Missions
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              soundEngine.playUiClick();
               openStoreModal('store');
             }}
-            className="inline-flex flex-1 items-center justify-center gap-2 rounded-xl border border-white/15 bg-white/5 px-4 py-2 text-xs font-bold uppercase tracking-wider text-slate-200 hover:bg-white/10 transition-colors cursor-pointer whitespace-nowrap"
+            className="inline-flex flex-1 items-center justify-center gap-2 rounded-xl border border-white/15 bg-white/5 px-3 py-2 text-xs font-bold uppercase tracking-wider text-slate-200 hover:bg-white/10 transition-colors cursor-pointer whitespace-nowrap"
           >
             <ShoppingBag className="h-4 w-4 text-amber-400" />
             Store

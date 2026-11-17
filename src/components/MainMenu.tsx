@@ -16,6 +16,7 @@ import {
   Settings,
   ShoppingBag,
   Swords,
+  Target,
   Trophy,
   User,
   UserPlus,
@@ -71,6 +72,8 @@ export function MainMenu({ onStartMatch, onToggleFullscreen }: MainMenuProps) {
   const dailyReward = useGameStore((s) => s.dailyReward);
   const openStoreModal = useGameStore((s) => s.openStoreModal);
   const openTournamentModal = useGameStore((s) => s.openTournamentModal);
+  const battlePassOverview = useGameStore((s) => s.battlePassOverview);
+  const openBattlePassModal = useGameStore((s) => s.openBattlePassModal);
 
   useEffect(() => {
     if (screen === 'menu' && !ownProfile) {
@@ -614,6 +617,67 @@ export function MainMenu({ onStartMatch, onToggleFullscreen }: MainMenuProps) {
                       Compete
                     </span>
                   </button>
+
+                  {/* Seasonal Battle Pass & Daily/Weekly Missions */}
+                  {(() => {
+                    const bpLevel = battlePassOverview?.playerState.seasonLevel ?? 0;
+                    const bpMax = battlePassOverview?.season.maxLevel ?? 30;
+                    const bpTrackClaimable =
+                      (battlePassOverview?.claimableCounts.battlePassFree ?? 0) +
+                      (battlePassOverview?.claimableCounts.battlePassPremium ?? 0);
+                    const missionClaimable =
+                      (battlePassOverview?.claimableCounts.daily ?? 0) +
+                      (battlePassOverview?.claimableCounts.weekly ?? 0);
+                    return (
+                      <div className="mt-1.5 grid grid-cols-[1fr_auto] gap-1.5">
+                        <button
+                          type="button"
+                          data-testid="open-battle-pass-btn"
+                          onClick={() => {
+                            soundEngine.unlock();
+                            soundEngine.playUiClick();
+                            openBattlePassModal('pass');
+                          }}
+                          className="flex items-center justify-between gap-2 rounded-lg border border-amber-400/35 bg-white/[0.04] px-2.5 py-1.5 text-[11px] font-bold text-slate-100 hover:bg-amber-500/15 transition-colors cursor-pointer whitespace-nowrap"
+                        >
+                          <span className="inline-flex items-center gap-1.5 truncate">
+                            <Award className="h-3.5 w-3.5 text-amber-400 shrink-0" />
+                            <span className="truncate">
+                              Battle Pass · Lv {bpLevel}/{bpMax}
+                            </span>
+                          </span>
+                          {bpTrackClaimable > 0 && (
+                            <span className="rounded bg-emerald-500 px-1.5 py-0.2 font-mono text-[10px] font-black tabular-nums text-slate-950 shrink-0">
+                              +{bpTrackClaimable}
+                            </span>
+                          )}
+                        </button>
+
+                        <button
+                          type="button"
+                          data-testid="open-missions-btn"
+                          onClick={() => {
+                            soundEngine.unlock();
+                            soundEngine.playUiClick();
+                            openBattlePassModal('daily');
+                          }}
+                          className={`inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-[11px] font-bold transition-colors cursor-pointer whitespace-nowrap ${
+                            missionClaimable > 0
+                              ? 'border-amber-400/60 bg-amber-500/18 text-amber-200 hover:bg-amber-500/28'
+                              : 'border-white/10 bg-white/5 text-slate-200 hover:bg-white/10'
+                          }`}
+                        >
+                          <Target className="h-3.5 w-3.5 text-amber-400 shrink-0" />
+                          <span>Missions</span>
+                          {missionClaimable > 0 && (
+                            <span className="rounded bg-amber-500 px-1.5 py-0.2 font-mono text-[10px] font-black tabular-nums text-slate-950">
+                              {missionClaimable}
+                            </span>
+                          )}
+                        </button>
+                      </div>
+                    );
+                  })()}
                 </div>
               );
             })()}

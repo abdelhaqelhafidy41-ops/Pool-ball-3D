@@ -12,9 +12,12 @@ import { SettingsModal } from './components/SettingsModal';
 import { SocialModal } from './components/SocialModal';
 import { StoreModal } from './components/StoreModal';
 import { TournamentModal } from './components/TournamentModal';
+import { BattlePassModal } from './components/BattlePassModal';
+import { ProgressionToastBanner } from './components/ProgressionToastBanner';
 import type { ReplaySpeed } from './game/replay/types';
 import type { PocketId } from './game/rules/types';
 import { soundEngine } from './game/utils/SoundEngine';
+import { battlePassClient } from './multiplayer/BattlePassClient';
 import { economyClient } from './multiplayer/EconomyClient';
 import { multiplayerManager } from './multiplayer/MultiplayerManager';
 import { progressionClient } from './multiplayer/ProgressionClient';
@@ -55,6 +58,7 @@ export default function App() {
     multiplayerManager.ensureConnected();
     void socialClient.fetchOverview();
     void economyClient.refreshWallet();
+    void battlePassClient.refreshOverview({ skipTransitionToasts: true });
   }, [ownPlayerId]);
 
   const handleStartMatch = useCallback(() => {
@@ -181,7 +185,9 @@ export default function App() {
         <SocialModal />
         <StoreModal />
         <TournamentModal />
+        <BattlePassModal />
         <InviteNotificationBanner />
+        <ProgressionToastBanner />
       </main>
     </ErrorBoundary>
   );

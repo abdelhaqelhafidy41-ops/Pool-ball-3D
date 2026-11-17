@@ -3,6 +3,7 @@ import {
   canTargetEightBall,
   getLegalTargetBalls,
   getOpponent,
+  getRemainingBallsForGroup,
 } from '../src/game/rules/BallGroupManager';
 import { createEffectiveRuleProfile, evaluateEightBallShot } from '../src/game/rules/EightBallRules';
 import { TurnManager } from '../src/game/rules/TurnManager';
@@ -278,7 +279,11 @@ export class ServerMatchManager {
 
     if (confirm) {
       this.phase = this.tableOpen ? 'OPEN_TABLE' : 'GROUPS_ASSIGNED';
-      this.statusHeadline = this.tableOpen ? 'Open Table' : 'Groups Assigned';
+      this.statusHeadline = this.tableOpen
+        ? 'Open Table'
+        : canTargetEightBall(this.pocketedSet, this.playerGroups[player])
+          ? '8-Ball Target'
+          : 'Groups Assigned';
     }
 
     return {
@@ -419,6 +424,11 @@ export class ServerMatchManager {
     if (this.phase !== 'BALLS_MOVING') return;
 
     this.totalMatchShots++;
+    const shooter = telemetry.shooter;
+    const shooterGroupBefore = this.playerGroups[shooter];
+    const remainingGroupBallsBefore = shooterGroupBefore
+      ? getRemainingBallsForGroup(this.pocketedSet, shooterGroupBefore)
+      : [];
     const canShootEightMap: Record<PlayerId, boolean> = {
       player1: canTargetEightBall(this.pocketedSet, this.playerGroups.player1),
       player2: canTargetEightBall(this.pocketedSet, this.playerGroups.player2),
@@ -429,6 +439,7 @@ export class ServerMatchManager {
       tableOpen: this.tableOpen,
       playerGroups: { ...this.playerGroups },
       playerCanShootEight: canShootEightMap,
+      shooterRemainingGroupCount: remainingGroupBallsBefore.length,
     });
 
     for (const evt of telemetry.pocketEvents) {
@@ -490,6 +501,31 @@ export class ServerMatchManager {
       }
 
       const winnerName = this.playerNames[evaluation.winner];
+      const shooterGroupAfterWin = this.playerGroups[shooter];
+      console.debug('[TurnResolution]', {
+        mode: 'online-server',
+        roomId: this.roomId,
+        shotId: telemetry.shotId,
+        shooter,
+        shooterGroupBefore,
+        shooterGroupAfter: shooterGroupAfterWin,
+        pocketedBalls: telemetry.pocketEvents.map((e) => `${e.ballNumber}@${e.pocketId}`),
+        foulStatus: { isLegal: evaluation.isLegal, foulReason: evaluation.foulReason },
+        remainingGroupBallsBefore,
+        remainingGroupBallsAfter: shooterGroupAfterWin
+          ? getRemainingBallsForGroup(this.pocketedSet, shooterGroupAfterWin)
+          : [],
+        eightBallEligibility: {
+          before: canShootEightMap[shooter],
+          after: canTargetEightBall(this.pocketedSet, shooterGroupAfterWin),
+          eightBallOnTable: !this.pocketedSet.has(8),
+        },
+        turnContinues: evaluation.turnContinues,
+        nextPlayer: null,
+        winner: evaluation.winner,
+        phase: this.phase,
+        statusHeadline: this.statusHeadline,
+      });
       this.emitBanner('victory', `${winnerName} Wins!`, evaluation.gameOverReason ?? 'Match complete.');
 
       const frames = this.physics.getBallFrames();
@@ -565,6 +601,32 @@ export class ServerMatchManager {
         }
       }
     }
+
+    const shooterGroupAfter = this.playerGroups[shooter];
+    console.debug('[TurnResolution]', {
+      mode: 'online-server',
+      roomId: this.roomId,
+      shotId: telemetry.shotId,
+      shooter,
+      shooterGroupBefore,
+      shooterGroupAfter,
+      pocketedBalls: telemetry.pocketEvents.map((e) => `${e.ballNumber}@${e.pocketId}`),
+      foulStatus: { isLegal: evaluation.isLegal, foulReason: evaluation.foulReason },
+      remainingGroupBallsBefore,
+      remainingGroupBallsAfter: shooterGroupAfter
+        ? getRemainingBallsForGroup(this.pocketedSet, shooterGroupAfter)
+        : [],
+      eightBallEligibility: {
+        before: canShootEightMap[shooter],
+        after: canTargetEightBall(this.pocketedSet, shooterGroupAfter),
+        eightBallOnTable: !this.pocketedSet.has(8),
+      },
+      turnContinues: evaluation.turnContinues,
+      nextPlayer: this.turnManager.getActivePlayer(),
+      winner: null,
+      phase: this.phase,
+      statusHeadline: this.statusHeadline,
+    });
 
     this.callbacks.onSettled(this.getSnapshot(), this.physics.getBallFrames());
   }

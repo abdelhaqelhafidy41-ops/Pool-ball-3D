@@ -1305,4 +1305,161 @@ export class EconomyService {
       return (res.meta?.changes ?? 0) > 0;
     });
   }
+
+  public async creditCoinsWithIdempotency(params: {
+    playerId: string;
+    amount: number;
+    reason: CoinTransactionReason;
+    referenceType: string;
+    referenceId: string;
+    idempotencyKey: string;
+    metadata?: Record<string, unknown>;
+    nowMs?: number;
+  }): Promise<{ awarded: number; alreadyProcessed: boolean; wallet: WalletSummary }> {
+    const now = params.nowMs ?? Date.now();
+    const safeAmount = Math.max(0, Math.floor(params.amount));
+    return this.withPlayerLock(params.playerId, async () => {
+      const db = await this.ensureSchema();
+      const walletRow = await this.ensurePlayerInitialized(db, params.playerId, now);
+      if (safeAmount <= 0) {
+        return { awarded: 0, alreadyProcessed: false, wallet: this.mapWalletSummary(walletRow) };
+      }
+
+      const nextBalance = Number(walletRow.balance) + safeAmount;
+      const tx = await db
+        .prepare(
+          `INSERT OR IGNORE INTO coin_transactions (
+            tx_id, player_id, amount, balance_after, reason, reference_type, reference_id, idempotency_key, metadata_json, created_at_ms
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .bind(
+          generateTxId(),
+          params.playerId,
+          safeAmount,
+          nextBalance,
+          params.reason,
+          params.referenceType,
+          params.referenceId,
+          params.idempotencyKey,
+          params.metadata ? JSON.stringify(params.metadata) : null,
+          now,
+        )
+        .run();
+
+      if ((tx.meta?.changes ?? 0) === 0) {
+        return { awarded: 0, alreadyProcessed: true, wallet: this.mapWalletSummary(walletRow) };
+      }
+
+      await db
+        .prepare(
+          `UPDATE player_wallets
+           SET balance = balance + ?, total_earned = total_earned + ?, updated_at_ms = ?
+           WHERE player_id = ?`,
+        )
+        .bind(safeAmount, safeAmount, now, params.playerId)
+        .run();
+
+      const updated = (await db
+        .prepare('SELECT * FROM player_wallets WHERE player_id = ? LIMIT 1')
+        .bind(params.playerId)
+        .first<WalletDbRow>())!;
+      return { awarded: safeAmount, alreadyProcessed: false, wallet: this.mapWalletSummary(updated) };
+    });
+  }
+
+  public async debitCoinsWithIdempotency(params: {
+    playerId: string;
+    amount: number;
+    reason: CoinTransactionReason;
+    referenceType: string;
+    referenceId: string;
+    idempotencyKey: string;
+    insufficientMessage?: string;
+    metadata?: Record<string, unknown>;
+    nowMs?: number;
+  }): Promise<
+    | { ok: true; charged: number; alreadyProcessed: boolean; wallet: WalletSummary }
+    | EconomyServiceError
+  > {
+    const now = params.nowMs ?? Date.now();
+    const safeAmount = Math.max(0, Math.floor(params.amount));
+    return this.withPlayerLock(params.playerId, async () => {
+      const db = await this.ensureSchema();
+      const walletRow = await this.ensurePlayerInitialized(db, params.playerId, now);
+
+      const existingTx = await db
+        .prepare('SELECT tx_id FROM coin_transactions WHERE idempotency_key = ? LIMIT 1')
+        .bind(params.idempotencyKey)
+        .first<{ tx_id: string }>();
+      if (existingTx) {
+        return {
+          ok: true,
+          charged: 0,
+          alreadyProcessed: true,
+          wallet: this.mapWalletSummary(walletRow),
+        };
+      }
+
+      if (safeAmount <= 0) {
+        return {
+          ok: true,
+          charged: 0,
+          alreadyProcessed: false,
+          wallet: this.mapWalletSummary(walletRow),
+        };
+      }
+
+      const debit = await db
+        .prepare(
+          `UPDATE player_wallets
+           SET balance = balance - ?, total_spent = total_spent + ?, updated_at_ms = ?
+           WHERE player_id = ? AND balance >= ?`,
+        )
+        .bind(safeAmount, safeAmount, now, params.playerId, safeAmount)
+        .run();
+
+      if ((debit.meta?.changes ?? 0) === 0) {
+        return {
+          ok: false,
+          status: 402,
+          code: 'INSUFFICIENT_FUNDS',
+          message:
+            params.insufficientMessage ??
+            `Insufficient POOL COINS balance (need ${safeAmount}).`,
+        };
+      }
+
+      const updated = (await db
+        .prepare('SELECT * FROM player_wallets WHERE player_id = ? LIMIT 1')
+        .bind(params.playerId)
+        .first<WalletDbRow>())!;
+
+      await db
+        .prepare(
+          `INSERT OR IGNORE INTO coin_transactions (
+            tx_id, player_id, amount, balance_after, reason, reference_type, reference_id, idempotency_key, metadata_json, created_at_ms
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .bind(
+          generateTxId(),
+          params.playerId,
+          -safeAmount,
+          Number(updated.balance),
+          params.reason,
+          params.referenceType,
+          params.referenceId,
+          params.idempotencyKey,
+          params.metadata ? JSON.stringify(params.metadata) : null,
+          now,
+        )
+        .run();
+
+      return {
+        ok: true,
+        charged: safeAmount,
+        alreadyProcessed: false,
+        wallet: this.mapWalletSummary(updated),
+      };
+    });
+  }
 }

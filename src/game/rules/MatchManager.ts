@@ -1,4 +1,9 @@
-import { canTargetEightBall, getBallCategory, getOpponent } from './BallGroupManager';
+import {
+  canTargetEightBall,
+  getBallCategory,
+  getOpponent,
+  getRemainingBallsForGroup,
+} from './BallGroupManager';
 import { createEffectiveRuleProfile, evaluateEightBallShot } from './EightBallRules';
 import {
   clearMatchStatistics,
@@ -41,6 +46,9 @@ export interface MatchSnapshot {
   banner: MatchBannerNotice | null;
   stats: MatchStatistics;
   totalMatchShots: number;
+  player1BallsPocketed: number;
+  player1Fouls: number;
+  player1LegalEightBallWin: boolean;
 }
 
 export function createDefaultMatchConfig(): MatchConfig {
@@ -83,6 +91,9 @@ export class MatchManager {
   private banner: MatchBannerNotice | null = null;
   private bannerSeq = 1;
   private totalMatchShots = 0;
+  private player1BallsPocketed = 0;
+  private player1Fouls = 0;
+  private player1LegalEightBallWin = false;
 
   private stats: MatchStatistics;
 
@@ -206,6 +217,9 @@ export class MatchManager {
     this.gameOverReason = null;
     this.lastFoulMessage = null;
     this.totalMatchShots = 0;
+    this.player1BallsPocketed = 0;
+    this.player1Fouls = 0;
+    this.player1LegalEightBallWin = false;
 
     if (this.config.gameMode === 'freePlay') {
       this.phase = 'WAITING_FOR_TURN';
@@ -279,6 +293,12 @@ export class MatchManager {
       return { snapshot: this.getSnapshot(), evaluation: null };
     }
 
+    const shooter = telemetry.shooter;
+    const shooterGroupBefore = this.playerGroups[shooter];
+    const remainingGroupBallsBefore = shooterGroupBefore
+      ? getRemainingBallsForGroup(this.pocketedSet, shooterGroupBefore)
+      : [];
+
     // Evaluate 8-ball eligibility strictly from balls already pocketed BEFORE this shot
     const canShootEightMap: Record<PlayerId, boolean> = {
       player1: canTargetEightBall(this.pocketedSet, this.playerGroups.player1),
@@ -290,6 +310,7 @@ export class MatchManager {
       tableOpen: this.tableOpen,
       playerGroups: { ...this.playerGroups },
       playerCanShootEight: canShootEightMap,
+      shooterRemainingGroupCount: remainingGroupBallsBefore.length,
     });
 
     // Record pocketed object balls into authoritative set after shot evaluation (except cue ball 0)
@@ -302,12 +323,18 @@ export class MatchManager {
     }
     this.stats.ballsPocketed += newlyPocketedObjects.length;
 
+    if (shooter === 'player1') {
+      this.player1BallsPocketed += newlyPocketedObjects.length;
+      if (!evaluation.isLegal) {
+        this.player1Fouls++;
+      }
+    }
+
     // If 8-ball was pocketed on break and respotted, remove 8 from pocketedSet!
     if (evaluation.respotEightBall) {
       this.pocketedSet.delete(8);
     }
 
-    const shooter = telemetry.shooter;
     const shooterName = this.getPlayerName(shooter);
     const nextName = this.getPlayerName(evaluation.nextPlayer);
 
@@ -339,6 +366,11 @@ export class MatchManager {
       this.gameOverReason = evaluation.gameOverReason;
       this.statusHeadline = evaluation.statusHeadline;
       this.lastFoulMessage = evaluation.foulMessage;
+      this.player1LegalEightBallWin =
+        shooter === 'player1' &&
+        evaluation.winner === 'player1' &&
+        evaluation.isLegal &&
+        newlyPocketedObjects.includes(8);
 
       this.stats.matchesPlayed++;
       if (this.config.opponentType === 'ai') {
@@ -353,6 +385,30 @@ export class MatchManager {
       saveMatchStatistics(this.stats);
 
       const winnerName = this.getPlayerName(evaluation.winner);
+      const shooterGroupAfterWin = this.playerGroups[shooter];
+      console.debug('[TurnResolution]', {
+        mode: this.config.opponentType,
+        shotId: telemetry.shotId,
+        shooter,
+        shooterGroupBefore,
+        shooterGroupAfter: shooterGroupAfterWin,
+        pocketedBalls: telemetry.pocketEvents.map((e) => `${e.ballNumber}@${e.pocketId}`),
+        foulStatus: { isLegal: evaluation.isLegal, foulReason: evaluation.foulReason },
+        remainingGroupBallsBefore,
+        remainingGroupBallsAfter: shooterGroupAfterWin
+          ? getRemainingBallsForGroup(this.pocketedSet, shooterGroupAfterWin)
+          : [],
+        eightBallEligibility: {
+          before: canShootEightMap[shooter],
+          after: canTargetEightBall(this.pocketedSet, shooterGroupAfterWin),
+          eightBallOnTable: !this.pocketedSet.has(8),
+        },
+        turnContinues: evaluation.turnContinues,
+        nextPlayer: null,
+        winner: evaluation.winner,
+        phase: this.phase,
+        statusHeadline: this.statusHeadline,
+      });
       this.emitNotice(
         'victory',
         `${winnerName} Wins!`,
@@ -420,6 +476,31 @@ export class MatchManager {
         this.banner = null;
       }
     }
+
+    const shooterGroupAfter = this.playerGroups[shooter];
+    console.debug('[TurnResolution]', {
+      mode: this.config.opponentType,
+      shotId: telemetry.shotId,
+      shooter,
+      shooterGroupBefore,
+      shooterGroupAfter,
+      pocketedBalls: telemetry.pocketEvents.map((e) => `${e.ballNumber}@${e.pocketId}`),
+      foulStatus: { isLegal: evaluation.isLegal, foulReason: evaluation.foulReason },
+      remainingGroupBallsBefore,
+      remainingGroupBallsAfter: shooterGroupAfter
+        ? getRemainingBallsForGroup(this.pocketedSet, shooterGroupAfter)
+        : [],
+      eightBallEligibility: {
+        before: canShootEightMap[shooter],
+        after: canTargetEightBall(this.pocketedSet, shooterGroupAfter),
+        eightBallOnTable: !this.pocketedSet.has(8),
+      },
+      turnContinues: evaluation.turnContinues,
+      nextPlayer: this.turnManager.getActivePlayer(),
+      winner: null,
+      phase: this.phase,
+      statusHeadline: this.statusHeadline,
+    });
 
     saveMatchStatistics(this.stats);
     return { snapshot: this.getSnapshot(), evaluation };
@@ -489,6 +570,9 @@ export class MatchManager {
       banner: this.banner ? { ...this.banner } : null,
       stats: { ...this.stats },
       totalMatchShots: this.totalMatchShots,
+      player1BallsPocketed: this.player1BallsPocketed,
+      player1Fouls: this.player1Fouls,
+      player1LegalEightBallWin: this.player1LegalEightBallWin,
     };
   }
 }

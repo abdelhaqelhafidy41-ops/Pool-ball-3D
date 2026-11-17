@@ -603,6 +603,9 @@ class MultiplayerManagerImpl {
         this.sceneBridge?.onOnlineShotSettled?.(msg.match, msg.balls);
         void progressionClient.refreshOwnProfile();
         void import('./EconomyClient').then(({ economyClient }) => economyClient.refreshWallet());
+        void import('./BattlePassClient').then(({ battlePassClient }) =>
+          battlePassClient.refreshOverview(),
+        );
         break;
       }
 
@@ -751,6 +754,9 @@ class MultiplayerManagerImpl {
         store.applyTournamentCompleted(msg.tournament);
         void progressionClient.refreshOwnProfile();
         void import('./EconomyClient').then(({ economyClient }) => economyClient.refreshWallet());
+        void import('./BattlePassClient').then(({ battlePassClient }) =>
+          battlePassClient.refreshOverview(),
+        );
         void tournamentClient.fetchPlayerStats();
         if (store.tournamentModalOpen && store.selectedTournamentId === msg.tournament.tournamentId) {
           void tournamentClient.fetchTournamentDetail(msg.tournament.tournamentId);
