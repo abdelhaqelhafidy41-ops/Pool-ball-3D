@@ -5,6 +5,8 @@ import {
   RACK_ORDER,
   TABLE_DIMENSIONS,
 } from '../utils/constants';
+import { disposeObject3D } from '../utils/dispose';
+import type { GraphicsQualityProfile } from '../utils/graphicsQuality';
 import {
   createAllBallTextures,
   createContactShadowTexture,
@@ -13,8 +15,8 @@ import {
 export interface BallInstance {
   number: number;
   mesh: THREE.Mesh;
-  shadowMesh: THREE.Mesh;
   pocketed: boolean;
+  visualScale: number;
 }
 
 export function computeInitialBallPositions(): Array<{ number: number; x: number; y: number; z: number }> {
@@ -52,15 +54,26 @@ export function computeInitialBallPositions(): Array<{ number: number; x: number
 }
 
 const _auroraEmissiveColor = new THREE.Color();
+const _shadowMatrix = new THREE.Matrix4();
+const _shadowPos = new THREE.Vector3();
+const _shadowQuat = new THREE.Quaternion();
+const _shadowScale = new THREE.Vector3();
 
 export class BilliardBalls {
   public readonly group = new THREE.Group();
   public readonly balls = new Map<number, BallInstance>();
 
-  private readonly maxAnisotropy: number;
+  private maxAnisotropy: number;
   private currentSkinId = 'ball_classic';
+  private sphereGeo!: THREE.SphereGeometry;
+  private currentWidthSegs = 48;
+  private currentHeightSegs = 32;
+  private envMapScale = 1.0;
+
   private textures: THREE.CanvasTexture[] = [];
   private materials: THREE.MeshPhysicalMaterial[] = [];
+  private baseEnvIntensities: number[] = [];
+  private shadowInstancedMesh!: THREE.InstancedMesh;
 
   constructor(maxAnisotropy: number) {
     this.maxAnisotropy = maxAnisotropy;
@@ -69,14 +82,29 @@ export class BilliardBalls {
   }
 
   private buildBalls(maxAnisotropy: number) {
-    const sphereGeo = new THREE.SphereGeometry(BALL_SPECS.radius, 48, 32);
+    this.sphereGeo = new THREE.SphereGeometry(
+      BALL_SPECS.radius,
+      this.currentWidthSegs,
+      this.currentHeightSegs,
+    );
     this.textures = createAllBallTextures(maxAnisotropy, this.currentSkinId);
 
     const shadowTex = createContactShadowTexture();
     const shadowGeo = new THREE.PlaneGeometry(BALL_SPECS.radius * 2.5, BALL_SPECS.radius * 2.5);
     shadowGeo.rotateX(-Math.PI / 2);
+    const shadowMat = new THREE.MeshBasicMaterial({
+      map: shadowTex,
+      transparent: true,
+      depthWrite: false,
+      opacity: 0.58,
+    });
+    this.shadowInstancedMesh = new THREE.InstancedMesh(shadowGeo, shadowMat, 16);
+    this.shadowInstancedMesh.name = 'BallContactShadows';
+    this.shadowInstancedMesh.frustumCulled = false;
+    this.group.add(this.shadowInstancedMesh);
 
     const initialPositions = computeInitialBallPositions();
+    const shadowY = TABLE_DIMENSIONS.surfaceY + 0.0007;
 
     for (const pos of initialPositions) {
       const def = BALL_DEFINITIONS[pos.number];
@@ -89,11 +117,12 @@ export class BilliardBalls {
         clearcoat: 1.0,
         clearcoatRoughness: 0.05,
         reflectivity: 0.9,
-        envMapIntensity: 1.15,
+        envMapIntensity: 1.15 * this.envMapScale,
       });
       this.materials[def.number] = mat;
+      this.baseEnvIntensities[def.number] = 1.15;
 
-      const mesh = new THREE.Mesh(sphereGeo, mat);
+      const mesh = new THREE.Mesh(this.sphereGeo, mat);
       mesh.position.set(pos.x, pos.y, pos.z);
       // Orient numbers so they face nicely upward/outward on rack
       mesh.rotation.set(0.25, -Math.PI * 0.5, 0);
@@ -101,25 +130,21 @@ export class BilliardBalls {
       mesh.receiveShadow = true;
       mesh.name = `Ball_${def.number}`;
 
-      const shadowMat = new THREE.MeshBasicMaterial({
-        map: shadowTex,
-        transparent: true,
-        depthWrite: false,
-        opacity: 0.58,
-      });
-      const shadowMesh = new THREE.Mesh(shadowGeo, shadowMat);
-      shadowMesh.position.set(pos.x, TABLE_DIMENSIONS.surfaceY + 0.0007, pos.z);
-
       this.group.add(mesh);
-      this.group.add(shadowMesh);
+
+      _shadowPos.set(pos.x, shadowY, pos.z);
+      _shadowScale.set(1, 1, 1);
+      _shadowMatrix.compose(_shadowPos, _shadowQuat, _shadowScale);
+      this.shadowInstancedMesh.setMatrixAt(def.number, _shadowMatrix);
 
       this.balls.set(def.number, {
         number: def.number,
         mesh,
-        shadowMesh,
         pocketed: false,
+        visualScale: 1,
       });
     }
+    this.shadowInstancedMesh.instanceMatrix.needsUpdate = true;
   }
 
   public applyBallSkin(ballSkinId: string) {
@@ -139,20 +164,22 @@ export class BilliardBalls {
       mat.emissive.setHex(0x000000);
       mat.emissiveIntensity = 0;
 
+      let baseEnv = 1.15;
+
       switch (targetId) {
         case 'ball_brushed_metallic':
           mat.metalness = 0.72;
           mat.roughness = 0.22;
           mat.clearcoat = 0.65;
           mat.clearcoatRoughness = 0.14;
-          mat.envMapIntensity = 1.45;
+          baseEnv = 1.45;
           break;
         case 'ball_golden':
           mat.metalness = 0.88;
           mat.roughness = 0.14;
           mat.clearcoat = 0.9;
           mat.clearcoatRoughness = 0.06;
-          mat.envMapIntensity = 1.55;
+          baseEnv = 1.55;
           mat.emissive.setHex(0x78350f);
           mat.emissiveIntensity = 0.08;
           break;
@@ -162,7 +189,7 @@ export class BilliardBalls {
           mat.clearcoat = 1.0;
           mat.clearcoatRoughness = 0.02;
           mat.reflectivity = 1.0;
-          mat.envMapIntensity = 1.6;
+          baseEnv = 1.6;
           mat.emissive.set(def.number === 0 ? '#7dd3fc' : '#38bdf8');
           mat.emissiveIntensity = 0.14;
           break;
@@ -171,7 +198,7 @@ export class BilliardBalls {
           mat.roughness = 0.14;
           mat.clearcoat = 1.0;
           mat.clearcoatRoughness = 0.04;
-          mat.envMapIntensity = 1.2;
+          baseEnv = 1.2;
           mat.emissive.set(def.number === 0 ? '#22d3ee' : def.color);
           mat.emissiveIntensity = def.number === 8 ? 0.12 : 0.22;
           break;
@@ -180,14 +207,14 @@ export class BilliardBalls {
           mat.roughness = 0.1;
           mat.clearcoat = 1.0;
           mat.clearcoatRoughness = 0.03;
-          mat.envMapIntensity = 1.25;
+          baseEnv = 1.25;
           break;
         case 'ball_aurora_chroma':
           mat.metalness = 0.28;
           mat.roughness = 0.11;
           mat.clearcoat = 1.0;
           mat.clearcoatRoughness = 0.04;
-          mat.envMapIntensity = 1.35;
+          baseEnv = 1.35;
           mat.emissive.setHex(0x38bdf8);
           mat.emissiveIntensity = 0.16;
           break;
@@ -196,7 +223,7 @@ export class BilliardBalls {
           mat.roughness = 0.15;
           mat.clearcoat = 0.95;
           mat.clearcoatRoughness = 0.06;
-          mat.envMapIntensity = 1.45;
+          baseEnv = 1.45;
           mat.emissive.setHex(0xf59e0b);
           mat.emissiveIntensity = def.number === 8 ? 0.12 : 0.07;
           break;
@@ -206,10 +233,12 @@ export class BilliardBalls {
           mat.roughness = 0.13;
           mat.clearcoat = 1.0;
           mat.clearcoatRoughness = 0.05;
-          mat.envMapIntensity = 1.15;
+          baseEnv = 1.15;
           break;
       }
 
+      this.baseEnvIntensities[def.number] = baseEnv;
+      mat.envMapIntensity = baseEnv * this.envMapScale;
       mat.needsUpdate = true;
     }
 
@@ -218,7 +247,67 @@ export class BilliardBalls {
     }
   }
 
-  public update(elapsedSec: number) {
+  public setQualityProfile(profile: GraphicsQualityProfile, rendererMaxAnisotropy: number) {
+    const aniso = Math.min(rendererMaxAnisotropy, profile.maxAnisotropyCap);
+    this.maxAnisotropy = aniso;
+    this.envMapScale = profile.envMapIntensityScale;
+
+    for (const tex of this.textures) {
+      if (tex && tex.anisotropy !== aniso) {
+        tex.anisotropy = aniso;
+        tex.needsUpdate = true;
+      }
+    }
+
+    for (let i = 0; i < this.materials.length; i++) {
+      const mat = this.materials[i];
+      if (!mat) continue;
+      const baseEnv = this.baseEnvIntensities[i] ?? 1.15;
+      mat.envMapIntensity = baseEnv * this.envMapScale;
+    }
+
+    if (
+      profile.ballWidthSegments !== this.currentWidthSegs ||
+      profile.ballHeightSegments !== this.currentHeightSegs
+    ) {
+      this.currentWidthSegs = profile.ballWidthSegments;
+      this.currentHeightSegs = profile.ballHeightSegments;
+      const oldGeo = this.sphereGeo;
+      const nextGeo = new THREE.SphereGeometry(
+        BALL_SPECS.radius,
+        this.currentWidthSegs,
+        this.currentHeightSegs,
+      );
+      this.sphereGeo = nextGeo;
+      for (const inst of this.balls.values()) {
+        inst.mesh.geometry = nextGeo;
+      }
+      oldGeo.dispose();
+    }
+  }
+
+  public update(elapsedSec: number, dt = 0.016) {
+    const safeDt = Math.max(0, Math.min(0.05, dt));
+
+    for (const inst of this.balls.values()) {
+      if (inst.pocketed) {
+        if (inst.mesh.visible) {
+          inst.visualScale = Math.max(0, inst.visualScale - safeDt * 5.5);
+          if (inst.visualScale <= 0.04) {
+            inst.visualScale = 0;
+            inst.mesh.scale.setScalar(0.001);
+            inst.mesh.visible = false;
+          } else {
+            inst.mesh.scale.setScalar(inst.visualScale);
+          }
+        }
+      } else if (inst.visualScale < 1) {
+        inst.visualScale = 1;
+        inst.mesh.visible = true;
+        inst.mesh.scale.setScalar(1);
+      }
+    }
+
     if (this.currentSkinId === 'ball_aurora_chroma') {
       const baseHue = (elapsedSec * 0.14) % 1;
       for (let i = 0; i < this.materials.length; i++) {
@@ -252,14 +341,57 @@ export class BilliardBalls {
     const inst = this.balls.get(ballNumber);
     if (!inst) return;
 
+    const wasPocketed = inst.pocketed;
     inst.pocketed = pocketed;
     inst.mesh.position.set(x, y, z);
     inst.mesh.quaternion.set(qx, qy, qz, qw);
 
     const onTable = !pocketed && y >= TABLE_DIMENSIONS.surfaceY - 0.01;
-    inst.shadowMesh.visible = onTable;
-    if (onTable) {
-      inst.shadowMesh.position.set(x, TABLE_DIMENSIONS.surfaceY + 0.0007, z);
+
+    if (!pocketed) {
+      if (wasPocketed || !inst.mesh.visible) {
+        inst.visualScale = 1;
+        inst.mesh.visible = true;
+        inst.mesh.scale.setScalar(1);
+      } else if (y < TABLE_DIMENSIONS.surfaceY - 0.002) {
+        // Gentle visual shrink while sinking inside pocket well
+        const depth = Math.max(0, TABLE_DIMENSIONS.surfaceY - y);
+        const dropScale = Math.max(0.55, 1 - depth * 3.2);
+        inst.visualScale = dropScale;
+        inst.mesh.scale.setScalar(dropScale);
+      } else if (inst.visualScale !== 1) {
+        inst.visualScale = 1;
+        inst.mesh.scale.setScalar(1);
+      }
     }
+
+    if (onTable) {
+      _shadowPos.set(x, TABLE_DIMENSIONS.surfaceY + 0.0007, z);
+      _shadowScale.set(1, 1, 1);
+    } else {
+      _shadowPos.set(x, -10, z);
+      _shadowScale.set(0, 0, 0);
+    }
+    _shadowMatrix.compose(_shadowPos, _shadowQuat, _shadowScale);
+    this.shadowInstancedMesh.setMatrixAt(ballNumber, _shadowMatrix);
+    this.shadowInstancedMesh.instanceMatrix.needsUpdate = true;
+  }
+
+  public getShadowInstancedMesh(): THREE.InstancedMesh {
+    return this.shadowInstancedMesh;
+  }
+
+  public getGeometrySegmentCounts(): { widthSegments: number; heightSegments: number } {
+    return {
+      widthSegments: this.currentWidthSegs,
+      heightSegments: this.currentHeightSegs,
+    };
+  }
+
+  public dispose() {
+    disposeObject3D(this.group);
+    this.textures = [];
+    this.materials = [];
+    this.balls.clear();
   }
 }

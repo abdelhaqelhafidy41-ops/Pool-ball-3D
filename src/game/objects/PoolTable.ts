@@ -12,12 +12,13 @@ import {
   type TableTrimMetal,
   type TableWoodFinish,
 } from '../utils/ProceduralTextures';
+import type { GraphicsQualityProfile } from '../utils/graphicsQuality';
 
 export class PoolTable {
   public readonly group = new THREE.Group();
   private readonly decorationGroup = new THREE.Group();
 
-  private feltMaterial!: THREE.MeshStandardMaterial;
+  private feltMaterial!: THREE.MeshPhysicalMaterial;
   private cushionMaterial!: THREE.MeshStandardMaterial;
   private woodMaterial!: THREE.MeshPhysicalMaterial;
   private darkWoodMaterial!: THREE.MeshStandardMaterial;
@@ -29,6 +30,7 @@ export class PoolTable {
   private feltTextures!: FeltTextureSet;
   private woodMap!: THREE.CanvasTexture;
   private woodRoughMap!: THREE.CanvasTexture;
+  private diamondSightsMesh: THREE.InstancedMesh | null = null;
 
   private maxAnisotropy: number;
   private currentTableSkinId = 'table_classic_green';
@@ -56,12 +58,15 @@ export class PoolTable {
     this.appliedFeltKey = `${this.currentTableSkinId}::${theme}`;
 
     // Materials
-    this.feltMaterial = new THREE.MeshStandardMaterial({
+    this.feltMaterial = new THREE.MeshPhysicalMaterial({
       map: this.feltTextures.map,
       bumpMap: this.feltTextures.bumpMap,
       bumpScale: 0.0022,
       roughness: 0.88,
       metalness: 0.0,
+      sheen: 0.36,
+      sheenRoughness: 0.84,
+      sheenColor: new THREE.Color(spec.clothHighlight),
     });
 
     this.cushionMaterial = new THREE.MeshStandardMaterial({
@@ -387,7 +392,7 @@ export class PoolTable {
     railMesh.name = 'WoodenRails';
     this.group.add(railMesh);
 
-    // Mother-of-Pearl Diamond Sights (18 sights inlaid flush on top of the rails)
+    // Mother-of-Pearl Diamond Sights (18 sights inlaid flush via single InstancedMesh)
     const diamondShape = new THREE.Shape();
     diamondShape.moveTo(0, 0.012);
     diamondShape.lineTo(0.007, 0);
@@ -403,25 +408,42 @@ export class PoolTable {
     const shortSightX = innerEdgeX + D.railWidth * 0.5;
 
     const longFractions = [-3 / 8, -2 / 8, -1 / 8, 1 / 8, 2 / 8, 3 / 8];
+    const shortFractions = [-1 / 4, 0, 1 / 4];
+    const totalSights = longFractions.length * 2 + shortFractions.length * 2;
+
+    const sightInstanced = new THREE.InstancedMesh(sightGeo, pearlMat, totalSights);
+    sightInstanced.name = 'DiamondSights';
+
+    const matrix = new THREE.Matrix4();
+    const posVec = new THREE.Vector3();
+    const quatId = new THREE.Quaternion();
+    const quatRot = new THREE.Quaternion().setFromAxisAngle(
+      THREE.Object3D.DEFAULT_UP,
+      Math.PI / 2,
+    );
+    const scaleOne = new THREE.Vector3(1, 1, 1);
+
+    let instanceIdx = 0;
     for (const frac of longFractions) {
       const sx = frac * D.playLength;
       for (const sz of [-longSightZ, longSightZ]) {
-        const m = new THREE.Mesh(sightGeo, pearlMat);
-        m.position.set(sx, sightY, sz);
-        this.group.add(m);
+        posVec.set(sx, sightY, sz);
+        matrix.compose(posVec, quatId, scaleOne);
+        sightInstanced.setMatrixAt(instanceIdx++, matrix);
       }
     }
 
-    const shortFractions = [-1 / 4, 0, 1 / 4];
     for (const frac of shortFractions) {
       const sz = frac * D.playWidth;
       for (const sx of [-shortSightX, shortSightX]) {
-        const m = new THREE.Mesh(sightGeo, pearlMat);
-        m.position.set(sx, sightY, sz);
-        m.rotation.y = Math.PI / 2;
-        this.group.add(m);
+        posVec.set(sx, sightY, sz);
+        matrix.compose(posVec, quatRot, scaleOne);
+        sightInstanced.setMatrixAt(instanceIdx++, matrix);
       }
     }
+    sightInstanced.instanceMatrix.needsUpdate = true;
+    this.diamondSightsMesh = sightInstanced;
+    this.group.add(sightInstanced);
   }
 
   /**
@@ -858,6 +880,7 @@ export class PoolTable {
       this.feltTextures = nextFelt;
       this.feltMaterial.map = nextFelt.map;
       this.feltMaterial.bumpMap = nextFelt.bumpMap;
+      this.feltMaterial.sheenColor.set(spec.clothHighlight);
       this.feltMaterial.needsUpdate = true;
 
       this.cushionMaterial.color.setHex(spec.cushionHex);
@@ -899,5 +922,38 @@ export class PoolTable {
       this.currentDecorationId = normalizedDecor;
       this.rebuildDecorations(normalizedDecor, normalizedTable);
     }
+  }
+
+  public setQualityProfile(profile: GraphicsQualityProfile, rendererMaxAnisotropy: number) {
+    const aniso = Math.min(rendererMaxAnisotropy, profile.maxAnisotropyCap);
+    this.maxAnisotropy = aniso;
+
+    this.feltMaterial.sheen = profile.feltSheen;
+    this.feltMaterial.bumpScale = profile.feltBumpScale;
+    this.feltMaterial.needsUpdate = true;
+
+    this.cushionMaterial.bumpScale = profile.feltBumpScale * 0.85;
+    this.cushionMaterial.needsUpdate = true;
+
+    for (const tex of [
+      this.feltTextures?.map,
+      this.feltTextures?.bumpMap,
+      this.woodMap,
+      this.woodRoughMap,
+    ]) {
+      if (tex && tex.anisotropy !== aniso) {
+        tex.anisotropy = aniso;
+        tex.needsUpdate = true;
+      }
+    }
+  }
+
+  public getDiamondSightsMesh(): THREE.InstancedMesh | null {
+    return this.diamondSightsMesh;
+  }
+
+  public dispose() {
+    disposeObject3D(this.group);
+    this.diamondSightsMesh = null;
   }
 }

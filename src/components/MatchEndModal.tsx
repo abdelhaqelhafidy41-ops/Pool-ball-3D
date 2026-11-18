@@ -1,4 +1,4 @@
-import { Award, Coins, Crown, Film, Globe, Home, RotateCcw, ShoppingBag, Target, Trophy } from 'lucide-react';
+import { Award, Coins, Crown, Film, Globe, Home, RotateCcw, Shield, ShoppingBag, Target, Trophy } from 'lucide-react';
 import { useEffect, useRef } from 'react';
 import { computeAverageBallsPerTurn } from '../game/rules/MatchStatistics';
 import { soundEngine } from '../game/utils/SoundEngine';
@@ -154,6 +154,12 @@ export function MatchEndModal({ onPlayAgain, onMainMenu, onWatchReplay }: MatchE
       : matchConfig.player2Name.trim() || 'Player 2';
 
   const winnerName = winner === 'player1' ? p1Name : p2Name;
+  const isPlayerDefeat =
+    isOnline && onlineLocalRole !== null
+      ? winner !== onlineLocalRole
+      : matchConfig.opponentType === 'ai'
+        ? winner === 'player2'
+        : false;
   const avgPerTurn = computeAverageBallsPerTurn(matchStats);
   const hasVotedRematch = Boolean(onlineLocalRole && onlineRematchVotes.includes(onlineLocalRole));
   const opponentVotedRematch = onlineRematchVotes.some((r) => r !== onlineLocalRole);
@@ -165,21 +171,45 @@ export function MatchEndModal({ onPlayAgain, onMainMenu, onWatchReplay }: MatchE
       aria-label="Match Result"
       className="fixed inset-0 z-40 flex items-center justify-center bg-black/70 p-3 sm:p-4"
     >
-      <div className="modal-scroll-y max-h-[92dvh] w-full max-w-md rounded-2xl border border-amber-400/35 bg-[#0e151e] p-5 sm:p-6 text-slate-100 shadow-2xl">
+      <div
+        data-testid="match-end-card"
+        data-outcome={isPlayerDefeat ? 'defeat' : 'victory'}
+        className={`modal-scroll-y max-h-[92dvh] w-full max-w-md rounded-2xl border bg-[#0e151e] p-5 sm:p-6 text-slate-100 shadow-2xl ${
+          isPlayerDefeat ? 'border-rose-400/30' : 'border-amber-400/35'
+        }`}
+      >
         <div className="flex flex-col items-center text-center">
-          <div className="flex h-12 w-12 items-center justify-center rounded-xl border border-amber-400/40 bg-amber-500/15">
-            <Trophy className="h-6 w-6 text-amber-400" />
+          <div
+            className={`flex h-12 w-12 items-center justify-center rounded-xl border ${
+              isPlayerDefeat
+                ? 'border-rose-400/35 bg-rose-500/12'
+                : 'border-amber-400/40 bg-amber-500/15'
+            }`}
+          >
+            {isPlayerDefeat ? (
+              <Shield className="h-6 w-6 text-rose-300" />
+            ) : (
+              <Trophy className="h-6 w-6 text-amber-400" />
+            )}
           </div>
 
-          <p className="mt-3 text-[11px] font-bold uppercase tracking-[0.2em] text-amber-400">
+          <p
+            className={`mt-3 text-[11px] font-bold uppercase tracking-[0.2em] ${
+              isPlayerDefeat ? 'text-rose-300' : 'text-amber-400'
+            }`}
+          >
             {onlineRoom?.tournament
               ? `${onlineRoom.tournament.tournamentTitle} · ${onlineRoom.tournament.roundLabel}`
               : isOnline
-                ? 'Online Match Complete'
-                : 'Match Complete'}
+                ? isPlayerDefeat
+                  ? 'Online Match · Defeat'
+                  : 'Online Match Complete'
+                : isPlayerDefeat
+                  ? 'Match Complete · Defeat'
+                  : 'Match Complete'}
           </p>
           <h2 className="mt-1 text-2xl font-extrabold tracking-tight text-white">
-            {winnerName} Wins!
+            {isPlayerDefeat ? `${winnerName} Won This Rack` : `${winnerName} Wins!`}
           </h2>
           <p className="mt-1.5 text-sm text-slate-300">
             {gameOverReason ?? 'Official 8-Ball rack completed.'}

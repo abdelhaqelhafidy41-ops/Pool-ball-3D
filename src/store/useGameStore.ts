@@ -68,9 +68,152 @@ import type {
   AiMatchProgressResponse,
   BattlePassOverview,
 } from '../multiplayer/shared/battlePass';
+import {
+  detectRecommendedQuality,
+  sanitizeGraphicsQuality,
+  type GraphicsQuality,
+} from '../game/utils/graphicsQuality';
 
 const PROFILE_STORAGE_KEY = 'ultimate_pool_3d_online_profile_v1';
 const COSMETICS_STORAGE_KEY = 'ultimate_pool_3d_cosmetics_v1';
+const AUDIO_STORAGE_KEY = 'ultimate_pool_3d_audio_v1';
+const GRAPHICS_STORAGE_KEY = 'ultimate_pool_3d_graphics_v1';
+
+interface PersistedAudioPrefs {
+  soundEnabled: boolean;
+  soundVolume: number;
+  sfxVolume: number;
+  sfxMuted: boolean;
+  musicVolume: number;
+  musicMuted: boolean;
+}
+
+const DEFAULT_AUDIO_PREFS: PersistedAudioPrefs = {
+  soundEnabled: true,
+  soundVolume: 0.78,
+  sfxVolume: 0.85,
+  sfxMuted: false,
+  musicVolume: 0.3,
+  musicMuted: false,
+};
+
+function clampUnit(v: unknown, fallback: number): number {
+  return typeof v === 'number' && Number.isFinite(v) ? Math.max(0, Math.min(1, v)) : fallback;
+}
+
+function loadSavedAudioPrefs(): PersistedAudioPrefs {
+  try {
+    if (typeof window === 'undefined' || !window.localStorage) {
+      return { ...DEFAULT_AUDIO_PREFS };
+    }
+    const raw = window.localStorage.getItem(AUDIO_STORAGE_KEY);
+    if (!raw) return { ...DEFAULT_AUDIO_PREFS };
+    const parsed = JSON.parse(raw) as Partial<PersistedAudioPrefs>;
+    return {
+      soundEnabled:
+        typeof parsed.soundEnabled === 'boolean'
+          ? parsed.soundEnabled
+          : DEFAULT_AUDIO_PREFS.soundEnabled,
+      soundVolume: clampUnit(parsed.soundVolume, DEFAULT_AUDIO_PREFS.soundVolume),
+      sfxVolume: clampUnit(parsed.sfxVolume, DEFAULT_AUDIO_PREFS.sfxVolume),
+      sfxMuted:
+        typeof parsed.sfxMuted === 'boolean' ? parsed.sfxMuted : DEFAULT_AUDIO_PREFS.sfxMuted,
+      musicVolume: clampUnit(parsed.musicVolume, DEFAULT_AUDIO_PREFS.musicVolume),
+      musicMuted:
+        typeof parsed.musicMuted === 'boolean'
+          ? parsed.musicMuted
+          : DEFAULT_AUDIO_PREFS.musicMuted,
+    };
+  } catch {
+    return { ...DEFAULT_AUDIO_PREFS };
+  }
+}
+
+function persistAudioPrefs(prefs: PersistedAudioPrefs): void {
+  try {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      window.localStorage.setItem(AUDIO_STORAGE_KEY, JSON.stringify(prefs));
+    }
+  } catch {
+    // Ignore storage restriction
+  }
+}
+
+interface PersistedGraphicsPrefs {
+  graphicsQuality?: GraphicsQuality;
+  shadowsEnabled?: boolean;
+  showFps?: boolean;
+  showDiagnostics?: boolean;
+  feltTheme?: FeltTheme;
+  showAimGuide?: boolean;
+  cameraSensitivity?: number;
+}
+
+function loadSavedGraphicsPrefs(recommended: GraphicsQuality): {
+  graphicsQuality: GraphicsQuality;
+  shadowsEnabled: boolean;
+  showFps: boolean;
+  showDiagnostics: boolean;
+  feltTheme: FeltTheme;
+  showAimGuide: boolean;
+  cameraSensitivity: number;
+} {
+  const defaults = {
+    graphicsQuality: recommended,
+    shadowsEnabled: recommended !== 'low',
+    showFps: false,
+    showDiagnostics: false,
+    feltTheme: 'tournamentGreen' as FeltTheme,
+    showAimGuide: true,
+    cameraSensitivity: 1.0,
+  };
+  try {
+    if (typeof window === 'undefined' || !window.localStorage) {
+      return defaults;
+    }
+    const raw = window.localStorage.getItem(GRAPHICS_STORAGE_KEY);
+    if (!raw) return defaults;
+    const parsed = JSON.parse(raw) as PersistedGraphicsPrefs;
+    const savedQuality = sanitizeGraphicsQuality(parsed.graphicsQuality) ?? recommended;
+    const validTheme: FeltTheme =
+      parsed.feltTheme === 'tournamentGreen' ||
+      parsed.feltTheme === 'championshipBlue' ||
+      parsed.feltTheme === 'burgundyClub'
+        ? parsed.feltTheme
+        : defaults.feltTheme;
+    return {
+      graphicsQuality: savedQuality,
+      shadowsEnabled:
+        typeof parsed.shadowsEnabled === 'boolean'
+          ? parsed.shadowsEnabled
+          : savedQuality !== 'low',
+      showFps: typeof parsed.showFps === 'boolean' ? parsed.showFps : defaults.showFps,
+      showDiagnostics:
+        typeof parsed.showDiagnostics === 'boolean'
+          ? parsed.showDiagnostics
+          : defaults.showDiagnostics,
+      feltTheme: validTheme,
+      showAimGuide:
+        typeof parsed.showAimGuide === 'boolean' ? parsed.showAimGuide : defaults.showAimGuide,
+      cameraSensitivity:
+        typeof parsed.cameraSensitivity === 'number' && Number.isFinite(parsed.cameraSensitivity)
+          ? Math.max(0.4, Math.min(2.0, parsed.cameraSensitivity))
+          : defaults.cameraSensitivity,
+    };
+  } catch {
+    return defaults;
+  }
+}
+
+function persistGraphicsPrefs(settings: GameSettings): void {
+  try {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      window.localStorage.setItem(GRAPHICS_STORAGE_KEY, JSON.stringify(settings));
+    }
+  } catch {
+    // Ignore storage restriction
+  }
+}
 
 function makeClientMatchId(): string {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
@@ -194,11 +337,26 @@ export interface CueSpin {
   y: number; // -0.78 (Bottom/Draw) .. +0.78 (Top/Follow)
 }
 
+export type WebGlEngineStatus = 'active' | 'software' | 'context_lost';
+
+export interface PerfDiagnosticsSnapshot {
+  fps: number;
+  avgFps: number;
+  frameTimeMs: number;
+  drawCalls: number;
+  triangles: number;
+  geometries: number;
+  textures: number;
+  activeParticles: number;
+}
+
 export interface GameSettings {
   feltTheme: FeltTheme;
+  graphicsQuality: GraphicsQuality;
   shadowsEnabled: boolean;
   showAimGuide: boolean;
   showFps: boolean;
+  showDiagnostics: boolean;
   cameraSensitivity: number;
 }
 
@@ -226,11 +384,18 @@ export interface GameState {
   settingsOpen: boolean;
   isLoading: boolean;
   loadError: string | null;
+  webglStatus: WebGlEngineStatus;
+  autoRecommendedQuality: GraphicsQuality;
   fps: number;
+  perfStats: PerfDiagnosticsSnapshot;
   cameraPreset: CameraPreset;
   cameraRequestCounter: number;
   soundEnabled: boolean;
   soundVolume: number;
+  sfxVolume: number;
+  sfxMuted: boolean;
+  musicVolume: number;
+  musicMuted: boolean;
   isFullscreen: boolean;
   hudCollapsed: boolean;
   cueAngle: number; // radians around cue ball
@@ -370,10 +535,16 @@ export interface GameState {
   setSettingsOpen: (open: boolean) => void;
   setLoading: (loading: boolean) => void;
   setLoadError: (error: string | null) => void;
+  setWebglStatus: (status: WebGlEngineStatus) => void;
   setFps: (fps: number) => void;
+  setPerfStats: (stats: PerfDiagnosticsSnapshot) => void;
   requestCameraPreset: (preset: CameraPreset) => void;
   toggleSound: () => void;
   setSoundVolume: (vol: number) => void;
+  setSfxVolume: (vol: number) => void;
+  toggleSfxMuted: () => void;
+  setMusicVolume: (vol: number) => void;
+  toggleMusicMuted: () => void;
   setIsFullscreen: (fs: boolean) => void;
   toggleHudCollapsed: () => void;
   setCueAngle: (angle: number) => void;
@@ -558,16 +729,36 @@ function clampCueSpin(x: number, y: number): CueSpin {
   return { x: x * scale, y: y * scale };
 }
 
+const INITIAL_RECOMMENDED_QUALITY = detectRecommendedQuality();
+const INITIAL_AUDIO_PREFS = loadSavedAudioPrefs();
+const INITIAL_GRAPHICS_PREFS = loadSavedGraphicsPrefs(INITIAL_RECOMMENDED_QUALITY);
+
 export const useGameStore = create<GameState>((set) => ({
   screen: 'menu',
   settingsOpen: false,
   isLoading: true,
   loadError: null,
+  webglStatus: 'active',
+  autoRecommendedQuality: INITIAL_RECOMMENDED_QUALITY,
   fps: 60,
+  perfStats: {
+    fps: 60,
+    avgFps: 60,
+    frameTimeMs: 16.7,
+    drawCalls: 0,
+    triangles: 0,
+    geometries: 0,
+    textures: 0,
+    activeParticles: 0,
+  },
   cameraPreset: 'threeQuarter',
   cameraRequestCounter: 0,
-  soundEnabled: true,
-  soundVolume: 0.75,
+  soundEnabled: INITIAL_AUDIO_PREFS.soundEnabled,
+  soundVolume: INITIAL_AUDIO_PREFS.soundVolume,
+  sfxVolume: INITIAL_AUDIO_PREFS.sfxVolume,
+  sfxMuted: INITIAL_AUDIO_PREFS.sfxMuted,
+  musicVolume: INITIAL_AUDIO_PREFS.musicVolume,
+  musicMuted: INITIAL_AUDIO_PREFS.musicMuted,
   isFullscreen: false,
   hudCollapsed: false,
   cueAngle: 0,
@@ -581,11 +772,13 @@ export const useGameStore = create<GameState>((set) => ({
   cueBallPocketed: false,
   shotCount: 0,
   settings: {
-    feltTheme: 'tournamentGreen',
-    shadowsEnabled: true,
-    showAimGuide: true,
-    showFps: true,
-    cameraSensitivity: 1.0,
+    feltTheme: INITIAL_GRAPHICS_PREFS.feltTheme,
+    graphicsQuality: INITIAL_GRAPHICS_PREFS.graphicsQuality,
+    shadowsEnabled: INITIAL_GRAPHICS_PREFS.shadowsEnabled,
+    showAimGuide: INITIAL_GRAPHICS_PREFS.showAimGuide,
+    showFps: INITIAL_GRAPHICS_PREFS.showFps,
+    showDiagnostics: INITIAL_GRAPHICS_PREFS.showDiagnostics,
+    cameraSensitivity: INITIAL_GRAPHICS_PREFS.cameraSensitivity,
   },
 
   matchConfig: createDefaultMatchConfig(),
@@ -723,14 +916,92 @@ export const useGameStore = create<GameState>((set) => ({
   setSettingsOpen: (settingsOpen) => set({ settingsOpen }),
   setLoading: (isLoading) => set({ isLoading }),
   setLoadError: (loadError) => set({ loadError }),
+  setWebglStatus: (webglStatus) => set({ webglStatus }),
   setFps: (fps) => set({ fps }),
+  setPerfStats: (perfStats) => set({ perfStats, fps: perfStats.fps }),
   requestCameraPreset: (cameraPreset) =>
     set((state) => ({
       cameraPreset,
       cameraRequestCounter: state.cameraRequestCounter + 1,
     })),
-  toggleSound: () => set((state) => ({ soundEnabled: !state.soundEnabled })),
-  setSoundVolume: (soundVolume) => set({ soundVolume: Math.max(0, Math.min(1, soundVolume)) }),
+  toggleSound: () =>
+    set((state) => {
+      const next = {
+        soundEnabled: !state.soundEnabled,
+        soundVolume: state.soundVolume,
+        sfxVolume: state.sfxVolume,
+        sfxMuted: state.sfxMuted,
+        musicVolume: state.musicVolume,
+        musicMuted: state.musicMuted,
+      };
+      persistAudioPrefs(next);
+      return { soundEnabled: next.soundEnabled };
+    }),
+  setSoundVolume: (soundVolume) =>
+    set((state) => {
+      const v = Math.max(0, Math.min(1, soundVolume));
+      persistAudioPrefs({
+        soundEnabled: state.soundEnabled,
+        soundVolume: v,
+        sfxVolume: state.sfxVolume,
+        sfxMuted: state.sfxMuted,
+        musicVolume: state.musicVolume,
+        musicMuted: state.musicMuted,
+      });
+      return { soundVolume: v };
+    }),
+  setSfxVolume: (sfxVolume) =>
+    set((state) => {
+      const v = Math.max(0, Math.min(1, sfxVolume));
+      persistAudioPrefs({
+        soundEnabled: state.soundEnabled,
+        soundVolume: state.soundVolume,
+        sfxVolume: v,
+        sfxMuted: state.sfxMuted,
+        musicVolume: state.musicVolume,
+        musicMuted: state.musicMuted,
+      });
+      return { sfxVolume: v };
+    }),
+  toggleSfxMuted: () =>
+    set((state) => {
+      const nextMuted = !state.sfxMuted;
+      persistAudioPrefs({
+        soundEnabled: state.soundEnabled,
+        soundVolume: state.soundVolume,
+        sfxVolume: state.sfxVolume,
+        sfxMuted: nextMuted,
+        musicVolume: state.musicVolume,
+        musicMuted: state.musicMuted,
+      });
+      return { sfxMuted: nextMuted };
+    }),
+  setMusicVolume: (musicVolume) =>
+    set((state) => {
+      const v = Math.max(0, Math.min(1, musicVolume));
+      persistAudioPrefs({
+        soundEnabled: state.soundEnabled,
+        soundVolume: state.soundVolume,
+        sfxVolume: state.sfxVolume,
+        sfxMuted: state.sfxMuted,
+        musicVolume: v,
+        musicMuted: state.musicMuted,
+      });
+      return { musicVolume: v };
+    }),
+  toggleMusicMuted: () =>
+    set((state) => {
+      const nextMuted = !state.musicMuted;
+      persistAudioPrefs({
+        soundEnabled: state.soundEnabled,
+        soundVolume: state.soundVolume,
+        sfxVolume: state.sfxVolume,
+        sfxMuted: state.sfxMuted,
+        musicVolume: state.musicVolume,
+        musicMuted: nextMuted,
+      });
+      return { musicMuted: nextMuted };
+    }),
   setIsFullscreen: (isFullscreen) => set({ isFullscreen }),
   toggleHudCollapsed: () => set((state) => ({ hudCollapsed: !state.hudCollapsed })),
   setCueAngle: (cueAngle) => set({ cueAngle }),
@@ -740,9 +1011,11 @@ export const useGameStore = create<GameState>((set) => ({
   resetCueSpin: () => set({ cueSpin: { x: 0, y: 0 } }),
   setCanvasInteractionMode: (canvasInteractionMode) => set({ canvasInteractionMode }),
   toggleShowAimGuide: () =>
-    set((state) => ({
-      settings: { ...state.settings, showAimGuide: !state.settings.showAimGuide },
-    })),
+    set((state) => {
+      const next = { ...state.settings, showAimGuide: !state.settings.showAimGuide };
+      persistGraphicsPrefs(next);
+      return { settings: next };
+    }),
   setDragState: (isDraggingCue, dragPower) =>
     set({
       isDraggingCue,
@@ -787,9 +1060,11 @@ export const useGameStore = create<GameState>((set) => ({
       matchPlayer1LegalEightBallWin: false,
     }),
   updateSettings: (partial) =>
-    set((state) => ({
-      settings: { ...state.settings, ...partial },
-    })),
+    set((state) => {
+      const next = { ...state.settings, ...partial };
+      persistGraphicsPrefs(next);
+      return { settings: next };
+    }),
 
   syncFromMatchSnapshot: (snapshot) =>
     set({

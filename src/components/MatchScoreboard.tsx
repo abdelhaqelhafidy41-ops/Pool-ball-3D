@@ -105,12 +105,12 @@ function PlayerScoreCard({
   return (
     <div
       data-testid={`player-card-${playerId}`}
-      className={`flex flex-col gap-1 rounded-xl border px-2.5 py-1.5 min-w-[140px] sm:min-w-[196px] transition-colors ${
+      className={`flex flex-col gap-1 rounded-xl border px-2.5 py-1.5 min-w-[140px] sm:min-w-[196px] transition-all duration-300 ${
         isActive
-          ? 'border-amber-400/80 bg-[#131d29]/95 shadow-[0_0_16px_rgba(245,158,11,0.16)]'
+          ? 'border-amber-400/85 bg-[#131d29]/95 shadow-[0_0_16px_rgba(245,158,11,0.18)]'
           : nameplateId && nameplateId !== 'nameplate_standard'
             ? `${nameplate.borderClass} ${nameplate.bgClass}`
-            : 'border-white/10 bg-[#0c1219]/92'
+            : 'border-white/10 bg-[#0c1219]/92 opacity-85'
       } ${align === 'right' ? 'items-end text-right' : 'items-start text-left'}`}
     >
       <div
@@ -192,14 +192,28 @@ function PlayerScoreCard({
         )}
       </div>
 
-      <div className="text-[10px] font-mono tabular-nums text-slate-400">
-        {group
-          ? onEight
-            ? 'TARGET: 8-BALL'
-            : `REMAINING: ${remaining.length}/7`
-          : isActive
-            ? 'ACTIVE TURN'
-            : 'WAITING'}
+      <div
+        className={`flex w-full items-center justify-between gap-2 text-[10px] font-mono tabular-nums ${
+          align === 'right' ? 'flex-row-reverse' : ''
+        }`}
+      >
+        <span className={isActive ? 'text-slate-200 font-semibold' : 'text-slate-400'}>
+          {group
+            ? onEight
+              ? 'TARGET: 8-BALL'
+              : `REMAINING: ${remaining.length}/7`
+            : isActive
+              ? 'OPEN TABLE'
+              : 'WAITING'}
+        </span>
+        {isActive && (
+          <span
+            data-testid={`turn-badge-${playerId}`}
+            className="rounded bg-amber-400/18 px-1.5 py-0.5 text-[9px] font-extrabold uppercase tracking-wider text-amber-300 border border-amber-400/35"
+          >
+            TURN
+          </span>
+        )}
       </div>
     </div>
   );

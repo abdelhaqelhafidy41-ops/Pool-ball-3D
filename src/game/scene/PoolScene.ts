@@ -10,6 +10,7 @@ import { InputManager } from '../controls/InputManager';
 import { BilliardBalls } from '../objects/BilliardBalls';
 import { CueStick } from '../objects/CueStick';
 import { PoolTable } from '../objects/PoolTable';
+import { TableVfxSystem } from '../objects/TableVfxSystem';
 import { VictoryEffects } from '../objects/VictoryEffects';
 import { PhysicsWorld, type BallPhysicsSnapshot } from '../physics/PhysicsWorld';
 import { AITurnController } from '../ai/AITurnController';
@@ -23,6 +24,7 @@ import { generateOfficialEightBallRack } from '../rules/RackGenerator';
 import type { MatchConfig, PocketId } from '../rules/types';
 import { BALL_SPECS, CUE_SPECS, POCKET_POSITIONS, TABLE_DIMENSIONS } from '../utils/constants';
 import { disposeObject3D } from '../utils/dispose';
+import { getGraphicsProfile, type GraphicsQuality } from '../utils/graphicsQuality';
 import { createStudioFloorTexture } from '../utils/ProceduralTextures';
 import { soundEngine } from '../utils/SoundEngine';
 
@@ -63,11 +65,15 @@ export class PoolScene {
   private poolTable!: PoolTable;
   private billiardBalls!: BilliardBalls;
   private cueStick!: CueStick;
+  private tableVfx = new TableVfxSystem();
   private victoryEffects = new VictoryEffects();
   private physics!: PhysicsWorld;
   private cameraController!: CameraController;
   private inputManager!: InputManager;
   private keyLight!: THREE.DirectionalLight;
+  private softboxLight: THREE.RectAreaLight | null = null;
+  private floorTexture: THREE.CanvasTexture | null = null;
+  private rendererMaxAnisotropy = 4;
 
   // Authoritative 8-ball match state machine & AI turn orchestrator
   private matchManager: MatchManager;
@@ -94,9 +100,11 @@ export class PoolScene {
   private frameId = 0;
   private disposed = false;
 
-  // FPS tracking
+  // FPS & diagnostics tracking
   private fpsFrames = 0;
   private fpsTimer = 0;
+  private perfFrameTimeAccumMs = 0;
+  private avgFpsEma = 60;
 
   // Canvas pointer tracking (supports tap-to-aim, 360° drag-to-aim, Ball-in-Hand placement, and OrbitControls separation)
   private pointerDownPos: { x: number; y: number; id: number } | null = null;
@@ -144,10 +152,12 @@ export class PoolScene {
   private unsubStore: (() => void) | null = null;
   private lastCamCounter = 0;
   private lastFeltTheme = useGameStore.getState().settings.feltTheme;
+  private lastGraphicsQuality = useGameStore.getState().settings.graphicsQuality;
   private lastShadowsEnabled = useGameStore.getState().settings.shadowsEnabled;
   private lastSensitivity = useGameStore.getState().settings.cameraSensitivity;
   private lastScreen = useGameStore.getState().screen;
   private lastMatchConfig = useGameStore.getState().matchConfig;
+  private lastActivePlayer = useGameStore.getState().activePlayer;
   private lastSentCueAngle = useGameStore.getState().cueAngle;
   private lastSentSpinX = useGameStore.getState().cueSpin.x;
   private lastSentSpinY = useGameStore.getState().cueSpin.y;
@@ -165,6 +175,8 @@ export class PoolScene {
   private lastWidth = 0;
   private lastHeight = 0;
   private onObserverResizeBound: () => void;
+  private onContextLostBound: (e: Event) => void;
+  private onContextRestoredBound: () => void;
 
   constructor(container: HTMLElement, onToggleFullscreen: () => void) {
     this.container = container;
@@ -174,6 +186,18 @@ export class PoolScene {
     this.onCanvasPointerDownBound = this.handleCanvasPointerDown.bind(this);
     this.onCanvasPointerMoveBound = this.handleCanvasPointerMove.bind(this);
     this.onCanvasPointerUpBound = this.handleCanvasPointerUp.bind(this);
+    this.onContextLostBound = (e: Event) => {
+      e.preventDefault();
+      useGameStore.getState().setWebglStatus('context_lost');
+    };
+    this.onContextRestoredBound = () => {
+      if (this.disposed) return;
+      this.rebuildEnvironmentMap();
+      if (!this.isSoftwareGl) {
+        this.renderer.compile(this.scene, this.cameraController.camera);
+      }
+      useGameStore.getState().setWebglStatus(this.isSoftwareGl ? 'software' : 'active');
+    };
     this.init(onToggleFullscreen);
   }
 
@@ -181,6 +205,7 @@ export class PoolScene {
     const store = useGameStore.getState();
     store.setLoading(true);
     store.setLoadError(null);
+    store.setWebglStatus(this.isSoftwareGl ? 'software' : 'active');
 
     try {
       const width = Math.max(1, this.container.clientWidth);
@@ -209,6 +234,10 @@ export class PoolScene {
       this.renderer.domElement.style.height = '100%';
       this.container.appendChild(this.renderer.domElement);
 
+      // WebGL context recovery safety listeners
+      this.renderer.domElement.addEventListener('webglcontextlost', this.onContextLostBound);
+      this.renderer.domElement.addEventListener('webglcontextrestored', this.onContextRestoredBound);
+
       // Capture-phase listener so drag-to-aim / ball-in-hand can intercept before OrbitControls starts rotating
       this.renderer.domElement.addEventListener(
         'pointerdown',
@@ -225,12 +254,7 @@ export class PoolScene {
       this.scene.fog = new THREE.FogExp2(0x090d11, 0.064);
 
       // 3. Procedural Studio Environment Map (RoomEnvironment)
-      const pmremGenerator = new THREE.PMREMGenerator(this.renderer);
-      const roomEnv = new RoomEnvironment();
-      this.envRT = pmremGenerator.fromScene(roomEnv, 0.04);
-      this.scene.environment = this.envRT.texture;
-      roomEnv.dispose();
-      pmremGenerator.dispose();
+      this.rebuildEnvironmentMap();
 
       // 4. Camera & Controls
       this.cameraController = new CameraController(
@@ -242,21 +266,25 @@ export class PoolScene {
 
       // 5. Invisible Championship Lighting & Studio Room Floor
       this.setupLighting();
-      const maxAnisotropy = Math.min(8, this.renderer.capabilities.getMaxAnisotropy());
-      this.setupStudioRoom(maxAnisotropy);
+      this.rendererMaxAnisotropy = Math.min(8, this.renderer.capabilities.getMaxAnisotropy());
+      const initialProfile = getGraphicsProfile(store.settings.graphicsQuality);
+      const initialAniso = Math.min(this.rendererMaxAnisotropy, initialProfile.maxAnisotropyCap);
+      this.setupStudioRoom(initialAniso);
 
-      // 6. 3D Objects (Table without hanging lamps, 16 Balls, Cue Stick, Match Overlays)
-      this.poolTable = new PoolTable(store.settings.feltTheme, maxAnisotropy);
+      // 6. 3D Objects (Table without hanging lamps, 16 Balls, Cue Stick, Pooled VFX, Match Overlays)
+      this.poolTable = new PoolTable(store.settings.feltTheme, initialAniso);
       this.scene.add(this.poolTable.group);
 
-      this.billiardBalls = new BilliardBalls(maxAnisotropy);
+      this.billiardBalls = new BilliardBalls(initialAniso);
       this.scene.add(this.billiardBalls.group);
 
-      this.cueStick = new CueStick(maxAnisotropy);
+      this.cueStick = new CueStick(initialAniso);
       this.scene.add(this.cueStick.group);
 
+      this.scene.add(this.tableVfx.group);
       this.scene.add(this.victoryEffects.group);
       this.syncCosmeticsFromStore(store, true);
+      this.applyQualityProfile(store.settings.graphicsQuality, store.settings.shadowsEnabled);
 
       this.scene.add(this.replayAnalysisOverlay.group);
 
@@ -267,6 +295,20 @@ export class PoolScene {
       await this.physics.init((ballNumber, _pocketId) => {
         const st = useGameStore.getState();
         st.addPocketedBall(ballNumber);
+      });
+      this.physics.setVisualEventListener({
+        onCollision: (kind, _ballA, _ballB, x, z, impactSpeed) => {
+          if (this.disposed) return;
+          if (kind === 'cushion') {
+            this.tableVfx.emitCushionImpact(x, z, impactSpeed);
+          } else {
+            this.tableVfx.emitBallCollision(x, z, impactSpeed, kind === 'cue_ball');
+          }
+        },
+        onPocket: (ballNumber, pocketId, x, z) => {
+          if (this.disposed) return;
+          this.tableVfx.emitPocketBurst(x, z, pocketId, ballNumber === 8);
+        },
       });
 
       if (this.disposed) return;
@@ -312,6 +354,8 @@ export class PoolScene {
         onOnlineMatchEntered: (snapshot, balls) => {
           this.aiTurnController?.cancel();
           this.victoryEffects.stop();
+          this.tableVfx.reset();
+          this.lastActivePlayer = snapshot.activePlayer;
           if (this.replayController.isActive()) {
             this.exitReplay();
           }
@@ -384,6 +428,11 @@ export class PoolScene {
         },
         onOnlinePocketEvent: (ballNumber, pocketId) => {
           this.shotRecorder.recordPocket(ballNumber, pocketId);
+          soundEngine.playPocketDrop();
+          const pPos = POCKET_POSITIONS.find((p) => p.id === pocketId);
+          if (pPos) {
+            this.tableVfx.emitPocketBurst(pPos.x, pPos.z, pocketId, ballNumber === 8);
+          }
         },
         onOnlineShotSettled: (snapshot, balls) => {
           if (this.shotRecorder.isRecording() && this.shotRecorder.getActiveMode() === 'online') {
@@ -427,6 +476,7 @@ export class PoolScene {
         },
         onOnlineMatchExited: () => {
           this.victoryEffects.stop();
+          this.tableVfx.reset();
           if (this.replayController.isActive()) {
             this.exitReplay();
           }
@@ -456,12 +506,13 @@ export class PoolScene {
         } else {
           this.syncCosmeticsFromStore(state);
         }
-        if (state.settings.shadowsEnabled !== this.lastShadowsEnabled) {
+        if (
+          state.settings.graphicsQuality !== this.lastGraphicsQuality ||
+          state.settings.shadowsEnabled !== this.lastShadowsEnabled
+        ) {
+          this.lastGraphicsQuality = state.settings.graphicsQuality;
           this.lastShadowsEnabled = state.settings.shadowsEnabled;
-          this.renderer.shadowMap.enabled =
-            !this.isSoftwareGl && state.settings.shadowsEnabled;
-          this.keyLight.castShadow =
-            !this.isSoftwareGl && state.settings.shadowsEnabled;
+          this.applyQualityProfile(state.settings.graphicsQuality, state.settings.shadowsEnabled);
         }
         if (state.settings.cameraSensitivity !== this.lastSensitivity) {
           this.lastSensitivity = state.settings.cameraSensitivity;
@@ -471,6 +522,7 @@ export class PoolScene {
           this.lastScreen = state.screen;
           if (state.screen === 'menu') {
             this.victoryEffects.stop();
+            this.tableVfx.reset();
             if (this.replayController.isActive()) {
               this.exitReplay();
             }
@@ -478,6 +530,30 @@ export class PoolScene {
             this.shotRecorder.cancelActiveRecording();
             this.aiTurnController?.cancel();
             this.matchManager.enterMenu();
+          }
+        }
+        if (state.activePlayer !== this.lastActivePlayer) {
+          const prevPlayer = this.lastActivePlayer;
+          this.lastActivePlayer = state.activePlayer;
+          if (
+            prevPlayer &&
+            state.screen === 'playing' &&
+            state.matchConfig.gameMode === 'eightBall' &&
+            state.matchPhase !== 'GAME_OVER' &&
+            state.matchPhase !== 'MENU' &&
+            !this.replayController.isActive()
+          ) {
+            const isLocalTurn =
+              state.matchConfig.opponentType === 'online'
+                ? state.activePlayer === state.onlineLocalRole
+                : state.matchConfig.opponentType === 'ai'
+                  ? state.activePlayer === 'player1'
+                  : true;
+            soundEngine.playTurnChange(isLocalTurn);
+            if (this.physics.isCueBallAvailable()) {
+              this.physics.getCueBallPosition(_cueBallPos);
+              this.tableVfx.emitTurnPulse(_cueBallPos.x, _cueBallPos.z, isLocalTurn);
+            }
           }
         }
         if (state.matchPhase !== this.lastMatchPhaseForVictory) {
@@ -488,12 +564,25 @@ export class PoolScene {
             state.screen === 'playing' &&
             prevPhase !== 'GAME_OVER'
           ) {
-            let victoryId = state.equippedCosmetics.victoryId;
-            if (state.matchConfig.opponentType === 'online' && state.onlineRoom && state.winner) {
-              const winnerPlayer = state.onlineRoom.players.find((p) => p.role === state.winner);
-              victoryId = winnerPlayer?.equippedCosmetics?.victoryId ?? victoryId;
+            const isVictory =
+              state.matchConfig.opponentType === 'online'
+                ? state.winner === state.onlineLocalRole
+                : state.matchConfig.opponentType === 'ai'
+                  ? state.winner === 'player1'
+                  : true;
+
+            if (isVictory) {
+              let victoryId = state.equippedCosmetics.victoryId;
+              if (state.matchConfig.opponentType === 'online' && state.onlineRoom && state.winner) {
+                const winnerPlayer = state.onlineRoom.players.find((p) => p.role === state.winner);
+                victoryId = winnerPlayer?.equippedCosmetics?.victoryId ?? victoryId;
+              }
+              this.victoryEffects.play(victoryId);
+              soundEngine.playVictoryFanfare();
+            } else {
+              this.victoryEffects.stop();
+              soundEngine.playDefeatCue();
             }
-            this.victoryEffects.play(victoryId);
           } else if (state.matchPhase !== 'GAME_OVER') {
             this.victoryEffects.stop();
           }
@@ -940,6 +1029,7 @@ export class PoolScene {
       const softbox = new THREE.RectAreaLight(0xfff3de, 3.0, 2.35, 1.05);
       softbox.position.set(0, 2.42, 0);
       softbox.lookAt(0, TABLE_DIMENSIONS.surfaceY, 0);
+      this.softboxLight = softbox;
       this.scene.add(softbox);
     }
 
@@ -951,8 +1041,54 @@ export class PoolScene {
     }
   }
 
+  private rebuildEnvironmentMap() {
+    if (!this.renderer || !this.scene) return;
+    const prevEnv = this.envRT;
+    const pmremGenerator = new THREE.PMREMGenerator(this.renderer);
+    const roomEnv = new RoomEnvironment();
+    this.envRT = pmremGenerator.fromScene(roomEnv, 0.04);
+    this.scene.environment = this.envRT.texture;
+    roomEnv.dispose();
+    pmremGenerator.dispose();
+    prevEnv?.dispose();
+  }
+
+  private applyQualityProfile(quality: GraphicsQuality, shadowsEnabled: boolean) {
+    if (!this.renderer) return;
+    const profile = getGraphicsProfile(quality);
+    const effectiveShadows = !this.isSoftwareGl && shadowsEnabled && profile.shadowsAllowed;
+    const effectiveDprCap = this.isSoftwareGl ? 1 : profile.dprCap;
+
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, effectiveDprCap));
+    this.renderer.shadowMap.enabled = effectiveShadows;
+
+    if (this.keyLight) {
+      this.keyLight.castShadow = effectiveShadows;
+      if (this.keyLight.shadow.mapSize.x !== profile.shadowMapSize) {
+        this.keyLight.shadow.map?.dispose();
+        this.keyLight.shadow.map = null;
+        this.keyLight.shadow.mapSize.set(profile.shadowMapSize, profile.shadowMapSize);
+      }
+    }
+
+    if (this.softboxLight) {
+      this.softboxLight.visible = !this.isSoftwareGl && profile.useRectAreaLight;
+    }
+
+    const aniso = Math.min(this.rendererMaxAnisotropy, profile.maxAnisotropyCap);
+    if (this.floorTexture && this.floorTexture.anisotropy !== aniso) {
+      this.floorTexture.anisotropy = aniso;
+      this.floorTexture.needsUpdate = true;
+    }
+
+    this.poolTable?.setQualityProfile(profile, this.rendererMaxAnisotropy);
+    this.billiardBalls?.setQualityProfile(profile, this.rendererMaxAnisotropy);
+    this.tableVfx.setMaxParticles(profile.maxVfxParticles);
+  }
+
   private setupStudioRoom(maxAnisotropy: number) {
     const floorTex = createStudioFloorTexture(maxAnisotropy);
+    this.floorTexture = floorTex;
     const floorGeo = new THREE.CircleGeometry(14, 48);
     floorGeo.rotateX(-Math.PI / 2);
     const floorMat = new THREE.MeshStandardMaterial({
@@ -980,6 +1116,7 @@ export class PoolScene {
 
     this.aiTurnController?.cancel();
     this.victoryEffects.stop();
+    this.tableVfx.reset();
     if (this.replayController.isActive()) {
       this.replayController.exitReplay();
       this.replayAnalysisOverlay.clear();
@@ -1003,6 +1140,7 @@ export class PoolScene {
     this.physics.resetRack(rack);
 
     const snapshot = this.matchManager.startMatch(mergedConfig);
+    this.lastActivePlayer = snapshot.activePlayer;
     store.resetMatchStats();
     store.setBallsMoving(false);
     store.setIsAiThinking(false);
@@ -1445,8 +1583,9 @@ export class PoolScene {
     this.lastHeight = height;
     this.cameraController.resize(width / height);
     this.renderer.setSize(width, height, false);
+    const profile = getGraphicsProfile(useGameStore.getState().settings.graphicsQuality);
     this.renderer.setPixelRatio(
-      this.isSoftwareGl ? 1 : Math.min(window.devicePixelRatio || 1, 2),
+      this.isSoftwareGl ? 1 : Math.min(window.devicePixelRatio || 1, profile.dprCap),
     );
   }
 
@@ -1500,21 +1639,33 @@ export class PoolScene {
   private update(dt: number) {
     const store = useGameStore.getState();
 
-    // 1. FPS meter update (every 0.4s)
+    // 1. FPS & Performance Diagnostics update (every 0.4s, zero per-frame allocations)
     this.fpsFrames++;
     this.fpsTimer += dt;
+    this.perfFrameTimeAccumMs += dt * 1000;
     if (this.fpsTimer >= 0.4) {
-      const currentFps = Math.round(this.fpsFrames / this.fpsTimer);
-      if (currentFps !== store.fps) {
-        store.setFps(currentFps);
-      }
+      const currentFps = Math.max(1, Math.round(this.fpsFrames / this.fpsTimer));
+      const avgFrameTimeMs = Number((this.perfFrameTimeAccumMs / this.fpsFrames).toFixed(1));
+      this.avgFpsEma = this.avgFpsEma * 0.75 + currentFps * 0.25;
+      store.setPerfStats({
+        fps: currentFps,
+        avgFps: Math.round(this.avgFpsEma),
+        frameTimeMs: avgFrameTimeMs,
+        drawCalls: this.renderer.info.render.calls,
+        triangles: this.renderer.info.render.triangles,
+        geometries: this.renderer.info.memory.geometries,
+        textures: this.renderer.info.memory.textures,
+        activeParticles: this.tableVfx.getActiveParticleCount(),
+      });
       this.fpsFrames = 0;
       this.fpsTimer = 0;
+      this.perfFrameTimeAccumMs = 0;
     }
 
     // 2. Continuous keyboard aiming input & animated cosmetics
     this.inputManager.update(dt);
-    this.billiardBalls.update(this.clock.elapsedTime);
+    this.billiardBalls.update(this.clock.elapsedTime, dt);
+    this.tableVfx.update(dt);
     this.victoryEffects.update(dt);
 
     // 3. Synchronized forward cue strike animation & exact-contact physics impulse with spin
@@ -1533,6 +1684,14 @@ export class PoolScene {
         if (t >= 1) {
           if (!this.strikeAnim.impulseApplied) {
             this.strikeAnim.impulseApplied = true;
+            this.physics.getCueBallPosition(_cueBallPos);
+            this.tableVfx.emitCueStrike(
+              _cueBallPos.x,
+              _cueBallPos.y,
+              _cueBallPos.z,
+              this.strikeAnim.angle,
+              this.strikeAnim.power,
+            );
             if (!this.strikeAnim.visualOnly) {
               const snap = this.matchManager.getSnapshot();
               this.matchManager.beginShot();
@@ -1887,6 +2046,11 @@ export class PoolScene {
     this.unsubStore?.();
 
     if (this.renderer?.domElement) {
+      this.renderer.domElement.removeEventListener('webglcontextlost', this.onContextLostBound);
+      this.renderer.domElement.removeEventListener(
+        'webglcontextrestored',
+        this.onContextRestoredBound,
+      );
       this.renderer.domElement.removeEventListener(
         'pointerdown',
         this.onCanvasPointerDownBound,
@@ -1897,11 +2061,15 @@ export class PoolScene {
     this.inputManager?.dispose();
     this.cameraController?.dispose();
     this.physics?.setShotStepObserver(null);
+    this.physics?.setVisualEventListener(null);
     this.physics?.dispose();
     this.shotRecorder.clearMatchShots();
     this.replayController.exitReplay();
     this.replayAnalysisOverlay.dispose();
+    this.tableVfx?.dispose();
     this.cueStick?.dispose();
+    this.billiardBalls?.dispose();
+    this.poolTable?.dispose();
     this.victoryEffects?.dispose();
 
     if (this.scene) {

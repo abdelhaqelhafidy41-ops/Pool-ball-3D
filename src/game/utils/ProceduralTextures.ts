@@ -157,15 +157,15 @@ function buildFeltTextureSetFromSpec(
   ctx.fillStyle = grad;
   ctx.fillRect(0, 0, width, height);
 
-  // Fine worsted cloth fiber micro-grain
+  // Fine worsted cloth fiber diagonal twill micro-grain
   const imgData = ctx.getImageData(0, 0, width, height);
   const data = imgData.data;
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
       const idx = (y * width + x) * 4;
-      const twill = (x + y * 2) % 4 === 0 ? 3 : -2;
+      const twill = (x + y * 2) % 4 === 0 ? 4 : (x + y * 2) % 4 === 1 ? 1 : -2;
       const hash = Math.sin(x * 12.9898 + y * 78.233) * 43758.5453;
-      const noise = (hash - Math.floor(hash) - 0.5) * 9;
+      const noise = (hash - Math.floor(hash) - 0.5) * 10;
       const delta = twill + noise;
       data[idx] = Math.max(0, Math.min(255, data[idx] + delta));
       data[idx + 1] = Math.max(0, Math.min(255, data[idx + 1] + delta));
@@ -184,18 +184,30 @@ function buildFeltTextureSetFromSpec(
     ctx.strokeRect(18, 18, width - 36, height - 36);
   }
 
-  // Subtle rail-edge cloth shadow
-  const edgeGradTop = ctx.createLinearGradient(0, 0, 0, 26);
-  edgeGradTop.addColorStop(0, 'rgba(0,0,0,0.28)');
+  // Subtle rail-edge cloth shadow (all 4 rails + soft pocket mouth AO)
+  const edgeGradTop = ctx.createLinearGradient(0, 0, 0, 28);
+  edgeGradTop.addColorStop(0, 'rgba(0,0,0,0.34)');
   edgeGradTop.addColorStop(1, 'rgba(0,0,0,0)');
   ctx.fillStyle = edgeGradTop;
-  ctx.fillRect(0, 0, width, 26);
+  ctx.fillRect(0, 0, width, 28);
 
-  const edgeGradBot = ctx.createLinearGradient(0, height - 26, 0, height);
+  const edgeGradBot = ctx.createLinearGradient(0, height - 28, 0, height);
   edgeGradBot.addColorStop(0, 'rgba(0,0,0,0)');
-  edgeGradBot.addColorStop(1, 'rgba(0,0,0,0.28)');
+  edgeGradBot.addColorStop(1, 'rgba(0,0,0,0.34)');
   ctx.fillStyle = edgeGradBot;
-  ctx.fillRect(0, height - 26, width, 26);
+  ctx.fillRect(0, height - 28, width, 28);
+
+  const edgeGradLeft = ctx.createLinearGradient(0, 0, 24, 0);
+  edgeGradLeft.addColorStop(0, 'rgba(0,0,0,0.28)');
+  edgeGradLeft.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.fillStyle = edgeGradLeft;
+  ctx.fillRect(0, 0, 24, height);
+
+  const edgeGradRight = ctx.createLinearGradient(width - 24, 0, width, 0);
+  edgeGradRight.addColorStop(0, 'rgba(0,0,0,0)');
+  edgeGradRight.addColorStop(1, 'rgba(0,0,0,0.28)');
+  ctx.fillStyle = edgeGradRight;
+  ctx.fillRect(width - 24, 0, 24, height);
 
   // Headstring
   ctx.strokeStyle = spec.markingColor;
@@ -309,19 +321,20 @@ export function createWoodTextures(
   for (let y = 0; y < size; y++) {
     const wave = Math.sin(y * 0.045) * 14 + Math.cos(y * 0.018) * 22;
     const tone = Math.sin((y + wave) * 0.14);
-    const r = Math.max(0, Math.min(255, Math.floor(palette.r + tone * palette.amp)));
-    const g = Math.max(0, Math.min(255, Math.floor(palette.g + tone * palette.amp * 0.65)));
-    const b = Math.max(0, Math.min(255, Math.floor(palette.b + tone * palette.amp * 0.45)));
+    const fine = Math.sin(y * 0.65) * 0.22;
+    const r = Math.max(0, Math.min(255, Math.floor(palette.r + (tone + fine) * palette.amp)));
+    const g = Math.max(0, Math.min(255, Math.floor(palette.g + (tone + fine) * palette.amp * 0.65)));
+    const b = Math.max(0, Math.min(255, Math.floor(palette.b + (tone + fine) * palette.amp * 0.45)));
     ctx.fillStyle = `rgb(${r},${g},${b})`;
     ctx.fillRect(0, y, size, 1);
   }
 
   ctx.fillStyle = palette.pore;
-  for (let i = 0; i < 420; i++) {
+  for (let i = 0; i < 560; i++) {
     const x = (Math.sin(i * 78.233) * 0.5 + 0.5) * size;
     const y = (Math.cos(i * 45.164) * 0.5 + 0.5) * size;
-    const w = 18 + (i % 55);
-    ctx.fillRect(x, y, w, 1.2);
+    const w = 18 + (i % 58);
+    ctx.fillRect(x, y, w, 1.3);
   }
 
   const map = new THREE.CanvasTexture(canvas);
@@ -338,13 +351,16 @@ export function createWoodTextures(
   rCtx.fillStyle = finish === 'obsidian_neon' ? '#6a6a6a' : '#555555';
   rCtx.fillRect(0, 0, 256, 256);
   for (let y = 0; y < 256; y += 2) {
-    const v = (finish === 'obsidian_neon' ? 96 : 72) + Math.floor(Math.sin(y * 0.18) * 18);
+    const v =
+      (finish === 'obsidian_neon' ? 92 : 70) +
+      Math.floor(Math.sin(y * 0.18) * 20 + Math.cos(y * 0.51) * 8);
     rCtx.fillStyle = `rgb(${v},${v},${v})`;
     rCtx.fillRect(0, y, 256, 2);
   }
   const roughnessMap = new THREE.CanvasTexture(rCanvas);
   roughnessMap.wrapS = THREE.RepeatWrapping;
   roughnessMap.wrapT = THREE.RepeatWrapping;
+  roughnessMap.anisotropy = maxAnisotropy;
   roughnessMap.needsUpdate = true;
 
   return { map, roughnessMap };

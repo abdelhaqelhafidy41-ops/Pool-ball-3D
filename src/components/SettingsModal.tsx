@@ -1,8 +1,12 @@
-import { Cpu, RotateCcw, Trash2, Users, Volume2, VolumeX, X } from 'lucide-react';
+import { Cpu, Music, RotateCcw, Sparkles, Trash2, Users, Volume2, VolumeX, X } from 'lucide-react';
 import { AI_DIFFICULTY_PROFILES } from '../game/ai/AIDifficultyConfig';
 import { computeAverageBallsPerTurn } from '../game/rules/MatchStatistics';
 import type { AiDifficulty, AiThinkingSpeed } from '../game/rules/types';
 import { FELT_PALETTES } from '../game/utils/constants';
+import {
+  GRAPHICS_QUALITY_PROFILES,
+  type GraphicsQuality,
+} from '../game/utils/graphicsQuality';
 import { soundEngine } from '../game/utils/SoundEngine';
 import { useGameStore, type FeltTheme } from '../store/useGameStore';
 
@@ -16,9 +20,18 @@ export function SettingsModal({ onRestartMatch, onResetAllStats }: SettingsModal
   const setSettingsOpen = useGameStore((s) => s.setSettingsOpen);
   const soundEnabled = useGameStore((s) => s.soundEnabled);
   const soundVolume = useGameStore((s) => s.soundVolume);
+  const sfxVolume = useGameStore((s) => s.sfxVolume);
+  const sfxMuted = useGameStore((s) => s.sfxMuted);
+  const musicVolume = useGameStore((s) => s.musicVolume);
+  const musicMuted = useGameStore((s) => s.musicMuted);
   const toggleSound = useGameStore((s) => s.toggleSound);
   const setSoundVolume = useGameStore((s) => s.setSoundVolume);
+  const setSfxVolume = useGameStore((s) => s.setSfxVolume);
+  const toggleSfxMuted = useGameStore((s) => s.toggleSfxMuted);
+  const setMusicVolume = useGameStore((s) => s.setMusicVolume);
+  const toggleMusicMuted = useGameStore((s) => s.toggleMusicMuted);
   const settings = useGameStore((s) => s.settings);
+  const autoRecommendedQuality = useGameStore((s) => s.autoRecommendedQuality);
   const updateSettings = useGameStore((s) => s.updateSettings);
 
   const screen = useGameStore((s) => s.screen);
@@ -310,11 +323,60 @@ export function SettingsModal({ onRestartMatch, onResetAllStats }: SettingsModal
             </div>
           </div>
 
-          {/* Sound Controls */}
-          <div className="space-y-2">
-            <div className="flex items-center justify-between">
+          {/* Graphics Quality Tier */}
+          <div className="space-y-2" data-testid="graphics-quality-section">
+            <div className="flex items-center justify-between gap-2">
+              <span className="inline-flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-slate-400">
+                <Sparkles className="h-3.5 w-3.5 text-amber-400" />
+                Graphics Quality
+              </span>
+              <span className="text-[10px] text-slate-400">
+                Recommended: {GRAPHICS_QUALITY_PROFILES[autoRecommendedQuality].label}
+              </span>
+            </div>
+            <div className="grid grid-cols-3 gap-2">
+              {(['low', 'medium', 'high'] as GraphicsQuality[]).map((tier) => {
+                const profile = GRAPHICS_QUALITY_PROFILES[tier];
+                const active = settings.graphicsQuality === tier;
+                const isRecommended = autoRecommendedQuality === tier;
+                return (
+                  <button
+                    key={tier}
+                    type="button"
+                    data-testid={`graphics-tier-${tier}`}
+                    onClick={() => {
+                      soundEngine.playUiClick();
+                      updateSettings({
+                        graphicsQuality: tier,
+                        shadowsEnabled: tier !== 'low',
+                      });
+                    }}
+                    className={`min-h-[44px] flex flex-col items-center justify-center rounded-xl border px-2 py-2 text-center transition-colors cursor-pointer ${
+                      active
+                        ? 'border-amber-400 bg-amber-500/15 text-white'
+                        : 'border-white/10 bg-white/5 text-slate-300 hover:bg-white/10'
+                    }`}
+                  >
+                    <span className="text-xs font-bold">{profile.label}</span>
+                    {isRecommended && (
+                      <span className="mt-0.5 text-[9px] font-semibold uppercase tracking-wider text-amber-300">
+                        Recommended
+                      </span>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+            <p className="text-[11px] text-slate-400">
+              {GRAPHICS_QUALITY_PROFILES[settings.graphicsQuality].description}. Physics & rules remain identical across presets.
+            </p>
+          </div>
+
+          {/* Sound Controls: Master, SFX, Music */}
+          <div className="space-y-3 rounded-xl border border-white/10 bg-white/[0.03] p-3.5" data-testid="audio-controls-section">
+            <div className="flex items-center justify-between gap-2">
               <span className="text-xs font-semibold uppercase tracking-wider text-slate-400">
-                Audio Volume
+                Audio & Lounge Mix
               </span>
               <button
                 type="button"
@@ -322,31 +384,120 @@ export function SettingsModal({ onRestartMatch, onResetAllStats }: SettingsModal
                   soundEngine.unlock();
                   toggleSound();
                 }}
-                className="inline-flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/5 px-2.5 py-1 text-xs font-medium text-slate-200 hover:bg-white/10 cursor-pointer"
+                className="min-h-[36px] inline-flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/5 px-2.5 py-1 text-xs font-medium text-slate-200 hover:bg-white/10 cursor-pointer"
               >
                 {soundEnabled ? (
                   <>
                     <Volume2 className="h-3.5 w-3.5 text-amber-400" />
-                    On
+                    Master On
                   </>
                 ) : (
                   <>
                     <VolumeX className="h-3.5 w-3.5 text-slate-400" />
-                    Muted
+                    Master Muted
                   </>
                 )}
               </button>
             </div>
-            <input
-              type="range"
-              min={0}
-              max={1}
-              step={0.05}
-              value={soundVolume}
-              disabled={!soundEnabled}
-              onChange={(e) => setSoundVolume(parseFloat(e.target.value))}
-              className="pool-slider w-full disabled:opacity-40"
-            />
+
+            {/* Master Volume */}
+            <div className="space-y-1">
+              <div className="flex items-center justify-between text-[11px]">
+                <span className="text-slate-300 font-medium">Master Volume</span>
+                <span className="font-mono tabular-nums text-amber-300">
+                  {Math.round(soundVolume * 100)}%
+                </span>
+              </div>
+              <input
+                type="range"
+                aria-label="Master Volume"
+                min={0}
+                max={1}
+                step={0.05}
+                value={soundVolume}
+                disabled={!soundEnabled}
+                onChange={(e) => {
+                  soundEngine.unlock();
+                  setSoundVolume(parseFloat(e.target.value));
+                }}
+                className="pool-slider w-full disabled:opacity-40"
+              />
+            </div>
+
+            {/* SFX Volume & Mute */}
+            <div className="space-y-1 pt-1 border-t border-white/10">
+              <div className="flex items-center justify-between text-[11px]">
+                <span className="text-slate-300 font-medium">Table SFX (Balls, Cue, Pockets)</span>
+                <div className="flex items-center gap-2">
+                  <span className="font-mono tabular-nums text-slate-300">
+                    {sfxMuted ? 'Muted' : `${Math.round(sfxVolume * 100)}%`}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      soundEngine.unlock();
+                      toggleSfxMuted();
+                    }}
+                    className="rounded border border-white/10 bg-white/5 px-2 py-0.5 text-[10px] font-semibold text-slate-200 hover:bg-white/10 cursor-pointer"
+                  >
+                    {sfxMuted ? 'Unmute' : 'Mute'}
+                  </button>
+                </div>
+              </div>
+              <input
+                type="range"
+                aria-label="SFX Volume"
+                min={0}
+                max={1}
+                step={0.05}
+                value={sfxVolume}
+                disabled={!soundEnabled || sfxMuted}
+                onChange={(e) => {
+                  soundEngine.unlock();
+                  setSfxVolume(parseFloat(e.target.value));
+                }}
+                className="pool-slider w-full disabled:opacity-40"
+              />
+            </div>
+
+            {/* Music / Ambient Volume & Mute */}
+            <div className="space-y-1 pt-1 border-t border-white/10">
+              <div className="flex items-center justify-between text-[11px]">
+                <span className="inline-flex items-center gap-1 text-slate-300 font-medium">
+                  <Music className="h-3 w-3 text-amber-300" />
+                  Lounge Ambience
+                </span>
+                <div className="flex items-center gap-2">
+                  <span className="font-mono tabular-nums text-slate-300">
+                    {musicMuted ? 'Muted' : `${Math.round(musicVolume * 100)}%`}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      soundEngine.unlock();
+                      toggleMusicMuted();
+                    }}
+                    className="rounded border border-white/10 bg-white/5 px-2 py-0.5 text-[10px] font-semibold text-slate-200 hover:bg-white/10 cursor-pointer"
+                  >
+                    {musicMuted ? 'Unmute' : 'Mute'}
+                  </button>
+                </div>
+              </div>
+              <input
+                type="range"
+                aria-label="Music Volume"
+                min={0}
+                max={1}
+                step={0.05}
+                value={musicVolume}
+                disabled={!soundEnabled || musicMuted}
+                onChange={(e) => {
+                  soundEngine.unlock();
+                  setMusicVolume(parseFloat(e.target.value));
+                }}
+                className="pool-slider w-full disabled:opacity-40"
+              />
+            </div>
           </div>
 
           {/* Camera Sensitivity */}
@@ -361,6 +512,7 @@ export function SettingsModal({ onRestartMatch, onResetAllStats }: SettingsModal
             </div>
             <input
               type="range"
+              aria-label="Camera Sensitivity"
               min={0.4}
               max={2.0}
               step={0.1}
@@ -372,9 +524,9 @@ export function SettingsModal({ onRestartMatch, onResetAllStats }: SettingsModal
             />
           </div>
 
-          {/* Visual Toggles */}
+          {/* Visual & Diagnostics Toggles */}
           <div className="grid grid-cols-1 gap-2.5 pt-1">
-            <label className="flex items-center justify-between rounded-xl border border-white/10 bg-white/5 px-3.5 py-2.5 cursor-pointer">
+            <label className="flex min-h-[44px] items-center justify-between rounded-xl border border-white/10 bg-white/5 px-3.5 py-2.5 cursor-pointer">
               <span className="text-sm text-slate-200">Dynamic Table & Ball Shadows</span>
               <input
                 type="checkbox"
@@ -383,7 +535,7 @@ export function SettingsModal({ onRestartMatch, onResetAllStats }: SettingsModal
                 className="h-4 w-4 accent-amber-500 cursor-pointer"
               />
             </label>
-            <label className="flex items-center justify-between rounded-xl border border-white/10 bg-white/5 px-3.5 py-2.5 cursor-pointer">
+            <label className="flex min-h-[44px] items-center justify-between rounded-xl border border-white/10 bg-white/5 px-3.5 py-2.5 cursor-pointer">
               <span className="text-sm text-slate-200">Cue Aim Trajectory Guide</span>
               <input
                 type="checkbox"
@@ -392,13 +544,27 @@ export function SettingsModal({ onRestartMatch, onResetAllStats }: SettingsModal
                 className="h-4 w-4 accent-amber-500 cursor-pointer"
               />
             </label>
-            <label className="flex items-center justify-between rounded-xl border border-white/10 bg-white/5 px-3.5 py-2.5 cursor-pointer">
+            <label className="flex min-h-[44px] items-center justify-between rounded-xl border border-white/10 bg-white/5 px-3.5 py-2.5 cursor-pointer">
               <span className="text-sm text-slate-200">Show FPS Indicator</span>
               <input
                 type="checkbox"
                 checked={settings.showFps}
                 onChange={(e) => updateSettings({ showFps: e.target.checked })}
                 className="h-4 w-4 accent-amber-500 cursor-pointer"
+              />
+            </label>
+            <label className="flex min-h-[44px] items-center justify-between rounded-xl border border-white/10 bg-white/5 px-3.5 py-2.5 cursor-pointer">
+              <div>
+                <span className="block text-sm text-slate-200">Performance Diagnostics Overlay</span>
+                <span className="block text-[11px] text-slate-400">
+                  Shows FPS, frame ms, draw calls, triangles & VFX count
+                </span>
+              </div>
+              <input
+                type="checkbox"
+                checked={settings.showDiagnostics}
+                onChange={(e) => updateSettings({ showDiagnostics: e.target.checked })}
+                className="h-4 w-4 accent-amber-500 cursor-pointer shrink-0 ml-2"
               />
             </label>
           </div>

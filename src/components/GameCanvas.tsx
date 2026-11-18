@@ -36,6 +36,7 @@ export function GameCanvas({ actionsRef, onToggleFullscreen }: GameCanvasProps) 
 
   const isLoading = useGameStore((s) => s.isLoading);
   const loadError = useGameStore((s) => s.loadError);
+  const webglStatus = useGameStore((s) => s.webglStatus);
 
   useEffect(() => {
     const el = mountRef.current;
@@ -92,6 +93,27 @@ export function GameCanvas({ actionsRef, onToggleFullscreen }: GameCanvasProps) 
               className="mt-4 rounded-lg bg-amber-500 px-4 py-2 text-xs font-bold text-slate-950 hover:bg-amber-400 cursor-pointer"
             >
               Retry
+            </button>
+          </div>
+        </div>
+      )}
+
+      {!isLoading && !loadError && webglStatus === 'context_lost' && (
+        <div
+          className="fixed inset-0 z-30 flex items-center justify-center bg-[#090d11]/92 p-6"
+          data-testid="webgl-context-lost-overlay"
+        >
+          <div className="max-w-md rounded-xl border border-amber-400/35 bg-[#121821] p-6 text-slate-100 shadow-2xl">
+            <h2 className="text-base font-bold text-amber-300">Graphics Context Interrupted</h2>
+            <p className="mt-2 text-sm text-slate-300">
+              Your browser temporarily paused WebGL rendering. Waiting for automatic restoration, or reload to resume immediately.
+            </p>
+            <button
+              type="button"
+              onClick={() => window.location.reload()}
+              className="mt-4 min-h-[40px] rounded-lg bg-amber-500 px-4 py-2 text-xs font-bold text-slate-950 hover:bg-amber-400 cursor-pointer"
+            >
+              Reload Scene
             </button>
           </div>
         </div>
