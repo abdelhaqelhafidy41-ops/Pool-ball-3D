@@ -15,14 +15,20 @@ import type {
   OnlineMatchType,
 } from './progression';
 import type {
+  ClubChallengeRecord,
+  ClubDetailPayload,
+  ClubInvitationRecord,
   DirectMessageRecord,
   FriendRequestAction,
   FriendRequestRecord,
   ManualPresenceStatus,
   MatchInvitationRecord,
   MatchInviteAction,
+  MatchInviteKind,
   PresenceStatus,
+  PrivacySettings,
   RoomChatMessageRecord,
+  SocialNotificationRecord,
   SocialOverviewPayload,
 } from './social';
 import type { TournamentMatch, TournamentRecord } from './tournaments';
@@ -110,6 +116,12 @@ export interface OnlineRoomInfo {
   calledShotsEnabled: boolean;
   status: OnlineRoomStatus;
   players: OnlinePlayerProfile[];
+  spectatorCount?: number;
+  spectators?: Array<{
+    playerId: string;
+    displayName: string;
+    avatarId: OnlineAvatarId;
+  }>;
   createdAtMs: number;
   expiresAtMs: number;
   tournament?: OnlineRoomTournamentContext | null;
@@ -226,7 +238,12 @@ export type MultiplayerErrorCode =
   | 'MATCH_LOCKED'
   | 'RANKED_RESTRICTED'
   | 'SUSPENDED'
-  | 'CHEAT_REJECTED';
+  | 'CHEAT_REJECTED'
+  | 'PRIVACY_RESTRICTED'
+  | 'NOT_FOUND'
+  | 'CONFLICT'
+  | 'CLUB_ERROR'
+  | 'SPECTATE_UNAVAILABLE';
 
 export type ClientToServerMessage =
   | {
@@ -365,6 +382,8 @@ export type ClientToServerMessage =
       targetPlayerId: string;
       ruleProfileId: RuleProfileId;
       calledShotsEnabled: boolean;
+      inviteKind?: MatchInviteKind;
+      roomId?: string;
       ttlMs?: number;
     }
   | {
@@ -386,6 +405,31 @@ export type ClientToServerMessage =
       type: 'chat:room_send';
       body: string;
       clientMessageId?: string;
+    }
+  | {
+      type: 'social:mark_notification_read';
+      notificationId?: string;
+    }
+  | {
+      type: 'social:clear_notifications';
+      notificationId?: string;
+    }
+  | {
+      type: 'social:privacy_update';
+      privacy: Partial<PrivacySettings>;
+    }
+  | {
+      type: 'room:join_friend';
+      friendPlayerId: string;
+    }
+  | {
+      type: 'room:spectate';
+      roomId?: string;
+      roomCode?: string;
+      targetPlayerId?: string;
+    }
+  | {
+      type: 'club:sync';
     }
   | {
       type: 'tournament:subscribe';
@@ -410,6 +454,7 @@ export type ServerToClientMessage =
       playerToken?: string;
       displayName: string;
       avatarId: OnlineAvatarId;
+      isSpectator?: boolean;
       resumedRoom: OnlineRoomInfo | null;
       resumedMatch: OnlineMatchSnapshot | null;
       balls: OnlineBallFrame[] | null;
@@ -609,4 +654,27 @@ export type ServerToClientMessage =
   | {
       type: 'tournament:completed';
       tournament: TournamentRecord;
+    }
+  | {
+      type: 'notification:new';
+      notification: SocialNotificationRecord;
+      unreadCount: number;
+    }
+  | {
+      type: 'notifications:updated';
+      notifications: SocialNotificationRecord[];
+      unreadCount: number;
+    }
+  | {
+      type: 'privacy:updated';
+      privacy: PrivacySettings;
+    }
+  | {
+      type: 'club:updated';
+      clubDetail?: ClubDetailPayload | null;
+      incomingInvitations?: ClubInvitationRecord[];
+    }
+  | {
+      type: 'club:challenge_updated';
+      challenge: ClubChallengeRecord;
     };

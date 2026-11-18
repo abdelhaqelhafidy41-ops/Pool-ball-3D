@@ -1,10 +1,18 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import type { CameraPreset } from '../../store/useGameStore';
+import type { ReplayCameraMode } from '../replay/types';
 import { TABLE_DIMENSIONS } from '../utils/constants';
 
 const _desiredPos = new THREE.Vector3();
 const _desiredTarget = new THREE.Vector3();
+
+export interface ReplayCameraFocusParams {
+  cueBallPos: THREE.Vector3;
+  focusBallPos: THREE.Vector3;
+  cueAngle: number;
+  elapsedSec: number;
+}
 
 export class CameraController {
   public readonly camera: THREE.PerspectiveCamera;
@@ -13,6 +21,10 @@ export class CameraController {
   private isTransitioning = false;
   private isSoftwareGl: boolean;
   private sensitivity = 1.0;
+
+  private savedGameplayPos = new THREE.Vector3(-2.28, 1.84, 1.98);
+  private savedGameplayTarget = new THREE.Vector3(0.05, TABLE_DIMENSIONS.surfaceY + 0.02, 0);
+  private hasSavedGameplayPose = false;
 
   constructor(domElement: HTMLElement, aspect: number, isSoftwareGl: boolean) {
     this.isSoftwareGl = isSoftwareGl;
@@ -49,6 +61,119 @@ export class CameraController {
 
   public setOrbitRotateEnabled(enabled: boolean) {
     this.controls.enableRotate = enabled;
+  }
+
+  public saveBeforeReplay() {
+    this.savedGameplayPos.copy(this.camera.position);
+    this.savedGameplayTarget.copy(this.controls.target);
+    this.hasSavedGameplayPose = true;
+  }
+
+  public restoreAfterReplay() {
+    this.controls.enableRotate = true;
+    this.controls.enableZoom = true;
+    this.controls.autoRotate = false;
+    if (this.hasSavedGameplayPose) {
+      _desiredPos.copy(this.savedGameplayPos);
+      _desiredTarget.copy(this.savedGameplayTarget);
+      if (this.isSoftwareGl) {
+        this.camera.position.copy(_desiredPos);
+        this.controls.target.copy(_desiredTarget);
+        this.isTransitioning = false;
+      } else {
+        this.isTransitioning = true;
+      }
+      this.hasSavedGameplayPose = false;
+    }
+  }
+
+  public updateReplayCamera(
+    mode: ReplayCameraMode,
+    focus: ReplayCameraFocusParams,
+    delta: number,
+  ) {
+    const surfaceY = TABLE_DIMENSIONS.surfaceY;
+    this.controls.autoRotate = false;
+
+    if (mode === 'free') {
+      // Unlock OrbitControls freely for user drag & zoom inspection without fighting input
+      this.controls.enableRotate = true;
+      this.controls.enableZoom = true;
+      this.isTransitioning = false;
+      this.controls.update();
+      this.enforceTableBoundary();
+      return;
+    }
+
+    switch (mode) {
+      case 'topDown':
+        _desiredPos.set(0, 3.65, 0.04);
+        _desiredTarget.set(0, surfaceY, 0);
+        break;
+
+      case 'cinematic': {
+        const orbitAngle = focus.elapsedSec * 0.24 - 2.35;
+        const radius = 2.45;
+        _desiredTarget.set(
+          THREE.MathUtils.clamp(focus.focusBallPos.x * 0.45, -0.7, 0.7),
+          surfaceY + 0.04,
+          THREE.MathUtils.clamp(focus.focusBallPos.z * 0.45, -0.4, 0.4),
+        );
+        _desiredPos.set(
+          _desiredTarget.x + Math.cos(orbitAngle) * radius,
+          1.62 + Math.sin(focus.elapsedSec * 0.4) * 0.14,
+          _desiredTarget.z + Math.sin(orbitAngle) * radius,
+        );
+        break;
+      }
+
+      case 'ballFollow': {
+        const fx = focus.focusBallPos.x;
+        const fz = focus.focusBallPos.z;
+        const backX = Math.cos(focus.cueAngle);
+        const backZ = Math.sin(focus.cueAngle);
+        _desiredTarget.set(fx, surfaceY + 0.04, fz);
+        _desiredPos.set(
+          THREE.MathUtils.clamp(fx - backX * 1.15, -2.6, 2.6),
+          surfaceY + 0.72,
+          THREE.MathUtils.clamp(fz - backZ * 1.15, -2.0, 2.0),
+        );
+        break;
+      }
+
+      case 'shotFocused': {
+        const cx = focus.cueBallPos.x;
+        const cz = focus.cueBallPos.z;
+        const dirX = Math.cos(focus.cueAngle);
+        const dirZ = Math.sin(focus.cueAngle);
+        _desiredPos.set(cx - dirX * 1.08, surfaceY + 0.39, cz - dirZ * 1.08);
+        _desiredTarget.set(cx + dirX * 0.6, surfaceY + 0.03, cz + dirZ * 0.6);
+        break;
+      }
+
+      case 'original':
+      default:
+        _desiredPos.set(-2.28, 1.84, 1.98);
+        _desiredTarget.set(0.05, surfaceY + 0.02, 0);
+        break;
+    }
+
+    if (this.isSoftwareGl) {
+      this.camera.position.copy(_desiredPos);
+      this.controls.target.copy(_desiredTarget);
+    } else {
+      const lambda = mode === 'ballFollow' ? 5.2 : 6.0;
+      this.camera.position.x = THREE.MathUtils.damp(this.camera.position.x, _desiredPos.x, lambda, delta);
+      this.camera.position.y = THREE.MathUtils.damp(this.camera.position.y, _desiredPos.y, lambda, delta);
+      this.camera.position.z = THREE.MathUtils.damp(this.camera.position.z, _desiredPos.z, lambda, delta);
+
+      this.controls.target.x = THREE.MathUtils.damp(this.controls.target.x, _desiredTarget.x, lambda, delta);
+      this.controls.target.y = THREE.MathUtils.damp(this.controls.target.y, _desiredTarget.y, lambda, delta);
+      this.controls.target.z = THREE.MathUtils.damp(this.controls.target.z, _desiredTarget.z, lambda, delta);
+    }
+
+    this.controls.update();
+    this.enforceTableBoundary();
   }
 
   public setPreset(

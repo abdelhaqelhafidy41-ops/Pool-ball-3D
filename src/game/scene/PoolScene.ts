@@ -16,8 +16,22 @@ import { PhysicsWorld, type BallPhysicsSnapshot } from '../physics/PhysicsWorld'
 import { AITurnController } from '../ai/AITurnController';
 import { ReplayAnalysisOverlay } from '../replay/ReplayAnalysisOverlay';
 import { formatCollisionLabel, ReplayController } from '../replay/ReplayController';
+import {
+  downloadTextFile,
+  replayStorage,
+} from '../replay/ReplayStorage';
+import {
+  downloadRecordedVideo,
+  ReplayVideoRecorder,
+} from '../replay/ReplayVideoRecorder';
 import { ShotRecorder } from '../replay/ShotRecorder';
-import type { ReplayBallFrame, ReplaySpeed } from '../replay/types';
+import {
+  summarizeRecordedShot,
+  type MatchReplayRecord,
+  type ReplayBallFrame,
+  type ReplayCameraMode,
+  type ReplaySpeed,
+} from '../replay/types';
 import { getLegalTargetBalls } from '../rules/BallGroupManager';
 import { MatchManager } from '../rules/MatchManager';
 import { generateOfficialEightBallRack } from '../rules/RackGenerator';
@@ -80,13 +94,23 @@ export class PoolScene {
   private aiTurnController: AITurnController | null = null;
   private shotSequence = 0;
 
-  // Phase 6: Isolated Shot Recording, Replay & 3D Shot Analysis
+  // Phase 6 & 13: Isolated Shot & Match Recording, Replay, Camera & Video Capture
   private shotRecorder = new ShotRecorder();
   private replayController = new ReplayController();
   private replayAnalysisOverlay = new ReplayAnalysisOverlay();
+  private videoRecorder = new ReplayVideoRecorder();
   private replayFramesScratch: ReplayBallFrame[] = [];
+  private replayCueBallPos = new THREE.Vector3();
+  private replayFocusBallPos = new THREE.Vector3();
   private lastReplayUiSyncAt = 0;
+  private lastReplayAnalysisShotId: string | null = null;
   private lastOnlineShotSeqRecorded = -1;
+  private currentMatchId = `match_${Date.now()}`;
+  private activeMatchReplayRecord: MatchReplayRecord | null = null;
+  private replayReturnScreen: 'menu' | 'playing' = 'playing';
+  private replayCameraMode: ReplayCameraMode = 'original';
+  private replayElapsedWallSec = 0;
+  private lastSavedReplayReqSeq = 0;
 
   // 3D Ball-in-Hand placement visuals & Called Pocket ring
   private placementGroup = new THREE.Group();
@@ -360,9 +384,29 @@ export class PoolScene {
             this.exitReplay();
           }
           if (snapshot.totalMatchShots === 0) {
+            this.currentMatchId = snapshot.matchId;
+            this.activeMatchReplayRecord = null;
             this.shotRecorder.clearMatchShots();
+            const stNow = useGameStore.getState();
+            const onlineRoom = stNow.onlineRoom;
+            const p1Rec = onlineRoom?.players.find((p) => p.role === 'player1');
+            const p2Rec = onlineRoom?.players.find((p) => p.role === 'player2');
+            this.shotRecorder.beginMatch({
+              matchId: snapshot.matchId,
+              createdAtMs: Date.now(),
+              matchType: 'online',
+              onlineSubType: onlineRoom?.matchType,
+              gameMode: 'eightBall',
+              ruleProfileId: snapshot.ruleProfileId,
+              calledShotsEnabled: snapshot.calledShotsEnabled,
+              authoritative: true,
+              player1Id: p1Rec?.playerId ?? null,
+              player1Name: snapshot.player1Name,
+              player2Id: p2Rec?.playerId ?? null,
+              player2Name: snapshot.player2Name,
+            });
             this.lastOnlineShotSeqRecorded = -1;
-            useGameStore.getState().setReplayShots([]);
+            stNow.setReplayShots([]);
           }
           this.strikeAnim.active = false;
           this.strikeAnim.impulseApplied = false;
@@ -435,6 +479,7 @@ export class PoolScene {
           }
         },
         onOnlineShotSettled: (snapshot, balls) => {
+          const st = useGameStore.getState();
           if (this.shotRecorder.isRecording() && this.shotRecorder.getActiveMode() === 'online') {
             const isFoul = Boolean(snapshot.lastFoulMessage);
             const resultLabel = snapshot.winner
@@ -447,9 +492,50 @@ export class PoolScene {
               isFoul,
               foulReason: snapshot.lastFoulMessage,
               finalOnlineBalls: balls,
+              tableOpenAfter: snapshot.tableOpen,
+              playerGroupsAfter: snapshot.playerGroups,
+              pocketedNumbersAfter: snapshot.pocketedNumbers,
+              activePlayerAfter: snapshot.activePlayer,
+              ballInHandNext: snapshot.phase === 'BALL_IN_HAND',
             });
             if (rec) {
-              useGameStore.getState().setReplayShots(this.shotRecorder.getSummariesNewestFirst());
+              if (snapshot.phase === 'BALL_IN_HAND') {
+                const nextName =
+                  snapshot.activePlayer === 'player1'
+                    ? snapshot.player1Name
+                    : snapshot.player2Name;
+                this.shotRecorder.recordBallInHand(
+                  snapshot.activePlayer,
+                  nextName,
+                  snapshot.lastFoulMessage,
+                );
+              }
+              st.setReplayShots(this.shotRecorder.getSummariesNewestFirst());
+            }
+          }
+          if (
+            snapshot.phase === 'GAME_OVER' &&
+            !this.shotRecorder.hasMatchBeenSaved(snapshot.matchId)
+          ) {
+            this.shotRecorder.markMatchSaved(snapshot.matchId);
+            const built = this.shotRecorder.buildMatchReplayRecord({
+              matchId: snapshot.matchId,
+              winner: snapshot.winner,
+              loser: snapshot.loser,
+              finalResult: snapshot.gameOverReason ?? snapshot.statusHeadline ?? 'Online Match Complete',
+              playerGroups: snapshot.playerGroups,
+              pocketedNumbers: snapshot.pocketedNumbers,
+              player1Name: snapshot.player1Name,
+              player2Name: snapshot.player2Name,
+              authoritative: true,
+              localPlayerPerspective: st.onlineLocalRole,
+            });
+            if (built) {
+              this.activeMatchReplayRecord = built;
+              void replayStorage
+                .saveReplay(built)
+                .then(() => this.refreshSavedReplaysIndex())
+                .catch(() => {});
             }
           }
         },
@@ -491,6 +577,15 @@ export class PoolScene {
 
       // 9. Store subscription for live UI settings, match config & camera presets
       this.unsubStore = useGameStore.subscribe((state) => {
+        if (
+          state.pendingSavedReplayRequest &&
+          state.pendingSavedReplayRequest.seq !== this.lastSavedReplayReqSeq
+        ) {
+          this.lastSavedReplayReqSeq = state.pendingSavedReplayRequest.seq;
+          const reqId = state.pendingSavedReplayRequest.replayId;
+          state.clearWatchSavedReplayRequest();
+          void this.enterSavedMatchReplayById(reqId);
+        }
         if (state.cameraRequestCounter !== this.lastCamCounter) {
           this.lastCamCounter = state.cameraRequestCounter;
           this.physics.getCueBallPosition(_cueBallPos);
@@ -657,6 +752,7 @@ export class PoolScene {
       }
 
       useGameStore.getState().setLoading(false);
+      void this.refreshSavedReplaysIndex();
       this.clock.start();
       this.startLoop();
     } catch (err) {
@@ -1142,6 +1238,25 @@ export class PoolScene {
     const snapshot = this.matchManager.startMatch(mergedConfig);
     this.lastActivePlayer = snapshot.activePlayer;
     store.resetMatchStats();
+    const postResetStore = useGameStore.getState();
+    this.currentMatchId =
+      effectiveOpponent === 'ai'
+        ? postResetStore.aiMatchClientId
+        : `local_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    this.activeMatchReplayRecord = null;
+    this.shotRecorder.beginMatch({
+      matchId: this.currentMatchId,
+      createdAtMs: Date.now(),
+      matchType: effectiveOpponent === 'ai' ? 'ai' : 'local',
+      aiDifficulty: snapshot.config.aiDifficulty,
+      gameMode: snapshot.config.gameMode,
+      ruleProfileId: snapshot.config.ruleProfileId,
+      calledShotsEnabled: snapshot.config.calledShotsEnabled,
+      authoritative: false,
+      player1Id: postResetStore.ownProfile?.playerId ?? null,
+      player1Name: this.matchManager.getPlayerName('player1'),
+      player2Name: this.matchManager.getPlayerName('player2'),
+    });
     store.setBallsMoving(false);
     store.setIsAiThinking(false);
     store.setScreen('playing');
@@ -1352,28 +1467,97 @@ export class PoolScene {
     return out;
   }
 
+  private async refreshSavedReplaysIndex() {
+    try {
+      const [list, stats] = await Promise.all([
+        replayStorage.listSavedReplays(),
+        replayStorage.getStorageStats(),
+      ]);
+      if (!this.disposed) {
+        useGameStore.getState().setSavedReplays(list, stats);
+      }
+    } catch {
+      // Ignore storage read failure
+    }
+  }
+
   private syncReplayUi(force = false) {
     const now = performance.now();
     if (!force && now - this.lastReplayUiSyncAt < 32) return;
     this.lastReplayUiSyncAt = now;
 
     const shot = this.replayController.getShot();
+    const matchReplay = this.replayController.getMatchReplay();
+    const dynamicState = this.replayController.getMatchStateAtCurrentTime();
     const activeCol = this.replayController.getActiveCollisionHighlight();
+
+    const p1Pocketed = matchReplay
+      ? (dynamicState
+          ? matchReplay.shots
+              .slice(0, this.replayController.getCurrentShotIndex() + 1)
+              .filter((s) => s.shooter === 'player1' && !s.isFoul)
+              .reduce((a, s) => a + s.pocketedBalls.filter((p) => p.ballNumber !== 0).length, 0)
+          : matchReplay.player1.pocketedCount)
+      : 0;
+    const p2Pocketed = matchReplay
+      ? (dynamicState
+          ? matchReplay.shots
+              .slice(0, this.replayController.getCurrentShotIndex() + 1)
+              .filter((s) => s.shooter === 'player2' && !s.isFoul)
+              .reduce((a, s) => a + s.pocketedBalls.filter((p) => p.ballNumber !== 0).length, 0)
+          : matchReplay.player2.pocketedCount)
+      : 0;
+
     useGameStore.getState().setReplayUiState({
       replayActive: this.replayController.isActive(),
+      replayMode: this.replayController.getMode(),
+      replayMatchId: matchReplay?.matchId ?? null,
       replayShotId: shot?.id ?? null,
+      replayShotIndex: this.replayController.getCurrentShotIndex(),
+      replayTotalShots: this.replayController.getTotalShots(),
       replayPlaying: this.replayController.isPlaying(),
       replayTimeSec: this.replayController.getCurrentTimeSec(),
       replayDurationSec: this.replayController.getDurationSec(),
+      replayMatchTimeSec: this.replayController.getMatchTimeSec(),
+      replayMatchDurationSec: this.replayController.getMatchDurationSec(),
       replaySpeed: this.replayController.getSpeed(),
+      replayCameraMode: this.replayCameraMode,
       replayAutoSlowMo: this.replayController.getAutoSlowMo(),
       replayShowAnalysis: this.replayController.getShowAnalysis(),
       replayActiveCollisionLabel: activeCol ? formatCollisionLabel(activeCol) : null,
+      replayHighlights: matchReplay?.highlights ?? [],
+      replayTimelineEvents: matchReplay?.timelineEvents ?? [],
+      replayIsRecordingVideo: this.videoRecorder.isRecording(),
+      replayMatchMeta: matchReplay
+        ? {
+            matchId: matchReplay.matchId,
+            replayId: matchReplay.replayId,
+            matchType: matchReplay.matchType,
+            ruleProfileId: matchReplay.ruleProfileId,
+            player1Name: matchReplay.player1.name,
+            player2Name: matchReplay.player2.name,
+            player1Group: dynamicState?.player1Group ?? matchReplay.player1.group,
+            player2Group: dynamicState?.player2Group ?? matchReplay.player2.group,
+            player1PocketedCount: p1Pocketed,
+            player2PocketedCount: p2Pocketed,
+            winner: matchReplay.winner,
+            finalResult: matchReplay.finalResult,
+            authoritative: matchReplay.authoritative,
+          }
+        : null,
     });
   }
 
   private renderCurrentReplayInstant() {
+    const activeShot = this.replayController.getShot();
+    if (activeShot && activeShot.id !== this.lastReplayAnalysisShotId) {
+      this.lastReplayAnalysisShotId = activeShot.id;
+      this.replayAnalysisOverlay.setShot(activeShot);
+    }
+
     if (this.replayController.sampleInterpolatedFrames(this.replayFramesScratch)) {
+      let fastestSpeedSq = -1;
+      let hasCue = false;
       for (let i = 0; i < this.replayFramesScratch.length; i++) {
         const b = this.replayFramesScratch[i];
         this.billiardBalls.syncFromTransform(
@@ -1387,6 +1571,23 @@ export class PoolScene {
           b.qw,
           b.pocketed,
         );
+        if (b.number === 0 && !b.pocketed) {
+          this.replayCueBallPos.set(b.x, b.y, b.z);
+          hasCue = true;
+        }
+        if (!b.pocketed) {
+          const spSq = b.vx * b.vx + b.vz * b.vz;
+          if (spSq > fastestSpeedSq) {
+            fastestSpeedSq = spSq;
+            this.replayFocusBallPos.set(b.x, b.y, b.z);
+          }
+        }
+      }
+      if (!hasCue) {
+        this.replayCueBallPos.set(0, TABLE_DIMENSIONS.surfaceY + BALL_SPECS.radius, 0);
+      }
+      if (fastestSpeedSq <= 0.002 && hasCue) {
+        this.replayFocusBallPos.copy(this.replayCueBallPos);
       }
     }
     this.replayAnalysisOverlay.update(
@@ -1395,40 +1596,146 @@ export class PoolScene {
     );
   }
 
-  // ==================== PHASE 6: ISOLATED REPLAY API ====================
+  // ==================== PHASE 6 & 13: ISOLATED REPLAY API ====================
 
   public enterReplay(shotId?: string) {
     const store = useGameStore.getState();
     if (
-      store.screen !== 'playing' ||
       store.ballsMoving ||
       store.isShotAnimating ||
       this.strikeAnim.active
     ) {
       return;
     }
+    // If launched with no explicit shotId when a full match record is ready, enter Match Replay mode
+    if (!shotId && (store.matchPhase === 'GAME_OVER' || this.activeMatchReplayRecord)) {
+      this.enterMatchReplay();
+      return;
+    }
+    if (store.screen !== 'playing') return;
 
     const shot = this.shotRecorder.getShotById(shotId ?? null);
     if (!shot) return;
 
-    // Pause AI turn orchestration while player reviews replay; resumed cleanly on exitReplay()
     this.aiTurnController?.cancel();
     store.setIsAiThinking(false);
+    this.replayReturnScreen = 'playing';
+    this.cameraController.saveBeforeReplay();
+    this.replayCameraMode = 'original';
+    this.replayElapsedWallSec = 0;
 
     const backup = this.captureLiveBallBackup();
     this.replayController.enterReplay(shot, backup);
+    this.lastReplayAnalysisShotId = shot.id;
     this.replayAnalysisOverlay.setShot(shot);
+    this.renderCurrentReplayInstant();
+    this.syncReplayUi(true);
+  }
+
+  public enterMatchReplay(initialShotId?: string) {
+    const store = useGameStore.getState();
+    if (store.ballsMoving || store.isShotAnimating || this.strikeAnim.active) {
+      return;
+    }
+
+    let record = this.activeMatchReplayRecord;
+    if (!record) {
+      const snap =
+        store.matchConfig.opponentType === 'online' ? null : this.matchManager.getSnapshot();
+      record = this.shotRecorder.buildMatchReplayRecord({
+        matchId: this.currentMatchId,
+        winner: store.winner,
+        loser: store.loser,
+        finalResult: store.gameOverReason ?? store.statusHeadline ?? 'Match Replay',
+        playerGroups: snap ? snap.playerGroups : store.playerGroups,
+        pocketedNumbers: snap ? snap.pocketedNumbers : store.pocketedNumbers,
+        player1Name: store.matchConfig.player1Name,
+        player2Name: store.matchConfig.player2Name,
+        authoritative: store.matchConfig.opponentType === 'online',
+        localPlayerPerspective: store.onlineLocalRole,
+      });
+    }
+    if (!record || record.shots.length === 0) return;
+
+    this.startMatchReplaySession(record, 'playing', initialShotId);
+  }
+
+  public async enterSavedMatchReplayById(replayId: string) {
+    const record = await replayStorage.loadReplay(replayId);
+    if (!record || this.disposed) return;
+    this.enterSavedMatchReplay(record);
+  }
+
+  public enterSavedMatchReplay(record: MatchReplayRecord) {
+    if (!record || record.shots.length === 0) return;
+    const store = useGameStore.getState();
+    if (store.ballsMoving || store.isShotAnimating || this.strikeAnim.active) return;
+
+    const returnTo: 'menu' | 'playing' = store.screen === 'menu' ? 'menu' : 'playing';
+    store.closeProgressionModal();
+    if (returnTo === 'menu') {
+      store.setScreen('playing');
+    }
+    store.setReplayShots(record.shots.map(summarizeRecordedShot).reverse());
+    this.startMatchReplaySession(record, returnTo);
+  }
+
+  private startMatchReplaySession(
+    record: MatchReplayRecord,
+    returnTo: 'menu' | 'playing',
+    initialShotId?: string,
+  ) {
+    const store = useGameStore.getState();
+    this.aiTurnController?.cancel();
+    store.setIsAiThinking(false);
+    this.replayReturnScreen = returnTo;
+    this.cameraController.saveBeforeReplay();
+    this.replayCameraMode = 'original';
+    this.replayElapsedWallSec = 0;
+
+    const backup = this.captureLiveBallBackup();
+    this.replayController.enterMatchReplay(record, backup, initialShotId);
+    const activeShot = this.replayController.getShot();
+    this.lastReplayAnalysisShotId = activeShot?.id ?? null;
+    this.replayAnalysisOverlay.setShot(activeShot);
     this.renderCurrentReplayInstant();
     this.syncReplayUi(true);
   }
 
   public exitReplay() {
     if (!this.replayController.isActive()) return;
+    if (this.videoRecorder.isRecording()) {
+      void this.stopReplayVideoRecording();
+    }
     const backup = this.replayController.exitReplay();
+    this.lastReplayAnalysisShotId = null;
     this.replayAnalysisOverlay.clear();
     this.replayAnalysisOverlay.update(false, 0);
+    this.cameraController.restoreAfterReplay();
 
     const store = useGameStore.getState();
+    if (this.replayReturnScreen === 'menu') {
+      this.physics.resetRack(generateOfficialEightBallRack());
+      this.physics.getSnapshots(_snapshots);
+      for (const s of _snapshots) {
+        this.billiardBalls.syncFromTransform(
+          s.number,
+          s.x,
+          s.y,
+          s.z,
+          s.qx,
+          s.qy,
+          s.qz,
+          s.qw,
+          s.pocketed,
+        );
+      }
+      store.resetReplayUiState();
+      store.setScreen('menu');
+      this.replayReturnScreen = 'playing';
+      return;
+    }
+
     if (store.matchConfig.opponentType === 'online') {
       const hasLive = multiplayerManager.synchronizer.sampleRenderFrames(_onlineFrames);
       const liveBalls = hasLive
@@ -1506,12 +1813,93 @@ export class PoolScene {
       this.enterReplay(shotId);
       return;
     }
-    const shot = this.shotRecorder.getShotById(shotId);
+    const activeMatch = this.replayController.getMatchReplay();
+    const shot = activeMatch
+      ? activeMatch.shots.find((s) => s.id === shotId) ?? null
+      : this.shotRecorder.getShotById(shotId);
     if (!shot) return;
     this.replayController.switchShot(shot);
+    this.lastReplayAnalysisShotId = shot.id;
     this.replayAnalysisOverlay.setShot(shot);
     this.renderCurrentReplayInstant();
     this.syncReplayUi(true);
+  }
+
+  public prevReplayShot() {
+    if (!this.replayController.isActive()) return;
+    if (this.replayController.prevShot()) {
+      this.renderCurrentReplayInstant();
+      this.syncReplayUi(true);
+    }
+  }
+
+  public nextReplayShot() {
+    if (!this.replayController.isActive()) return;
+    if (this.replayController.nextShot()) {
+      this.renderCurrentReplayInstant();
+      this.syncReplayUi(true);
+    }
+  }
+
+  public jumpToReplayStart() {
+    if (!this.replayController.isActive()) return;
+    this.replayController.jumpToBeginning();
+    this.renderCurrentReplayInstant();
+    this.syncReplayUi(true);
+  }
+
+  public jumpToReplayEnd() {
+    if (!this.replayController.isActive()) return;
+    this.replayController.jumpToEnd();
+    this.renderCurrentReplayInstant();
+    this.syncReplayUi(true);
+  }
+
+  public jumpToReplayHighlight(highlightId: string) {
+    if (!this.replayController.isActive()) return;
+    this.replayController.jumpToHighlight(highlightId);
+    this.renderCurrentReplayInstant();
+    this.syncReplayUi(true);
+  }
+
+  public setReplayCameraMode(mode: ReplayCameraMode) {
+    this.replayCameraMode = mode;
+    useGameStore.getState().setReplayUiState({ replayCameraMode: mode });
+  }
+
+  public exportActiveReplayJson() {
+    const matchRec =
+      this.replayController.getMatchReplay() ?? this.activeMatchReplayRecord;
+    if (!matchRec) return;
+    const json = replayStorage.exportReplayToJson(matchRec);
+    downloadTextFile(`replay-${matchRec.matchId}.json`, json);
+  }
+
+  public startReplayVideoRecording() {
+    if (!this.replayController.isActive() || !this.renderer?.domElement) return;
+    if (!ReplayVideoRecorder.isSupported()) {
+      useGameStore.getState().setReplayUiState({
+        replayVideoNotice: 'Video capture is unavailable in this browser.',
+      });
+      return;
+    }
+    const ok = this.videoRecorder.startRecording(this.renderer.domElement);
+    useGameStore.getState().setReplayUiState({
+      replayIsRecordingVideo: ok,
+      replayVideoNotice: ok ? 'Recording viewport video...' : 'Unable to start video capture.',
+    });
+  }
+
+  public async stopReplayVideoRecording() {
+    if (!this.videoRecorder.isRecording()) return;
+    const res = await this.videoRecorder.stopRecording();
+    if (res) {
+      downloadRecordedVideo(res);
+    }
+    useGameStore.getState().setReplayUiState({
+      replayIsRecordingVideo: false,
+      replayVideoNotice: res ? `Saved ${res.filename}` : null,
+    });
   }
 
   public toggleReplayPlay() {
@@ -1529,7 +1917,11 @@ export class PoolScene {
 
   public seekReplay(timeSec: number) {
     if (!this.replayController.isActive()) return;
-    this.replayController.seek(timeSec);
+    if (this.replayController.getMode() === 'match') {
+      this.replayController.seekMatch(timeSec);
+    } else {
+      this.replayController.seek(timeSec);
+    }
     this.renderCurrentReplayInstant();
     this.syncReplayUi(true);
   }
@@ -1776,6 +2168,7 @@ export class PoolScene {
     // 2b. Isolated Replay Mode: advance only ReplayController & visual overlay without stepping live physics
     if (this.replayController.isActive()) {
       const wasPlaying = this.replayController.isPlaying();
+      this.replayElapsedWallSec += dt;
       this.replayController.step(dt);
       this.renderCurrentReplayInstant();
       const finishedPlayback = wasPlaying && !this.replayController.isPlaying();
@@ -1784,7 +2177,17 @@ export class PoolScene {
       this.placementGroup.visible = false;
       this.calledPocketRing.visible = false;
       this.cueStick.update(_cueBallPos, 0, 0, false, false, null, { x: 0, y: 0 }, dt, false);
-      this.cameraController.update(dt, false);
+      const activeShot = this.replayController.getShot();
+      this.cameraController.updateReplayCamera(
+        this.replayCameraMode,
+        {
+          cueBallPos: this.replayCueBallPos,
+          focusBallPos: this.replayFocusBallPos,
+          cueAngle: activeShot?.cueAngle ?? 0,
+          elapsedSec: this.replayElapsedWallSec,
+        },
+        dt,
+      );
       return;
     }
 
@@ -1863,9 +2266,52 @@ export class PoolScene {
               resultLabel,
               isFoul: Boolean(evaluation && !evaluation.isLegal),
               foulReason: evaluation?.foulReason ?? null,
+              tableOpenAfter: snapshot.tableOpen,
+              playerGroupsAfter: snapshot.playerGroups,
+              pocketedNumbersAfter: snapshot.pocketedNumbers,
+              activePlayerAfter: snapshot.activePlayer,
+              ballInHandNext: snapshot.phase === 'BALL_IN_HAND',
             });
             if (rec) {
+              if (snapshot.phase === 'BALL_IN_HAND') {
+                this.shotRecorder.recordBallInHand(
+                  snapshot.activePlayer,
+                  this.matchManager.getPlayerName(snapshot.activePlayer),
+                  evaluation?.foulReason ?? null,
+                );
+              }
+              if (snapshot.phase !== 'GAME_OVER' && snapshot.activePlayer !== telemetry.shooter) {
+                this.shotRecorder.recordTurnChange(
+                  snapshot.activePlayer,
+                  this.matchManager.getPlayerName(snapshot.activePlayer),
+                );
+              }
               store.setReplayShots(this.shotRecorder.getSummariesNewestFirst());
+            }
+          }
+
+          if (
+            snapshot.phase === 'GAME_OVER' &&
+            !this.shotRecorder.hasMatchBeenSaved(this.currentMatchId)
+          ) {
+            this.shotRecorder.markMatchSaved(this.currentMatchId);
+            const built = this.shotRecorder.buildMatchReplayRecord({
+              matchId: this.currentMatchId,
+              winner: snapshot.winner,
+              loser: snapshot.loser,
+              finalResult: snapshot.gameOverReason ?? snapshot.statusHeadline ?? 'Match Complete',
+              playerGroups: snapshot.playerGroups,
+              pocketedNumbers: snapshot.pocketedNumbers,
+              player1Name: this.matchManager.getPlayerName('player1'),
+              player2Name: this.matchManager.getPlayerName('player2'),
+              authoritative: false,
+            });
+            if (built) {
+              this.activeMatchReplayRecord = built;
+              void replayStorage
+                .saveReplay(built)
+                .then(() => this.refreshSavedReplaysIndex())
+                .catch(() => {});
             }
           }
 
@@ -2064,6 +2510,7 @@ export class PoolScene {
     this.physics?.setVisualEventListener(null);
     this.physics?.dispose();
     this.shotRecorder.clearMatchShots();
+    this.videoRecorder.dispose();
     this.replayController.exitReplay();
     this.replayAnalysisOverlay.dispose();
     this.tableVfx?.dispose();

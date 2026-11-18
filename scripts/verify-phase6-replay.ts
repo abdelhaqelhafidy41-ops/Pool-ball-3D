@@ -149,8 +149,9 @@ async function main() {
     `PASS [1] Real PhysicsWorld shot recorded (${recorded.frameCount} fixed 60Hz frames, ${recorded.collisions.length} collisions, ${recorded.pocketedBalls.length} pocketed, ${recorded.trajectories.length} trajectories)`,
   );
 
-  // 2. Test bounded 10-shot FIFO storage
-  for (let s = 2; s <= 13; s++) {
+  // 2. Test bounded FIFO storage
+  const totalFifoTestShots = MAX_REPLAY_SHOTS + 3;
+  for (let s = 2; s <= totalFifoTestShots; s++) {
     recorder.beginShot({
       shotNumber: s,
       mode: 'local',
@@ -171,10 +172,10 @@ async function main() {
     });
   }
   const stored = recorder.getShots();
-  assert.equal(stored.length, MAX_REPLAY_SHOTS, 'Shot storage must stay bounded at 10 shots');
-  assert.equal(stored[0].shotNumber, 4, 'Oldest retained shot after 13 shots should be #4');
-  assert.equal(stored[stored.length - 1].shotNumber, 13, 'Newest retained shot should be #13');
-  console.log('PASS [2] Shot history FIFO capped cleanly at 10 most recent shots');
+  assert.equal(stored.length, MAX_REPLAY_SHOTS, `Shot storage must stay bounded at ${MAX_REPLAY_SHOTS} shots`);
+  assert.equal(stored[0].shotNumber, 4, `Oldest retained shot after ${totalFifoTestShots} shots should be #4`);
+  assert.equal(stored[stored.length - 1].shotNumber, totalFifoTestShots, `Newest retained shot should be #${totalFifoTestShots}`);
+  console.log(`PASS [2] Shot history FIFO capped cleanly at ${MAX_REPLAY_SHOTS} most recent shots`);
 
   // 3. Test ReplayController accuracy, pause/resume, restart, seek, slow-mo & speeds
   const liveBackupBefore = capturePhysicsBackup(physics);

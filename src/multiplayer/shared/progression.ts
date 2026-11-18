@@ -337,6 +337,10 @@ export interface PlayerPerformanceStats {
   };
 }
 
+import type { EquippedCosmetics } from './economy';
+import type { MatchHistoryRecord } from './protocol';
+import type { PlayerClubBadgeSummary, PresenceStatus } from './social';
+
 export interface PublicPlayerProfile {
   playerId: string;
   username: string | null;
@@ -356,6 +360,12 @@ export interface PublicPlayerProfile {
   achievements: UnlockedAchievement[];
   createdAtMs: number;
   lastMatchAtMs: number | null;
+  presence?: PresenceStatus;
+  lastSeenAtMs?: number | null;
+  equippedCosmetics?: EquippedCosmetics;
+  club?: PlayerClubBadgeSummary | null;
+  recentMatches?: MatchHistoryRecord[];
+  privacyFiltered?: boolean;
 }
 
 export interface LeaderboardEntry {

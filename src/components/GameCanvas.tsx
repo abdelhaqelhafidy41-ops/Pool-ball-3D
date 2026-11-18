@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react';
-import type { ReplaySpeed } from '../game/replay/types';
+import type { ReplayCameraMode, ReplaySpeed } from '../game/replay/types';
 import type { MatchConfig, PocketId } from '../game/rules/types';
 import { PoolScene } from '../game/scene/PoolScene';
 import { useGameStore } from '../store/useGameStore';
@@ -13,15 +13,25 @@ export interface PoolSceneActions {
   setCalledShot: (targetBall: number | null, targetPocket: PocketId | null) => void;
   resetAllStats: () => void;
   enterReplay: (shotId?: string) => void;
+  enterMatchReplay: (initialShotId?: string) => void;
   exitReplay: () => void;
   selectReplayShot: (shotId: string) => void;
+  prevReplayShot: () => void;
+  nextReplayShot: () => void;
+  jumpToReplayStart: () => void;
+  jumpToReplayEnd: () => void;
+  jumpToReplayHighlight: (highlightId: string) => void;
   toggleReplayPlay: () => void;
   restartReplay: () => void;
   seekReplay: (timeSec: number) => void;
   setReplaySpeed: (speed: ReplaySpeed) => void;
+  setReplayCameraMode: (mode: ReplayCameraMode) => void;
   toggleReplayAutoSlowMo: () => void;
   toggleReplayAnalysis: () => void;
   jumpToReplayImpact: () => void;
+  exportActiveReplayJson: () => void;
+  startReplayVideoRecording: () => void;
+  stopReplayVideoRecording: () => void;
 }
 
 interface GameCanvasProps {
@@ -52,15 +62,27 @@ export function GameCanvas({ actionsRef, onToggleFullscreen }: GameCanvasProps) 
       setCalledShot: (ball, pocket) => scene.setCalledShot(ball, pocket),
       resetAllStats: () => scene.resetAllStats(),
       enterReplay: (shotId) => scene.enterReplay(shotId),
+      enterMatchReplay: (initialShotId) => scene.enterMatchReplay(initialShotId),
       exitReplay: () => scene.exitReplay(),
       selectReplayShot: (shotId) => scene.selectReplayShot(shotId),
+      prevReplayShot: () => scene.prevReplayShot(),
+      nextReplayShot: () => scene.nextReplayShot(),
+      jumpToReplayStart: () => scene.jumpToReplayStart(),
+      jumpToReplayEnd: () => scene.jumpToReplayEnd(),
+      jumpToReplayHighlight: (highlightId) => scene.jumpToReplayHighlight(highlightId),
       toggleReplayPlay: () => scene.toggleReplayPlay(),
       restartReplay: () => scene.restartReplay(),
       seekReplay: (timeSec) => scene.seekReplay(timeSec),
       setReplaySpeed: (speed) => scene.setReplaySpeed(speed),
+      setReplayCameraMode: (mode) => scene.setReplayCameraMode(mode),
       toggleReplayAutoSlowMo: () => scene.toggleReplayAutoSlowMo(),
       toggleReplayAnalysis: () => scene.toggleReplayAnalysis(),
       jumpToReplayImpact: () => scene.jumpToReplayImpact(),
+      exportActiveReplayJson: () => scene.exportActiveReplayJson(),
+      startReplayVideoRecording: () => scene.startReplayVideoRecording(),
+      stopReplayVideoRecording: () => {
+        void scene.stopReplayVideoRecording();
+      },
     };
 
     return () => {

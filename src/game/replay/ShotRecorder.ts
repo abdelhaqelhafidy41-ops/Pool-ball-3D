@@ -1,18 +1,30 @@
 import * as THREE from 'three';
 import type { CueSpin } from '../../store/useGameStore';
 import type { OnlineBallFrame } from '../../multiplayer/shared/protocol';
-import type { CalledShot, PlayerId, PocketId } from '../rules/types';
+import type {
+  AiDifficulty,
+  BallGroup,
+  CalledShot,
+  GameMode,
+  PlayerId,
+  PocketId,
+  RuleProfileId,
+} from '../rules/types';
 import { BALL_SPECS, POCKET_POSITIONS, TABLE_DIMENSIONS } from '../utils/constants';
+import { generateMatchHighlights } from './HighlightGenerator';
 import {
   MAX_REPLAY_SHOTS,
   REPLAY_BALL_COUNT,
   REPLAY_FIXED_DT,
   REPLAY_FLOATS_PER_BALL,
   REPLAY_FLOATS_PER_FRAME,
+  REPLAY_FORMAT_VERSION,
   summarizeRecordedShot,
   type BallTrajectoryPath,
+  type MatchReplayRecord,
   type RecordedShot,
   type ReplayShotSummary,
+  type ReplayTimelineEvent,
   type ShotCollisionEvent,
   type ShotCollisionKind,
   type ShotPocketRecord,
@@ -39,6 +51,23 @@ interface ActiveRecordingMeta {
   startedAtMs: number;
 }
 
+export interface MatchRecordingContextMeta {
+  matchId: string;
+  replayId?: string;
+  createdAtMs: number;
+  matchType: 'ai' | 'local' | 'online';
+  onlineSubType?: 'quick' | 'ranked' | 'private' | 'tournament';
+  aiDifficulty?: AiDifficulty;
+  gameMode: GameMode;
+  ruleProfileId: RuleProfileId;
+  calledShotsEnabled: boolean;
+  authoritative: boolean;
+  player1Id?: string | null;
+  player1Name: string;
+  player2Id?: string | null;
+  player2Name: string;
+}
+
 interface OnlineRawSample {
   timeSec: number;
   balls: OnlineBallFrame[];
@@ -55,6 +84,13 @@ export class ShotRecorder {
   private pocketedBalls: ShotPocketRecord[] = [];
   private lastCollisionKeyAt = new Map<string, number>();
 
+  // Match-level chronological timeline state
+  private matchMeta: MatchRecordingContextMeta | null = null;
+  private cumulativeMatchTimeSec = 0;
+  private timelineEvents: ReplayTimelineEvent[] = [];
+  private eventSeq = 0;
+  private savedMatchIds = new Set<string>();
+
   // Online-only raw capture buffer (resampled to fixed 60Hz on finalize)
   private onlineRawSamples: OnlineRawSample[] = [];
   private onlinePrevVelocities = new Map<number, { vx: number; vz: number }>();
@@ -67,9 +103,76 @@ export class ShotRecorder {
     return this.activeMeta?.mode ?? null;
   }
 
+  public beginMatch(meta: MatchRecordingContextMeta): void {
+    this.clearMatchShots();
+    this.matchMeta = { ...meta };
+    this.cumulativeMatchTimeSec = 0;
+    this.timelineEvents = [
+      {
+        id: `evt_start_${this.eventSeq++}`,
+        kind: 'match_start',
+        matchTimeSec: 0,
+        shotNumber: 0,
+        player: null,
+        label: `${meta.player1Name} vs ${meta.player2Name} — Match Start`,
+      },
+    ];
+  }
+
+  public updateMatchMeta(partial: Partial<MatchRecordingContextMeta>): void {
+    if (!this.matchMeta) return;
+    this.matchMeta = { ...this.matchMeta, ...partial };
+  }
+
+  public getMatchMeta(): MatchRecordingContextMeta | null {
+    return this.matchMeta ? { ...this.matchMeta } : null;
+  }
+
+  public getTimelineEvents(): ReplayTimelineEvent[] {
+    return [...this.timelineEvents];
+  }
+
+  public hasMatchBeenSaved(matchId: string): boolean {
+    return this.savedMatchIds.has(matchId);
+  }
+
+  public markMatchSaved(matchId: string): void {
+    this.savedMatchIds.add(matchId);
+  }
+
+  public recordTurnChange(player: PlayerId, playerName: string): void {
+    if (!this.matchMeta) return;
+    this.timelineEvents.push({
+      id: `evt_turn_${this.eventSeq++}`,
+      kind: 'turn_change',
+      matchTimeSec: Number(this.cumulativeMatchTimeSec.toFixed(3)),
+      shotNumber: this.shots.length,
+      player,
+      playerName,
+      label: `Turn: ${playerName}`,
+    });
+  }
+
+  public recordBallInHand(player: PlayerId, playerName: string, reason?: string | null): void {
+    if (!this.matchMeta) return;
+    this.timelineEvents.push({
+      id: `evt_bih_${this.eventSeq++}`,
+      kind: 'ball_in_hand',
+      matchTimeSec: Number(this.cumulativeMatchTimeSec.toFixed(3)),
+      shotNumber: this.shots.length,
+      player,
+      playerName,
+      label: `${playerName} gets Ball in Hand${reason ? ` (${reason})` : ''}`,
+    });
+  }
+
   public clearMatchShots(): void {
     this.cancelActiveRecording();
     this.shots = [];
+    this.matchMeta = null;
+    this.cumulativeMatchTimeSec = 0;
+    this.timelineEvents = [];
+    this.eventSeq = 0;
   }
 
   public cancelActiveRecording(): void {
@@ -94,8 +197,21 @@ export class ShotRecorder {
     calledShot: CalledShot;
   }): void {
     this.cancelActiveRecording();
+    if (!this.matchMeta) {
+      this.beginMatch({
+        matchId: `match_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+        createdAtMs: Date.now(),
+        matchType: params.mode,
+        gameMode: 'eightBall',
+        ruleProfileId: 'casual',
+        calledShotsEnabled: false,
+        authoritative: params.mode === 'online',
+        player1Name: params.shooter === 'player1' ? params.shooterName : 'Player 1',
+        player2Name: params.shooter === 'player2' ? params.shooterName : 'Player 2',
+      });
+    }
     this.activeMeta = {
-      id: `shot_${params.shotNumber}_${Date.now()}`,
+      id: `shot_${params.shotNumber}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
       shotNumber: params.shotNumber,
       mode: params.mode,
       shooter: params.shooter,
@@ -249,7 +365,6 @@ export class ShotRecorder {
       const dv = Math.hypot(dvx, dvz);
       if (dv < 0.45) continue;
 
-      // Check proximity to other balls first
       let partner: OnlineBallFrame | null = null;
       let bestDist = R * 2.85;
       for (const other of cloned) {
@@ -295,6 +410,11 @@ export class ShotRecorder {
     isFoul: boolean;
     foulReason: string | null;
     finalOnlineBalls?: OnlineBallFrame[];
+    tableOpenAfter?: boolean;
+    playerGroupsAfter?: Record<PlayerId, BallGroup>;
+    pocketedNumbersAfter?: number[];
+    activePlayerAfter?: PlayerId;
+    ballInHandNext?: boolean;
   }): RecordedShot | null {
     const meta = this.activeMeta;
     if (!meta) return null;
@@ -330,6 +450,8 @@ export class ShotRecorder {
       firstCueHit?.timeSec ?? firstBallHit?.timeSec ?? null;
 
     const trajectories = this.extractTrajectories(packedCopy, this.frameCount);
+    const startMatchTimeSec = this.cumulativeMatchTimeSec;
+    const endMatchTimeSec = startMatchTimeSec + durationSec;
 
     const recorded: RecordedShot = {
       id: meta.id,
@@ -354,8 +476,83 @@ export class ShotRecorder {
       resultLabel: outcome.resultLabel,
       isFoul: outcome.isFoul,
       foulReason: outcome.foulReason,
+      startMatchTimeSec,
+      endMatchTimeSec,
+      tableOpenAfter: outcome.tableOpenAfter,
+      playerGroupsAfter: outcome.playerGroupsAfter ? { ...outcome.playerGroupsAfter } : undefined,
+      pocketedNumbersAfter: outcome.pocketedNumbersAfter
+        ? [...outcome.pocketedNumbersAfter]
+        : undefined,
+      activePlayerAfter: outcome.activePlayerAfter,
+      ballInHandNext: outcome.ballInHandNext,
     };
 
+    // Append chronological match timeline events for this shot
+    this.timelineEvents.push({
+      id: `evt_strike_${this.eventSeq++}`,
+      kind: meta.isBreakShot ? 'break' : 'cue_strike',
+      matchTimeSec: Number(startMatchTimeSec.toFixed(3)),
+      shotNumber: meta.shotNumber,
+      shotId: recorded.id,
+      player: meta.shooter,
+      playerName: meta.shooterName,
+      label: meta.isBreakShot
+        ? `${meta.shooterName} executes Break Shot`
+        : `${meta.shooterName} strikes Cue Ball`,
+    });
+
+    if (recorded.collisions.length > 0) {
+      const firstCol = recorded.collisions[0];
+      this.timelineEvents.push({
+        id: `evt_col_${this.eventSeq++}`,
+        kind: firstCol.kind === 'cushion' ? 'rail' : 'collision',
+        matchTimeSec: Number((startMatchTimeSec + firstCol.timeSec).toFixed(3)),
+        shotNumber: meta.shotNumber,
+        shotId: recorded.id,
+        player: meta.shooter,
+        playerName: meta.shooterName,
+        ballNumber: firstCol.ballB ?? firstCol.ballA,
+        label:
+          firstCol.kind === 'cushion'
+            ? `Rail cushion impact (#${firstCol.ballA})`
+            : `First contact (${firstCol.ballA === 0 ? 'Cue' : `#${firstCol.ballA}`} -> #${firstCol.ballB ?? firstCol.ballA})`,
+      });
+    }
+
+    for (const pkt of recorded.pocketedBalls) {
+      this.timelineEvents.push({
+        id: `evt_pkt_${this.eventSeq++}`,
+        kind: pkt.ballNumber === 8 ? 'eight_ball_pocketed' : 'pocket',
+        matchTimeSec: Number((startMatchTimeSec + pkt.timeSec).toFixed(3)),
+        shotNumber: meta.shotNumber,
+        shotId: recorded.id,
+        player: meta.shooter,
+        playerName: meta.shooterName,
+        ballNumber: pkt.ballNumber,
+        pocketId: pkt.pocketId,
+        label:
+          pkt.ballNumber === 0
+            ? `${meta.shooterName} scratched Cue Ball`
+            : pkt.ballNumber === 8
+              ? `8-Ball pocketed into ${pkt.pocketId.toUpperCase()}`
+              : `#${pkt.ballNumber} pocketed (${pkt.pocketId.toUpperCase()})`,
+      });
+    }
+
+    if (recorded.isFoul) {
+      this.timelineEvents.push({
+        id: `evt_foul_${this.eventSeq++}`,
+        kind: 'foul',
+        matchTimeSec: Number(endMatchTimeSec.toFixed(3)),
+        shotNumber: meta.shotNumber,
+        shotId: recorded.id,
+        player: meta.shooter,
+        playerName: meta.shooterName,
+        label: recorded.foulReason ?? 'Foul committed',
+      });
+    }
+
+    this.cumulativeMatchTimeSec = endMatchTimeSec;
     this.shots.push(recorded);
     if (this.shots.length > MAX_REPLAY_SHOTS) {
       this.shots.splice(0, this.shots.length - MAX_REPLAY_SHOTS);
@@ -363,6 +560,119 @@ export class ShotRecorder {
 
     this.cancelActiveRecording();
     return recorded;
+  }
+
+  public buildMatchReplayRecord(params: {
+    winner: PlayerId | null;
+    loser: PlayerId | null;
+    finalResult: string;
+    playerGroups: Record<PlayerId, BallGroup>;
+    pocketedNumbers: number[];
+    player1Name?: string;
+    player2Name?: string;
+    player1Id?: string | null;
+    player2Id?: string | null;
+    matchId?: string;
+    authoritative?: boolean;
+    localPlayerPerspective?: PlayerId | null;
+  }): MatchReplayRecord | null {
+    if (this.shots.length === 0) return null;
+
+    const meta = this.matchMeta ?? {
+      matchId: params.matchId ?? `match_${Date.now()}`,
+      createdAtMs: this.shots[0].recordedAtMs,
+      matchType: this.shots[0].mode,
+      gameMode: 'eightBall' as GameMode,
+      ruleProfileId: 'casual' as RuleProfileId,
+      calledShotsEnabled: false,
+      authoritative: Boolean(params.authoritative),
+      player1Name: params.player1Name ?? 'Player 1',
+      player2Name: params.player2Name ?? 'Player 2',
+    };
+
+    const p1Name = (params.player1Name ?? meta.player1Name).trim() || 'Player 1';
+    const p2Name = (params.player2Name ?? meta.player2Name).trim() || 'Player 2';
+
+    // Ensure contiguous match-relative times across all retained shots
+    let cursor = 0;
+    const timelineShots = this.shots.map((s) => {
+      const start = s.startMatchTimeSec ?? cursor;
+      const end = start + s.durationSec;
+      cursor = end;
+      return {
+        ...s,
+        startMatchTimeSec: start,
+        endMatchTimeSec: end,
+      };
+    });
+
+    const totalDurationSec = Math.max(REPLAY_FIXED_DT, cursor);
+    const events = [...this.timelineEvents];
+
+    if (params.winner) {
+      const winnerName = params.winner === 'player1' ? p1Name : p2Name;
+      const isDefeat =
+        params.localPlayerPerspective != null &&
+        params.winner !== params.localPlayerPerspective;
+      events.push({
+        id: `evt_end_${this.eventSeq++}`,
+        kind: isDefeat ? 'defeat' : 'victory',
+        matchTimeSec: Number(totalDurationSec.toFixed(3)),
+        shotNumber: timelineShots[timelineShots.length - 1]?.shotNumber ?? timelineShots.length,
+        shotId: timelineShots[timelineShots.length - 1]?.id,
+        player: params.winner,
+        playerName: winnerName,
+        label: `${winnerName} Wins — ${params.finalResult}`,
+      });
+    }
+
+    const p1Count = timelineShots
+      .filter((s) => s.shooter === 'player1' && !s.isFoul)
+      .reduce((acc, s) => acc + s.pocketedBalls.filter((p) => p.ballNumber !== 0).length, 0);
+    const p2Count = timelineShots
+      .filter((s) => s.shooter === 'player2' && !s.isFoul)
+      .reduce((acc, s) => acc + s.pocketedBalls.filter((p) => p.ballNumber !== 0).length, 0);
+
+    const effectiveMatchId = params.matchId ?? meta.matchId;
+    const replayId = meta.replayId ?? `replay_${effectiveMatchId}`;
+
+    const record: MatchReplayRecord = {
+      version: REPLAY_FORMAT_VERSION,
+      replayId,
+      matchId: effectiveMatchId,
+      createdAtMs: meta.createdAtMs,
+      endedAtMs: Date.now(),
+      durationSec: Number(totalDurationSec.toFixed(3)),
+      matchType: meta.matchType,
+      onlineSubType: meta.onlineSubType,
+      aiDifficulty: meta.aiDifficulty,
+      gameMode: meta.gameMode,
+      ruleProfileId: meta.ruleProfileId,
+      calledShotsEnabled: meta.calledShotsEnabled,
+      authoritative: params.authoritative ?? meta.authoritative,
+      player1: {
+        id: params.player1Id ?? meta.player1Id ?? null,
+        name: p1Name,
+        group: params.playerGroups.player1,
+        pocketedCount: p1Count,
+      },
+      player2: {
+        id: params.player2Id ?? meta.player2Id ?? null,
+        name: p2Name,
+        group: params.playerGroups.player2,
+        pocketedCount: p2Count,
+      },
+      winner: params.winner,
+      loser: params.loser,
+      finalResult: params.finalResult,
+      totalShots: timelineShots.length,
+      shots: timelineShots,
+      timelineEvents: events,
+      highlights: [],
+    };
+
+    record.highlights = generateMatchHighlights(record);
+    return record;
   }
 
   private resampleOnlineSamplesToFixedGrid(): void {

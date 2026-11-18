@@ -14,7 +14,16 @@ import type {
   PlayerId,
   PocketId,
 } from '../game/rules/types';
-import type { ReplayShotSummary, ReplaySpeed } from '../game/replay/types';
+import type {
+  ReplayCameraMode,
+  ReplayHighlight,
+  ReplayMode,
+  ReplayShotSummary,
+  ReplaySpeed,
+  ReplayStorageStats,
+  ReplayTimelineEvent,
+  SavedReplaySummary,
+} from '../game/replay/types';
 import { TABLE_DIMENSIONS } from '../game/utils/constants';
 import type {
   MatchProgressionRewardSummary,
@@ -457,17 +466,46 @@ export interface GameState {
   progressionTab: ProgressionTab;
   inspectedPlayerId: string | null;
 
-  // Replay & Shot Analysis State (Phase 6 - Strictly isolated from live match)
+  // Replay & Shot Analysis State (Phase 6 & 13 - Strictly isolated from live match)
   replayShots: ReplayShotSummary[];
   replayActive: boolean;
+  replayMode: ReplayMode;
+  replayMatchId: string | null;
   replayShotId: string | null;
+  replayShotIndex: number;
+  replayTotalShots: number;
   replayPlaying: boolean;
   replayTimeSec: number;
   replayDurationSec: number;
+  replayMatchTimeSec: number;
+  replayMatchDurationSec: number;
   replaySpeed: ReplaySpeed;
+  replayCameraMode: ReplayCameraMode;
   replayAutoSlowMo: boolean;
   replayShowAnalysis: boolean;
   replayActiveCollisionLabel: string | null;
+  replayHighlights: ReplayHighlight[];
+  replayTimelineEvents: ReplayTimelineEvent[];
+  replayMatchMeta: {
+    matchId: string;
+    replayId: string;
+    matchType: 'ai' | 'local' | 'online';
+    ruleProfileId: 'casual' | 'wpa';
+    player1Name: string;
+    player2Name: string;
+    player1Group: BallGroup;
+    player2Group: BallGroup;
+    player1PocketedCount: number;
+    player2PocketedCount: number;
+    winner: PlayerId | null;
+    finalResult: string;
+    authoritative: boolean;
+  } | null;
+  savedReplays: SavedReplaySummary[];
+  replayStorageStats: ReplayStorageStats | null;
+  pendingSavedReplayRequest: { replayId: string; seq: number } | null;
+  replayIsRecordingVideo: boolean;
+  replayVideoNotice: string | null;
 
   // Social, Presence, Invitations & Real-Time Chat (Phase 7)
   socialModalOpen: boolean;
@@ -611,19 +649,34 @@ export interface GameState {
   setProgressionTab: (tab: ProgressionTab) => void;
   setInspectedPlayerId: (playerId: string | null) => void;
 
-  // Replay Actions (Phase 6)
+  // Replay Actions (Phase 6 & 13)
   setReplayShots: (shots: ReplayShotSummary[]) => void;
+  setSavedReplays: (savedReplays: SavedReplaySummary[], stats?: ReplayStorageStats | null) => void;
+  requestWatchSavedReplay: (replayId: string) => void;
+  clearWatchSavedReplayRequest: () => void;
   setReplayUiState: (
     partial: Partial<{
       replayActive: boolean;
+      replayMode: ReplayMode;
+      replayMatchId: string | null;
       replayShotId: string | null;
+      replayShotIndex: number;
+      replayTotalShots: number;
       replayPlaying: boolean;
       replayTimeSec: number;
       replayDurationSec: number;
+      replayMatchTimeSec: number;
+      replayMatchDurationSec: number;
       replaySpeed: ReplaySpeed;
+      replayCameraMode: ReplayCameraMode;
       replayAutoSlowMo: boolean;
       replayShowAnalysis: boolean;
       replayActiveCollisionLabel: string | null;
+      replayHighlights: ReplayHighlight[];
+      replayTimelineEvents: ReplayTimelineEvent[];
+      replayMatchMeta: GameState['replayMatchMeta'];
+      replayIsRecordingVideo: boolean;
+      replayVideoNotice: string | null;
     }>,
   ) => void;
   resetReplayUiState: () => void;
@@ -847,14 +900,29 @@ export const useGameStore = create<GameState>((set) => ({
 
   replayShots: [],
   replayActive: false,
+  replayMode: 'shot',
+  replayMatchId: null,
   replayShotId: null,
+  replayShotIndex: 0,
+  replayTotalShots: 0,
   replayPlaying: false,
   replayTimeSec: 0,
   replayDurationSec: 0,
+  replayMatchTimeSec: 0,
+  replayMatchDurationSec: 0,
   replaySpeed: 1,
+  replayCameraMode: 'original',
   replayAutoSlowMo: false,
   replayShowAnalysis: true,
   replayActiveCollisionLabel: null,
+  replayHighlights: [],
+  replayTimelineEvents: [],
+  replayMatchMeta: null,
+  savedReplays: [],
+  replayStorageStats: null,
+  pendingSavedReplayRequest: null,
+  replayIsRecordingVideo: false,
+  replayVideoNotice: null,
 
   socialModalOpen: false,
   socialTab: 'friends',
@@ -1320,15 +1388,39 @@ export const useGameStore = create<GameState>((set) => ({
   setInspectedPlayerId: (inspectedPlayerId) => set({ inspectedPlayerId }),
 
   setReplayShots: (replayShots) => set({ replayShots }),
+  setSavedReplays: (savedReplays, stats) =>
+    set((state) => ({
+      savedReplays,
+      replayStorageStats: stats !== undefined ? stats : state.replayStorageStats,
+    })),
+  requestWatchSavedReplay: (replayId) =>
+    set((state) => ({
+      pendingSavedReplayRequest: {
+        replayId,
+        seq: (state.pendingSavedReplayRequest?.seq ?? 0) + 1,
+      },
+    })),
+  clearWatchSavedReplayRequest: () => set({ pendingSavedReplayRequest: null }),
   setReplayUiState: (partial) => set(partial),
   resetReplayUiState: () =>
     set({
       replayActive: false,
+      replayMode: 'shot',
+      replayMatchId: null,
       replayShotId: null,
+      replayShotIndex: 0,
+      replayTotalShots: 0,
       replayPlaying: false,
       replayTimeSec: 0,
       replayDurationSec: 0,
+      replayMatchTimeSec: 0,
+      replayMatchDurationSec: 0,
       replayActiveCollisionLabel: null,
+      replayHighlights: [],
+      replayTimelineEvents: [],
+      replayMatchMeta: null,
+      replayIsRecordingVideo: false,
+      replayVideoNotice: null,
     }),
 
   openSocialModal: (tab, dmPeerId = null) =>

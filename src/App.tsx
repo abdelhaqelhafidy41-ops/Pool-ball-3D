@@ -14,7 +14,7 @@ import { StoreModal } from './components/StoreModal';
 import { TournamentModal } from './components/TournamentModal';
 import { BattlePassModal } from './components/BattlePassModal';
 import { ProgressionToastBanner } from './components/ProgressionToastBanner';
-import type { ReplaySpeed } from './game/replay/types';
+import type { ReplayCameraMode, ReplaySpeed } from './game/replay/types';
 import type { PocketId } from './game/rules/types';
 import { soundEngine } from './game/utils/SoundEngine';
 import { battlePassClient } from './multiplayer/BattlePassClient';
@@ -132,6 +132,42 @@ export default function App() {
     actionsRef.current?.jumpToReplayImpact();
   }, []);
 
+  const handlePrevReplayShot = useCallback(() => {
+    actionsRef.current?.prevReplayShot();
+  }, []);
+
+  const handleNextReplayShot = useCallback(() => {
+    actionsRef.current?.nextReplayShot();
+  }, []);
+
+  const handleJumpToReplayStart = useCallback(() => {
+    actionsRef.current?.jumpToReplayStart();
+  }, []);
+
+  const handleJumpToReplayEnd = useCallback(() => {
+    actionsRef.current?.jumpToReplayEnd();
+  }, []);
+
+  const handleJumpToReplayHighlight = useCallback((highlightId: string) => {
+    actionsRef.current?.jumpToReplayHighlight(highlightId);
+  }, []);
+
+  const handleSetReplayCameraMode = useCallback((mode: ReplayCameraMode) => {
+    actionsRef.current?.setReplayCameraMode(mode);
+  }, []);
+
+  const handleExportActiveReplayJson = useCallback(() => {
+    actionsRef.current?.exportActiveReplayJson();
+  }, []);
+
+  const handleStartReplayVideoRecording = useCallback(() => {
+    actionsRef.current?.startReplayVideoRecording();
+  }, []);
+
+  const handleStopReplayVideoRecording = useCallback(() => {
+    actionsRef.current?.stopReplayVideoRecording();
+  }, []);
+
   const handleMainMenu = useCallback(() => {
     if (useGameStore.getState().matchConfig.opponentType === 'online') {
       multiplayerManager.leaveMatchOrRoom();
@@ -163,13 +199,22 @@ export default function App() {
         <ReplayOverlay
           onExitReplay={handleExitReplay}
           onSelectShot={handleSelectReplayShot}
+          onPrevShot={handlePrevReplayShot}
+          onNextShot={handleNextReplayShot}
+          onJumpToStart={handleJumpToReplayStart}
+          onJumpToEnd={handleJumpToReplayEnd}
+          onJumpToHighlight={handleJumpToReplayHighlight}
           onTogglePlay={handleToggleReplayPlay}
           onRestart={handleRestartReplay}
           onSeek={handleSeekReplay}
           onSetSpeed={handleSetReplaySpeed}
+          onSetCameraMode={handleSetReplayCameraMode}
           onToggleAutoSlowMo={handleToggleReplayAutoSlowMo}
           onToggleAnalysis={handleToggleReplayAnalysis}
           onJumpToImpact={handleJumpToReplayImpact}
+          onExportJson={handleExportActiveReplayJson}
+          onStartVideoRecording={handleStartReplayVideoRecording}
+          onStopVideoRecording={handleStopReplayVideoRecording}
         />
         <MatchEndModal
           onPlayAgain={handleStartMatch}

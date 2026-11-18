@@ -1,12 +1,16 @@
 import * as THREE from 'three';
+import type { BallGroup, PlayerId } from '../rules/types';
 import { BALL_DEFINITIONS } from '../utils/constants';
 import { soundEngine } from '../utils/SoundEngine';
 import {
   REPLAY_BALL_COUNT,
   REPLAY_FLOATS_PER_BALL,
   REPLAY_FLOATS_PER_FRAME,
+  type MatchReplayRecord,
   type RecordedShot,
   type ReplayBallFrame,
+  type ReplayHighlight,
+  type ReplayMode,
   type ReplaySpeed,
   type ShotCollisionEvent,
 } from './types';
@@ -31,8 +35,19 @@ export function formatCollisionLabel(col: ShotCollisionEvent): string {
     : `Ball Collision: #${col.ballA} ↔ ${nameB}`;
 }
 
+export interface ReplayDynamicMatchState {
+  player1Group: BallGroup;
+  player2Group: BallGroup;
+  pocketedNumbers: number[];
+  activePlayer: PlayerId;
+  tableOpen: boolean;
+}
+
 export class ReplayController {
   private active = false;
+  private mode: ReplayMode = 'shot';
+  private matchReplay: MatchReplayRecord | null = null;
+  private shotIndex = 0;
   private shot: RecordedShot | null = null;
   private liveBackup: ReplayBallFrame[] = [];
   private playing = false;
@@ -45,12 +60,31 @@ export class ReplayController {
     return this.active;
   }
 
+  public getMode(): ReplayMode {
+    return this.mode;
+  }
+
   public isPlaying(): boolean {
     return this.active && this.playing;
   }
 
+  public getMatchReplay(): MatchReplayRecord | null {
+    return this.matchReplay;
+  }
+
   public getShot(): RecordedShot | null {
     return this.shot;
+  }
+
+  public getCurrentShotIndex(): number {
+    return this.shotIndex;
+  }
+
+  public getTotalShots(): number {
+    if (this.mode === 'match' && this.matchReplay) {
+      return this.matchReplay.shots.length;
+    }
+    return this.shot ? 1 : 0;
   }
 
   public getCurrentTimeSec(): number {
@@ -58,6 +92,22 @@ export class ReplayController {
   }
 
   public getDurationSec(): number {
+    return this.shot?.durationSec ?? 0;
+  }
+
+  public getMatchTimeSec(): number {
+    if (!this.active || !this.shot) return 0;
+    if (this.mode !== 'match' || !this.matchReplay) {
+      return this.currentTimeSec;
+    }
+    const base = this.shot.startMatchTimeSec ?? 0;
+    return Math.min(this.getMatchDurationSec(), base + this.currentTimeSec);
+  }
+
+  public getMatchDurationSec(): number {
+    if (this.mode === 'match' && this.matchReplay) {
+      return Math.max(0.02, this.matchReplay.durationSec);
+    }
     return this.shot?.durationSec ?? 0;
   }
 
@@ -75,7 +125,40 @@ export class ReplayController {
 
   public enterReplay(shot: RecordedShot, liveBackup: ReplayBallFrame[]): void {
     this.active = true;
+    this.mode = 'shot';
+    this.matchReplay = null;
+    this.shotIndex = 0;
     this.shot = shot;
+    this.liveBackup = liveBackup.map((b) => ({ ...b }));
+    this.currentTimeSec = 0;
+    this.playing = true;
+  }
+
+  public enterMatchReplay(
+    matchReplay: MatchReplayRecord,
+    liveBackup: ReplayBallFrame[],
+    initialShotId?: string,
+  ): void {
+    if (matchReplay.shots.length === 0) return;
+    let cursor = 0;
+    for (const s of matchReplay.shots) {
+      if (s.startMatchTimeSec === undefined) s.startMatchTimeSec = cursor;
+      s.endMatchTimeSec = s.startMatchTimeSec + s.durationSec;
+      cursor = s.endMatchTimeSec;
+    }
+    matchReplay.durationSec = Math.max(matchReplay.durationSec, cursor);
+
+    let startIdx = 0;
+    if (initialShotId) {
+      const found = matchReplay.shots.findIndex((s) => s.id === initialShotId);
+      if (found >= 0) startIdx = found;
+    }
+
+    this.active = true;
+    this.mode = 'match';
+    this.matchReplay = matchReplay;
+    this.shotIndex = startIdx;
+    this.shot = matchReplay.shots[startIdx];
     this.liveBackup = liveBackup.map((b) => ({ ...b }));
     this.currentTimeSec = 0;
     this.playing = true;
@@ -83,14 +166,87 @@ export class ReplayController {
 
   public switchShot(shot: RecordedShot): void {
     if (!this.active) return;
+    if (this.mode === 'match' && this.matchReplay) {
+      const idx = this.matchReplay.shots.findIndex((s) => s.id === shot.id);
+      if (idx >= 0) {
+        this.shotIndex = idx;
+        this.shot = this.matchReplay.shots[idx];
+        this.currentTimeSec = 0;
+        this.playing = true;
+        return;
+      }
+    }
     this.shot = shot;
     this.currentTimeSec = 0;
     this.playing = true;
   }
 
+  public nextShot(): boolean {
+    if (!this.active || this.mode !== 'match' || !this.matchReplay) return false;
+    if (this.shotIndex >= this.matchReplay.shots.length - 1) return false;
+    this.shotIndex++;
+    this.shot = this.matchReplay.shots[this.shotIndex];
+    this.currentTimeSec = 0;
+    return true;
+  }
+
+  public prevShot(): boolean {
+    if (!this.active || this.mode !== 'match' || !this.matchReplay) return false;
+    if (this.shotIndex <= 0) return false;
+    this.shotIndex--;
+    this.shot = this.matchReplay.shots[this.shotIndex];
+    this.currentTimeSec = 0;
+    return true;
+  }
+
+  public jumpToBeginning(): void {
+    if (!this.active) return;
+    if (this.mode === 'match' && this.matchReplay && this.matchReplay.shots.length > 0) {
+      this.shotIndex = 0;
+      this.shot = this.matchReplay.shots[0];
+    }
+    this.currentTimeSec = 0;
+    this.playing = true;
+  }
+
+  public jumpToEnd(): void {
+    if (!this.active || !this.shot) return;
+    if (this.mode === 'match' && this.matchReplay && this.matchReplay.shots.length > 0) {
+      this.shotIndex = this.matchReplay.shots.length - 1;
+      this.shot = this.matchReplay.shots[this.shotIndex];
+    }
+    this.currentTimeSec = this.shot.durationSec;
+    this.playing = false;
+  }
+
+  public jumpToHighlight(highlightId: string): ReplayHighlight | null {
+    if (!this.active || !this.matchReplay) return null;
+    const hl = this.matchReplay.highlights.find((h) => h.id === highlightId);
+    if (!hl) return null;
+    const targetIdx = hl.shotId
+      ? this.matchReplay.shots.findIndex((s) => s.id === hl.shotId)
+      : -1;
+    if (targetIdx >= 0) {
+      this.shotIndex = targetIdx;
+      this.shot = this.matchReplay.shots[targetIdx];
+      const shotStart = this.shot.startMatchTimeSec ?? 0;
+      this.currentTimeSec = Math.max(
+        0,
+        Math.min(this.shot.durationSec, hl.matchTimeSec - shotStart),
+      );
+    } else {
+      this.seekMatch(hl.matchTimeSec);
+    }
+    this.playing = true;
+    return hl;
+  }
+
   public exitReplay(): ReplayBallFrame[] {
     const backup = this.liveBackup;
     this.active = false;
+    this.mode = 'shot';
+    this.matchReplay = null;
+    this.shotIndex = 0;
     this.shot = null;
     this.liveBackup = [];
     this.playing = false;
@@ -100,7 +256,16 @@ export class ReplayController {
 
   public play(): void {
     if (!this.active || !this.shot) return;
-    if (this.currentTimeSec >= this.shot.durationSec - 0.001) {
+    if (this.mode === 'match' && this.matchReplay) {
+      const atMatchEnd =
+        this.shotIndex >= this.matchReplay.shots.length - 1 &&
+        this.currentTimeSec >= this.shot.durationSec - 0.001;
+      if (atMatchEnd) {
+        this.shotIndex = 0;
+        this.shot = this.matchReplay.shots[0];
+        this.currentTimeSec = 0;
+      }
+    } else if (this.currentTimeSec >= this.shot.durationSec - 0.001) {
       this.currentTimeSec = 0;
     }
     this.playing = true;
@@ -122,13 +287,35 @@ export class ReplayController {
 
   public restart(): void {
     if (!this.active || !this.shot) return;
-    this.currentTimeSec = 0;
-    this.playing = true;
+    this.jumpToBeginning();
   }
 
   public seek(timeSec: number): void {
     if (!this.active || !this.shot) return;
     this.currentTimeSec = Math.max(0, Math.min(this.shot.durationSec, timeSec));
+  }
+
+  public seekMatch(matchTimeSec: number): void {
+    if (!this.active || !this.shot) return;
+    if (this.mode !== 'match' || !this.matchReplay || this.matchReplay.shots.length === 0) {
+      this.seek(matchTimeSec);
+      return;
+    }
+    const clamped = Math.max(0, Math.min(this.getMatchDurationSec(), matchTimeSec));
+    const shots = this.matchReplay.shots;
+    let foundIdx = shots.length - 1;
+    for (let i = 0; i < shots.length; i++) {
+      const start = shots[i].startMatchTimeSec ?? 0;
+      const end = shots[i].endMatchTimeSec ?? start + shots[i].durationSec;
+      if (clamped < end - 0.0001 || i === shots.length - 1) {
+        foundIdx = i;
+        break;
+      }
+    }
+    this.shotIndex = foundIdx;
+    this.shot = shots[foundIdx];
+    const shotStart = this.shot.startMatchTimeSec ?? 0;
+    this.currentTimeSec = Math.max(0, Math.min(this.shot.durationSec, clamped - shotStart));
   }
 
   public setSpeed(speed: ReplaySpeed): void {
@@ -193,6 +380,27 @@ export class ReplayController {
     return best;
   }
 
+  public getMatchStateAtCurrentTime(): ReplayDynamicMatchState | null {
+    if (!this.active || !this.shot) return null;
+    if (this.mode !== 'match' || !this.matchReplay) return null;
+    const prevShot = this.shotIndex > 0 ? this.matchReplay.shots[this.shotIndex - 1] : null;
+    const nearEnd = this.currentTimeSec >= this.shot.durationSec - 0.05;
+    const refShot = nearEnd ? this.shot : prevShot;
+
+    const groups = refShot?.playerGroupsAfter ?? {
+      player1: null,
+      player2: null,
+    };
+    const pocketedNumbers = refShot?.pocketedNumbersAfter ?? [];
+    return {
+      player1Group: groups.player1,
+      player2Group: groups.player2,
+      pocketedNumbers,
+      activePlayer: this.shot.shooter,
+      tableOpen: refShot?.tableOpenAfter ?? true,
+    };
+  }
+
   public step(dt: number): void {
     if (!this.active || !this.shot || !this.playing) return;
 
@@ -201,7 +409,6 @@ export class ReplayController {
     const nextTime = Math.min(this.shot.durationSec, prevTime + dt * effSpeed);
     this.currentTimeSec = nextTime;
 
-    // Trigger subtle audio cues when crossing collisions or pockets forward
     for (const col of this.shot.collisions) {
       if (col.timeSec > prevTime && col.timeSec <= nextTime) {
         if (col.kind === 'cushion') {
@@ -218,7 +425,17 @@ export class ReplayController {
     }
 
     if (nextTime >= this.shot.durationSec) {
-      this.playing = false;
+      if (
+        this.mode === 'match' &&
+        this.matchReplay &&
+        this.shotIndex < this.matchReplay.shots.length - 1
+      ) {
+        this.shotIndex++;
+        this.shot = this.matchReplay.shots[this.shotIndex];
+        this.currentTimeSec = 0;
+      } else {
+        this.playing = false;
+      }
     }
   }
 

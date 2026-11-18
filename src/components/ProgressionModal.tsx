@@ -10,8 +10,11 @@ import {
   Copy,
   Crosshair,
   Crown,
+  Download,
+  Film,
   Flag,
   Flame,
+  HardDrive,
   History,
   KeyRound,
   LogIn,
@@ -25,7 +28,9 @@ import {
   Star,
   Swords,
   Target,
+  Trash2,
   Trophy,
+  Upload,
   User,
   UserCheck,
   UserMinus,
@@ -33,7 +38,9 @@ import {
   X,
   Zap,
 } from 'lucide-react';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { downloadTextFile, replayStorage } from '../game/replay/ReplayStorage';
+import type { SavedReplaySummary } from '../game/replay/types';
 import { soundEngine } from '../game/utils/SoundEngine';
 import { multiplayerManager } from '../multiplayer/MultiplayerManager';
 import { progressionClient } from '../multiplayer/ProgressionClient';
@@ -105,6 +112,28 @@ function formatMatchTypeLabel(t?: OnlineMatchType): string {
     default:
       return 'Quick';
   }
+}
+
+function formatBytesCompact(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+}
+
+function didPlayerWinSavedReplay(
+  r: SavedReplaySummary,
+  ownProfile: PublicPlayerProfile | null,
+  onlineDisplayName: string,
+): boolean | null {
+  if (!r.winner) return null;
+  if (r.matchType === 'online') {
+    const myName = (ownProfile?.displayName ?? onlineDisplayName).trim().toLowerCase();
+    const p1Match = r.player1Name.trim().toLowerCase() === myName;
+    const p2Match = r.player2Name.trim().toLowerCase() === myName;
+    if (p1Match && !p2Match) return r.winner === 'player1';
+    if (p2Match && !p1Match) return r.winner === 'player2';
+  }
+  return r.winner === 'player1';
 }
 
 function renderAchievementIcon(icon: AchievementIconId, unlocked: boolean) {
@@ -571,6 +600,10 @@ export function ProgressionModal() {
   const activeSeason = useGameStore((s) => s.activeSeason);
   const seasonsList = useGameStore((s) => s.seasonsList);
   const moderationStatus = useGameStore((s) => s.moderationStatus);
+  const savedReplays = useGameStore((s) => s.savedReplays);
+  const replayStorageStats = useGameStore((s) => s.replayStorageStats);
+  const setSavedReplays = useGameStore((s) => s.setSavedReplays);
+  const requestWatchSavedReplay = useGameStore((s) => s.requestWatchSavedReplay);
 
   const [displayNameInput, setDisplayNameInput] = useState(onlineProfile.displayName);
   const [selectedAvatar, setSelectedAvatar] = useState<OnlineAvatarId>(onlineProfile.avatarId);
@@ -602,11 +635,18 @@ export function ProgressionModal() {
   const [lbData, setLbData] = useState<LeaderboardResponse | null>(null);
   const [lbLoading, setLbLoading] = useState(false);
 
-  // History state
+  // History & Replay archive state
+  const [historyModeFilter, setHistoryModeFilter] = useState<'all' | 'ai' | 'local' | 'online'>('all');
+  const [historyResultFilter, setHistoryResultFilter] = useState<'all' | 'won' | 'lost'>('all');
   const [historyFilterOwn, setHistoryFilterOwn] = useState(false);
   const [historyMatchType, setHistoryMatchType] = useState<OnlineMatchType | 'all'>('all');
   const [historyItems, setHistoryItems] = useState<MatchHistoryRecord[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyImportNotice, setHistoryImportNotice] = useState<{
+    type: 'ok' | 'err';
+    text: string;
+  } | null>(null);
+  const importInputRef = useRef<HTMLInputElement | null>(null);
   const [sessionLoading, setSessionLoading] = useState(false);
   const [sessionError, setSessionError] = useState<string | null>(null);
 
@@ -695,16 +735,31 @@ export function ProgressionModal() {
     return () => window.clearTimeout(handle);
   }, [progressionModalOpen, inspectedPlayerId, progressionTab, loadLeaderboard]);
 
+  const refreshSavedReplays = useCallback(async () => {
+    try {
+      const [list, stats] = await Promise.all([
+        replayStorage.listSavedReplays(),
+        replayStorage.getStorageStats(),
+      ]);
+      setSavedReplays(list, stats);
+    } catch {
+      // Ignore storage error
+    }
+  }, [setSavedReplays]);
+
   const loadHistory = useCallback(async () => {
     setHistoryLoading(true);
-    const matches = await progressionClient.fetchMatchHistory({
-      playerId: historyFilterOwn && ownProfile ? ownProfile.playerId : null,
-      matchType: historyMatchType,
-      limit: 30,
-    });
+    const [matches] = await Promise.all([
+      progressionClient.fetchMatchHistory({
+        playerId: historyFilterOwn && ownProfile ? ownProfile.playerId : null,
+        matchType: historyMatchType,
+        limit: 30,
+      }),
+      refreshSavedReplays(),
+    ]);
     setHistoryItems(matches);
     setHistoryLoading(false);
-  }, [historyFilterOwn, historyMatchType, ownProfile]);
+  }, [historyFilterOwn, historyMatchType, ownProfile, refreshSavedReplays]);
 
   useEffect(() => {
     if (!progressionModalOpen || inspectedPlayerId || progressionTab !== 'history') return;
@@ -1534,154 +1589,474 @@ export function ProgressionModal() {
               </div>
             </div>
           ) : progressionTab === 'history' ? (
-            <div className="space-y-3">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <div className="flex items-center gap-1 rounded-xl border border-white/10 bg-black/35 p-1">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      soundEngine.playUiClick();
-                      setHistoryFilterOwn(false);
-                    }}
-                    className={`rounded-lg px-3 py-1 text-xs font-bold cursor-pointer whitespace-nowrap ${
-                      !historyFilterOwn
-                        ? 'bg-amber-500 text-slate-950'
-                        : 'text-slate-300 hover:text-white'
-                    }`}
-                  >
-                    Global Matches
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      soundEngine.playUiClick();
-                      setHistoryFilterOwn(true);
-                    }}
-                    className={`rounded-lg px-3 py-1 text-xs font-bold cursor-pointer whitespace-nowrap ${
-                      historyFilterOwn
-                        ? 'bg-amber-500 text-slate-950'
-                        : 'text-slate-300 hover:text-white'
-                    }`}
-                  >
-                    My Matches
-                  </button>
-                </div>
+            (() => {
+              const savedByMatchId = new Map(savedReplays.map((r) => [r.matchId, r]));
+              const filteredSaved = savedReplays.filter((r) => {
+                if (historyModeFilter !== 'all' && r.matchType !== historyModeFilter) return false;
+                const won = didPlayerWinSavedReplay(r, ownProfile, onlineProfile.displayName);
+                if (historyResultFilter === 'won' && won !== true) return false;
+                if (historyResultFilter === 'lost' && won !== false) return false;
+                return true;
+              });
 
-                <div className="flex items-center gap-1 rounded-xl border border-white/10 bg-black/35 p-1">
-                  {(
-                    [
-                      { id: 'all', label: 'All' },
-                      { id: 'ranked', label: 'Ranked' },
-                      { id: 'quick', label: 'Quick' },
-                      { id: 'private', label: 'Private' },
-                      { id: 'tournament', label: 'Tournament' },
-                    ] as Array<{ id: OnlineMatchType | 'all'; label: string }>
-                  ).map((mt) => (
-                    <button
-                      key={mt.id}
-                      type="button"
-                      data-testid={`history-type-${mt.id}`}
-                      onClick={() => {
-                        soundEngine.playUiClick();
-                        setHistoryMatchType(mt.id);
-                      }}
-                      className={`rounded-lg px-2 py-1 text-[11px] font-bold cursor-pointer whitespace-nowrap ${
-                        historyMatchType === mt.id
-                          ? 'bg-amber-500 text-slate-950'
-                          : 'text-slate-300 hover:text-white'
+              const filteredOnlineLedger = historyItems.filter((m) => {
+                if (historyModeFilter !== 'all' && historyModeFilter !== 'online') return false;
+                if (historyResultFilter === 'all' || !ownProfile) return true;
+                const isSelfP1 = m.player1Id === ownProfile.playerId;
+                const isSelfP2 = m.player2Id === ownProfile.playerId;
+                if (!isSelfP1 && !isSelfP2) return false;
+                const won = isSelfP1 ? m.winnerRole === 'player1' : m.winnerRole === 'player2';
+                return historyResultFilter === 'won' ? won : !won;
+              });
+
+              const handleExportSaved = async (replayId: string, matchId: string) => {
+                soundEngine.playUiClick();
+                const full = await replayStorage.loadReplay(replayId);
+                if (!full) {
+                  setHistoryImportNotice({ type: 'err', text: 'Unable to load replay data for export.' });
+                  return;
+                }
+                const json = replayStorage.exportReplayToJson(full);
+                downloadTextFile(`replay-${matchId}.json`, json);
+                setHistoryImportNotice({ type: 'ok', text: `Exported replay-${matchId}.json` });
+              };
+
+              const handleDeleteSaved = async (replayId: string) => {
+                soundEngine.playUiClick();
+                await replayStorage.deleteReplay(replayId);
+                await refreshSavedReplays();
+                setHistoryImportNotice({ type: 'ok', text: 'Replay removed from local archive.' });
+              };
+
+              const handleImportFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+                const file = e.target.files?.[0];
+                e.target.value = '';
+                if (!file) return;
+                try {
+                  const text = await file.text();
+                  const res = await replayStorage.importReplayFromJson(text);
+                  if (res.ok) {
+                    await refreshSavedReplays();
+                    setHistoryImportNotice({
+                      type: 'ok',
+                      text: `Imported "${res.summary.player1Name} vs ${res.summary.player2Name}" (${res.summary.totalShots} shots).`,
+                    });
+                  } else {
+                    setHistoryImportNotice({ type: 'err', text: res.error });
+                  }
+                } catch {
+                  setHistoryImportNotice({ type: 'err', text: 'Failed to read selected replay file.' });
+                }
+              };
+
+              return (
+                <div className="space-y-3" data-testid="match-history-panel">
+                  {/* Top Filter Bar: Match Mode + Result Outcome + Refresh & Import */}
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex flex-wrap items-center gap-1 rounded-xl border border-white/10 bg-black/35 p-1">
+                      {(
+                        [
+                          { id: 'all', label: 'All Matches' },
+                          { id: 'ai', label: 'AI' },
+                          { id: 'online', label: 'Online' },
+                          { id: 'local', label: 'Local' },
+                        ] as const
+                      ).map((mode) => (
+                        <button
+                          key={mode.id}
+                          type="button"
+                          data-testid={`history-mode-${mode.id}`}
+                          onClick={() => {
+                            soundEngine.playUiClick();
+                            setHistoryModeFilter(mode.id);
+                          }}
+                          className={`rounded-lg px-2.5 py-1 text-xs font-bold cursor-pointer whitespace-nowrap ${
+                            historyModeFilter === mode.id
+                              ? 'bg-amber-500 text-slate-950'
+                              : 'text-slate-300 hover:text-white'
+                          }`}
+                        >
+                          {mode.label}
+                        </button>
+                      ))}
+                    </div>
+
+                    <div className="flex items-center gap-1 rounded-xl border border-white/10 bg-black/35 p-1">
+                      {(
+                        [
+                          { id: 'all', label: 'All Results' },
+                          { id: 'won', label: 'Victories' },
+                          { id: 'lost', label: 'Defeats' },
+                        ] as const
+                      ).map((res) => (
+                        <button
+                          key={res.id}
+                          type="button"
+                          data-testid={`history-result-${res.id}`}
+                          onClick={() => {
+                            soundEngine.playUiClick();
+                            setHistoryResultFilter(res.id);
+                          }}
+                          className={`rounded-lg px-2 py-1 text-[11px] font-bold cursor-pointer whitespace-nowrap ${
+                            historyResultFilter === res.id
+                              ? 'bg-amber-500 text-slate-950'
+                              : 'text-slate-300 hover:text-white'
+                          }`}
+                        >
+                          {res.label}
+                        </button>
+                      ))}
+                    </div>
+
+                    <div className="flex items-center gap-1.5">
+                      <input
+                        ref={importInputRef}
+                        type="file"
+                        accept=".json,application/json"
+                        onChange={handleImportFile}
+                        className="hidden"
+                      />
+                      <button
+                        type="button"
+                        data-testid="import-replay-btn"
+                        onClick={() => {
+                          soundEngine.playUiClick();
+                          importInputRef.current?.click();
+                        }}
+                        className="inline-flex items-center gap-1.5 rounded-lg border border-amber-400/35 bg-amber-500/12 px-2.5 py-1.5 text-xs font-bold text-amber-200 hover:bg-amber-500/20 cursor-pointer whitespace-nowrap"
+                      >
+                        <Upload className="h-3.5 w-3.5 text-amber-400" />
+                        <span>Import Replay</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          soundEngine.playUiClick();
+                          void loadHistory();
+                        }}
+                        className="rounded-lg border border-white/12 bg-white/5 px-2.5 py-1.5 text-xs font-semibold text-slate-200 hover:bg-white/10 cursor-pointer whitespace-nowrap"
+                      >
+                        Refresh
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Replay Archive Storage Bar */}
+                  <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-white/10 bg-black/25 px-3 py-2 text-[11px]">
+                    <div className="inline-flex items-center gap-2 text-slate-300">
+                      <HardDrive className="h-3.5 w-3.5 text-amber-400 shrink-0" />
+                      <span className="font-semibold text-white">Local Replay Archive</span>
+                      <span className="font-mono tabular-nums text-slate-400">
+                        {replayStorageStats?.count ?? savedReplays.length}/
+                        {replayStorageStats?.maxCount ?? 24} matches
+                      </span>
+                    </div>
+                    <span className="font-mono tabular-nums text-slate-400">
+                      {formatBytesCompact(replayStorageStats?.totalBytes ?? 0)} /{' '}
+                      {formatBytesCompact(replayStorageStats?.maxBytes ?? 40 * 1024 * 1024)}
+                    </span>
+                  </div>
+
+                  {historyImportNotice && (
+                    <div
+                      data-testid="import-replay-feedback"
+                      className={`rounded-lg border px-3 py-1.5 text-xs font-semibold ${
+                        historyImportNotice.type === 'ok'
+                          ? 'border-emerald-400/40 bg-emerald-500/12 text-emerald-200'
+                          : 'border-rose-400/40 bg-rose-500/12 text-rose-200'
                       }`}
                     >
-                      {mt.label}
-                    </button>
-                  ))}
-                </div>
-
-                <button
-                  type="button"
-                  onClick={() => {
-                    soundEngine.playUiClick();
-                    void loadHistory();
-                  }}
-                  className="rounded-lg border border-white/12 bg-white/5 px-3 py-1.5 text-xs font-semibold text-slate-200 hover:bg-white/10 cursor-pointer whitespace-nowrap"
-                >
-                  Refresh
-                </button>
-              </div>
-
-              <div className="space-y-2 max-h-[380px] overflow-y-auto">
-                {historyLoading ? (
-                  <div className="py-10 text-center text-xs text-slate-400">
-                    Loading match history...
-                  </div>
-                ) : historyItems.length === 0 ? (
-                  <div className="rounded-xl border border-white/10 bg-black/25 py-10 text-center text-xs text-slate-400">
-                    No recorded online matches found.
-                  </div>
-                ) : (
-                  historyItems.map((m) => (
-                    <div
-                      key={m.matchId}
-                      className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-white/10 bg-black/25 px-3.5 py-2.5 text-xs"
-                    >
-                      <div className="min-w-0">
-                        <div className="flex flex-wrap items-center gap-1.5 font-bold text-white">
-                          <button
-                            type="button"
-                            disabled={!m.player1Id}
-                            onClick={() => m.player1Id && setInspectedPlayerId(m.player1Id)}
-                            className="hover:underline disabled:no-underline cursor-pointer disabled:cursor-default"
-                          >
-                            {m.player1Name}
-                          </button>
-                          {m.p1RankTier && <RankBadge tier={m.p1RankTier} size="xs" />}
-                          <span className="text-slate-500">vs</span>
-                          <button
-                            type="button"
-                            disabled={!m.player2Id}
-                            onClick={() => m.player2Id && setInspectedPlayerId(m.player2Id)}
-                            className="hover:underline disabled:no-underline cursor-pointer disabled:cursor-default"
-                          >
-                            {m.player2Name}
-                          </button>
-                          {m.p2RankTier && <RankBadge tier={m.p2RankTier} size="xs" />}
-                        </div>
-                        <div className="mt-0.5 text-[11px] text-slate-400">
-                          Winner: <span className="font-semibold text-amber-300">{m.winnerName}</span>
-                          {' · '}
-                          {m.ruleProfileId === 'wpa' ? 'Strict WPA' : 'Casual'}
-                          {' · '}
-                          {formatMatchTypeLabel(m.matchType)}
-                          {' · '}
-                          {m.reason}
-                        </div>
-                      </div>
-
-                      <div className="flex items-center gap-3 font-mono tabular-nums text-[11px] shrink-0">
-                        {m.rankedApplied && (m.p1EloDelta !== undefined || m.p2EloDelta !== undefined) && (
-                          <span className="text-slate-300">
-                            {m.p1EloBefore !== undefined && m.p1EloAfter !== undefined
-                              ? `${m.p1EloBefore}→${m.p1EloAfter}`
-                              : m.p1EloDelta !== undefined &&
-                                (m.p1EloDelta >= 0 ? `+${m.p1EloDelta}` : m.p1EloDelta)}
-                            {' / '}
-                            {m.p2EloBefore !== undefined && m.p2EloAfter !== undefined
-                              ? `${m.p2EloBefore}→${m.p2EloAfter}`
-                              : m.p2EloDelta !== undefined &&
-                                (m.p2EloDelta >= 0 ? `+${m.p2EloDelta}` : m.p2EloDelta)}{' '}
-                            ELO
-                          </span>
-                        )}
-                        <span className="inline-flex items-center gap-1 text-slate-400">
-                          <Clock className="h-3 w-3" />
-                          {m.durationSec !== undefined ? formatDuration(m.durationSec) : `${m.totalShots}s`}
-                        </span>
-                        <span className="text-slate-400">{formatShortDate(m.endedAtMs)}</span>
-                      </div>
+                      {historyImportNotice.text}
                     </div>
-                  ))
-                )}
-              </div>
-            </div>
+                  )}
+
+                  {/* Unified Scrollable Archive + Online Server Ledger */}
+                  <div className="space-y-2.5 max-h-[380px] overflow-y-auto pr-0.5">
+                    {/* Saved Full-Match Replays */}
+                    {filteredSaved.length > 0 && (
+                      <div className="space-y-1.5">
+                        <div className="text-[10px] font-bold uppercase tracking-wider text-amber-400">
+                          Saved Full-Match Replays ({filteredSaved.length})
+                        </div>
+                        {filteredSaved.map((r) => {
+                          const won = didPlayerWinSavedReplay(r, ownProfile, onlineProfile.displayName);
+                          return (
+                            <div
+                              key={r.replayId}
+                              data-testid={`saved-replay-card-${r.replayId}`}
+                              className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-amber-400/25 bg-[#101823] px-3.5 py-2.5 text-xs"
+                            >
+                              <div className="min-w-0 flex-1">
+                                <div className="flex flex-wrap items-center gap-1.5 font-bold text-white">
+                                  <span>
+                                    {r.player1Name} <span className="text-slate-500">vs</span>{' '}
+                                    {r.player2Name}
+                                  </span>
+                                  <span className="rounded border border-white/15 bg-white/5 px-1.5 py-0.5 text-[10px] font-bold uppercase text-slate-300">
+                                    {r.matchType === 'ai'
+                                      ? `AI · ${r.aiDifficulty ?? 'pro'}`
+                                      : r.matchType === 'online'
+                                        ? `Online · ${r.onlineSubType ?? 'quick'}`
+                                        : 'Local PvP'}
+                                  </span>
+                                  {won !== null && (
+                                    <span
+                                      className={`rounded border px-1.5 py-0.5 text-[10px] font-bold uppercase ${
+                                        won
+                                          ? 'border-emerald-400/40 bg-emerald-500/15 text-emerald-300'
+                                          : 'border-rose-400/40 bg-rose-500/15 text-rose-300'
+                                      }`}
+                                    >
+                                      {won ? 'Victory' : 'Defeat'}
+                                    </span>
+                                  )}
+                                  {!r.authoritative && r.matchType === 'online' && (
+                                    <span className="rounded border border-sky-400/35 bg-sky-500/12 px-1.5 py-0.5 text-[10px] font-semibold text-sky-200">
+                                      Imported
+                                    </span>
+                                  )}
+                                </div>
+                                <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-slate-400">
+                                  <span className="text-slate-200">{r.finalResult}</span>
+                                  <span>·</span>
+                                  <span className="font-mono tabular-nums">
+                                    {r.totalShots} shots · {formatDuration(r.durationSec)}
+                                  </span>
+                                  {r.highlightCount > 0 && (
+                                    <>
+                                      <span>·</span>
+                                      <span className="text-amber-300">
+                                        {r.highlightCount} highlights
+                                      </span>
+                                    </>
+                                  )}
+                                  <span>·</span>
+                                  <span>{formatShortDate(r.endedAtMs)}</span>
+                                </div>
+                              </div>
+
+                              <div className="flex items-center gap-1.5 shrink-0">
+                                <button
+                                  type="button"
+                                  data-testid={`watch-saved-replay-${r.replayId}`}
+                                  onClick={() => {
+                                    soundEngine.playUiClick();
+                                    requestWatchSavedReplay(r.replayId);
+                                  }}
+                                  className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-amber-500 px-2.5 text-[11px] font-extrabold text-slate-950 hover:bg-amber-400 cursor-pointer whitespace-nowrap"
+                                >
+                                  <Film className="h-3.5 w-3.5" />
+                                  <span>Watch Replay</span>
+                                </button>
+                                <button
+                                  type="button"
+                                  data-testid={`export-saved-replay-${r.replayId}`}
+                                  title="Export replay JSON"
+                                  aria-label="Export replay JSON"
+                                  onClick={() => void handleExportSaved(r.replayId, r.matchId)}
+                                  className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-white/12 bg-white/5 text-slate-200 hover:bg-white/10 cursor-pointer"
+                                >
+                                  <Download className="h-3.5 w-3.5 text-amber-400" />
+                                </button>
+                                <button
+                                  type="button"
+                                  data-testid={`delete-saved-replay-${r.replayId}`}
+                                  title="Delete saved replay"
+                                  aria-label="Delete saved replay"
+                                  onClick={() => void handleDeleteSaved(r.replayId)}
+                                  className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-white/12 bg-white/5 text-slate-300 hover:border-rose-400/50 hover:text-rose-300 cursor-pointer"
+                                >
+                                  <Trash2 className="h-3.5 w-3.5" />
+                                </button>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+
+                    {/* Server Online Competitive Match Ledger */}
+                    {(historyModeFilter === 'all' || historyModeFilter === 'online') && (
+                      <div className="space-y-2 pt-1">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                            Online Server Match Ledger
+                          </span>
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            <div className="flex items-center gap-1 rounded-lg border border-white/10 bg-black/35 p-0.5">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  soundEngine.playUiClick();
+                                  setHistoryFilterOwn(false);
+                                }}
+                                className={`rounded px-2 py-0.5 text-[10px] font-bold cursor-pointer whitespace-nowrap ${
+                                  !historyFilterOwn
+                                    ? 'bg-amber-500 text-slate-950'
+                                    : 'text-slate-300 hover:text-white'
+                                }`}
+                              >
+                                Global
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  soundEngine.playUiClick();
+                                  setHistoryFilterOwn(true);
+                                }}
+                                className={`rounded px-2 py-0.5 text-[10px] font-bold cursor-pointer whitespace-nowrap ${
+                                  historyFilterOwn
+                                    ? 'bg-amber-500 text-slate-950'
+                                    : 'text-slate-300 hover:text-white'
+                                }`}
+                              >
+                                My Matches
+                              </button>
+                            </div>
+
+                            <div className="flex items-center gap-1 rounded-lg border border-white/10 bg-black/35 p-0.5">
+                              {(
+                                [
+                                  { id: 'all', label: 'All' },
+                                  { id: 'ranked', label: 'Ranked' },
+                                  { id: 'quick', label: 'Quick' },
+                                  { id: 'private', label: 'Private' },
+                                  { id: 'tournament', label: 'Tournament' },
+                                ] as Array<{ id: OnlineMatchType | 'all'; label: string }>
+                              ).map((mt) => (
+                                <button
+                                  key={mt.id}
+                                  type="button"
+                                  data-testid={`history-type-${mt.id}`}
+                                  onClick={() => {
+                                    soundEngine.playUiClick();
+                                    setHistoryMatchType(mt.id);
+                                  }}
+                                  className={`rounded px-2 py-0.5 text-[10px] font-bold cursor-pointer whitespace-nowrap ${
+                                    historyMatchType === mt.id
+                                      ? 'bg-amber-500 text-slate-950'
+                                      : 'text-slate-300 hover:text-white'
+                                  }`}
+                                >
+                                  {mt.label}
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                        </div>
+
+                        {historyLoading ? (
+                          <div className="py-6 text-center text-xs text-slate-400">
+                            Loading online match ledger...
+                          </div>
+                        ) : filteredOnlineLedger.length === 0 ? (
+                          <div className="rounded-xl border border-white/10 bg-black/25 py-6 text-center text-xs text-slate-400">
+                            No online ledger records matching this filter.
+                          </div>
+                        ) : (
+                          filteredOnlineLedger.map((m) => {
+                            const saved = savedByMatchId.get(m.matchId);
+                            return (
+                              <div
+                                key={m.matchId}
+                                className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-white/10 bg-black/25 px-3.5 py-2.5 text-xs"
+                              >
+                                <div className="min-w-0">
+                                  <div className="flex flex-wrap items-center gap-1.5 font-bold text-white">
+                                    <button
+                                      type="button"
+                                      disabled={!m.player1Id}
+                                      onClick={() => m.player1Id && setInspectedPlayerId(m.player1Id)}
+                                      className="hover:underline disabled:no-underline cursor-pointer disabled:cursor-default"
+                                    >
+                                      {m.player1Name}
+                                    </button>
+                                    {m.p1RankTier && <RankBadge tier={m.p1RankTier} size="xs" />}
+                                    <span className="text-slate-500">vs</span>
+                                    <button
+                                      type="button"
+                                      disabled={!m.player2Id}
+                                      onClick={() => m.player2Id && setInspectedPlayerId(m.player2Id)}
+                                      className="hover:underline disabled:no-underline cursor-pointer disabled:cursor-default"
+                                    >
+                                      {m.player2Name}
+                                    </button>
+                                    {m.p2RankTier && <RankBadge tier={m.p2RankTier} size="xs" />}
+                                  </div>
+                                  <div className="mt-0.5 text-[11px] text-slate-400">
+                                    Winner:{' '}
+                                    <span className="font-semibold text-amber-300">
+                                      {m.winnerName}
+                                    </span>
+                                    {' · '}
+                                    {m.ruleProfileId === 'wpa' ? 'Strict WPA' : 'Casual'}
+                                    {' · '}
+                                    {formatMatchTypeLabel(m.matchType)}
+                                    {' · '}
+                                    {m.reason}
+                                  </div>
+                                </div>
+
+                                <div className="flex flex-wrap items-center gap-2 font-mono tabular-nums text-[11px] shrink-0">
+                                  {m.rankedApplied &&
+                                    (m.p1EloDelta !== undefined || m.p2EloDelta !== undefined) && (
+                                      <span className="text-slate-300">
+                                        {m.p1EloBefore !== undefined && m.p1EloAfter !== undefined
+                                          ? `${m.p1EloBefore}→${m.p1EloAfter}`
+                                          : m.p1EloDelta !== undefined &&
+                                            (m.p1EloDelta >= 0 ? `+${m.p1EloDelta}` : m.p1EloDelta)}
+                                        {' / '}
+                                        {m.p2EloBefore !== undefined && m.p2EloAfter !== undefined
+                                          ? `${m.p2EloBefore}→${m.p2EloAfter}`
+                                          : m.p2EloDelta !== undefined &&
+                                            (m.p2EloDelta >= 0 ? `+${m.p2EloDelta}` : m.p2EloDelta)}{' '}
+                                        ELO
+                                      </span>
+                                    )}
+                                  <span className="inline-flex items-center gap-1 text-slate-400">
+                                    <Clock className="h-3 w-3" />
+                                    {m.durationSec !== undefined
+                                      ? formatDuration(m.durationSec)
+                                      : `${m.totalShots} shots`}
+                                  </span>
+                                  <span className="text-slate-400">
+                                    {formatShortDate(m.endedAtMs)}
+                                  </span>
+                                  {saved ? (
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        soundEngine.playUiClick();
+                                        requestWatchSavedReplay(saved.replayId);
+                                      }}
+                                      className="inline-flex items-center gap-1 rounded-md bg-amber-500 px-2 py-1 font-sans text-[10px] font-extrabold text-slate-950 hover:bg-amber-400 cursor-pointer whitespace-nowrap"
+                                    >
+                                      <Film className="h-3 w-3" />
+                                      Replay
+                                    </button>
+                                  ) : (
+                                    <span className="rounded border border-white/10 bg-white/5 px-1.5 py-0.5 font-sans text-[10px] text-slate-400">
+                                      Ledger
+                                    </span>
+                                  )}
+                                </div>
+                              </div>
+                            );
+                          })
+                        )}
+                      </div>
+                    )}
+
+                    {filteredSaved.length === 0 &&
+                      (historyModeFilter === 'ai' || historyModeFilter === 'local') && (
+                        <div className="rounded-xl border border-white/10 bg-black/25 py-8 text-center text-xs text-slate-400">
+                          Complete a {historyModeFilter.toUpperCase()} match or import a replay JSON file to watch recorded matches here.
+                        </div>
+                      )}
+                  </div>
+                </div>
+              );
+            })()
           ) : (
             <div className="space-y-4">
               <div className="flex items-center justify-between gap-2">

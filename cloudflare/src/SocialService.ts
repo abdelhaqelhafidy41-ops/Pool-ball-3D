@@ -2,9 +2,12 @@ import type { RuleProfileId } from '../../src/game/rules/types';
 import { isValidPlayerIdFormat, sanitizeAvatarId } from '../../src/multiplayer/shared/authCrypto';
 import type { MultiplayerErrorCode, OnlineAvatarId } from '../../src/multiplayer/shared/protocol';
 import {
+  DEFAULT_PRIVACY_SETTINGS,
   isValidReportReason,
+  normalizePrivacySettings,
   orderedPlayerPair,
   sanitizeChatText,
+  sanitizeClubText,
   sanitizeReportDetails,
   SOCIAL_LIMITS,
   type BlockedPlayerRecord,
@@ -15,8 +18,12 @@ import {
   type ManualPresenceStatus,
   type MatchInvitationRecord,
   type MatchInviteAction,
+  type MatchInviteKind,
   type MatchInviteStatus,
+  type NotificationType,
   type PresenceStatus,
+  type PrivacySettings,
+  type SocialNotificationRecord,
   type SocialOverviewPayload,
   type SocialRelationship,
   type SocialReportContext,
@@ -52,6 +59,7 @@ const SOCIAL_SCHEMA_STATEMENTS = [
   )`,
   `CREATE TABLE IF NOT EXISTS match_invitations (
     invite_id TEXT PRIMARY KEY,
+    invite_kind TEXT NOT NULL DEFAULT 'match',
     sender_id TEXT NOT NULL,
     recipient_id TEXT NOT NULL,
     room_id TEXT,
@@ -92,6 +100,29 @@ const SOCIAL_SCHEMA_STATEMENTS = [
     excerpt TEXT,
     created_at_ms INTEGER NOT NULL
   )`,
+  `CREATE TABLE IF NOT EXISTS player_privacy_settings (
+    player_id TEXT PRIMARY KEY,
+    allow_friend_requests TEXT NOT NULL DEFAULT 'everyone',
+    allow_match_invites TEXT NOT NULL DEFAULT 'friends',
+    allow_direct_messages TEXT NOT NULL DEFAULT 'friends',
+    show_online_status INTEGER NOT NULL DEFAULT 1,
+    show_public_stats INTEGER NOT NULL DEFAULT 1,
+    updated_at_ms INTEGER NOT NULL
+  )`,
+  `CREATE TABLE IF NOT EXISTS social_notifications (
+    notification_id TEXT PRIMARY KEY,
+    recipient_id TEXT NOT NULL,
+    type TEXT NOT NULL,
+    title TEXT NOT NULL,
+    body TEXT NOT NULL,
+    actor_id TEXT,
+    actor_name TEXT,
+    reference_id TEXT,
+    dedupe_key TEXT,
+    read_at_ms INTEGER,
+    created_at_ms INTEGER NOT NULL,
+    expires_at_ms INTEGER
+  )`,
   `CREATE INDEX IF NOT EXISTS idx_friendships_requester ON friendships (requester_id, status, updated_at_ms DESC)`,
   `CREATE INDEX IF NOT EXISTS idx_friendships_recipient ON friendships (recipient_id, status, updated_at_ms DESC)`,
   `CREATE INDEX IF NOT EXISTS idx_blocks_blocked ON player_blocks (blocked_id, blocker_id)`,
@@ -102,6 +133,13 @@ const SOCIAL_SCHEMA_STATEMENTS = [
   `CREATE INDEX IF NOT EXISTS idx_dm_unread ON direct_messages (recipient_id, read_at_ms, created_at_ms DESC)`,
   `CREATE INDEX IF NOT EXISTS idx_presence_expiry ON player_presence (status, expires_at_ms)`,
   `CREATE INDEX IF NOT EXISTS idx_reports_reported ON player_reports (reported_id, created_at_ms DESC)`,
+  `CREATE INDEX IF NOT EXISTS idx_notifications_recipient ON social_notifications (recipient_id, created_at_ms DESC)`,
+  `CREATE INDEX IF NOT EXISTS idx_notifications_dedupe ON social_notifications (recipient_id, dedupe_key)`,
+  `CREATE INDEX IF NOT EXISTS idx_notifications_expiry ON social_notifications (expires_at_ms)`,
+];
+
+const SOCIAL_ALTER_STATEMENTS = [
+  `ALTER TABLE match_invitations ADD COLUMN invite_kind TEXT NOT NULL DEFAULT 'match'`,
 ];
 
 interface ChatSpamBucket {
@@ -162,7 +200,7 @@ export class SocialService {
 
   constructor(private readonly db: ProgressionSqlDb | D1Database | undefined) {}
 
-  private async ensureSchema(): Promise<ProgressionSqlDb> {
+  public async ensureSchema(): Promise<ProgressionSqlDb> {
     if (!this.db) {
       throw new Error('Social database is not configured.');
     }
@@ -173,9 +211,100 @@ export class SocialService {
       for (const stmt of SOCIAL_SCHEMA_STATEMENTS) {
         await db.prepare(stmt).run();
       }
+      for (const alter of SOCIAL_ALTER_STATEMENTS) {
+        try {
+          await db.prepare(alter).run();
+        } catch {
+          // Column already exists
+        }
+      }
       SocialService.bootstrappedDbs.add(this.db);
     }
     return db;
+  }
+
+  public normalizePresencePublic(raw: unknown): PresenceStatus {
+    return this.normalizePresence(raw);
+  }
+
+  public async getPrivacySettings(playerId: string): Promise<PrivacySettings> {
+    if (!isValidPlayerIdFormat(playerId)) return { ...DEFAULT_PRIVACY_SETTINGS };
+    const db = await this.ensureSchema();
+    const row = await db
+      .prepare('SELECT * FROM player_privacy_settings WHERE player_id = ? LIMIT 1')
+      .bind(playerId.trim())
+      .first<Record<string, unknown>>();
+    if (!row) return { ...DEFAULT_PRIVACY_SETTINGS };
+    return normalizePrivacySettings({
+      allowFriendRequests: row.allow_friend_requests as PrivacySettings['allowFriendRequests'],
+      allowMatchInvites: row.allow_match_invites as PrivacySettings['allowMatchInvites'],
+      allowDirectMessages: row.allow_direct_messages as PrivacySettings['allowDirectMessages'],
+      showOnlineStatus: Number(row.show_online_status ?? 1) === 1,
+      showPublicStats: Number(row.show_public_stats ?? 1) === 1,
+    });
+  }
+
+  public async getPrivacySettingsMap(playerIds: string[]): Promise<Map<string, PrivacySettings>> {
+    const out = new Map<string, PrivacySettings>();
+    const clean = [...new Set(playerIds.filter((id) => isValidPlayerIdFormat(id)))];
+    if (clean.length === 0) return out;
+    const db = await this.ensureSchema();
+    const placeholders = clean.map(() => '?').join(', ');
+    const rows = await db
+      .prepare(`SELECT * FROM player_privacy_settings WHERE player_id IN (${placeholders})`)
+      .bind(...clean)
+      .all<Record<string, unknown>>();
+    for (const row of rows.results ?? []) {
+      out.set(
+        String(row.player_id),
+        normalizePrivacySettings({
+          allowFriendRequests: row.allow_friend_requests as PrivacySettings['allowFriendRequests'],
+          allowMatchInvites: row.allow_match_invites as PrivacySettings['allowMatchInvites'],
+          allowDirectMessages: row.allow_direct_messages as PrivacySettings['allowDirectMessages'],
+          showOnlineStatus: Number(row.show_online_status ?? 1) === 1,
+          showPublicStats: Number(row.show_public_stats ?? 1) === 1,
+        }),
+      );
+    }
+    return out;
+  }
+
+  public async updatePrivacySettings(
+    playerId: string,
+    partial: Partial<PrivacySettings>,
+  ): Promise<PrivacySettings> {
+    const db = await this.ensureSchema();
+    const current = await this.getPrivacySettings(playerId);
+    const merged = normalizePrivacySettings({
+      ...current,
+      ...partial,
+    });
+    const now = Date.now();
+    await db
+      .prepare(
+        `INSERT INTO player_privacy_settings (
+          player_id, allow_friend_requests, allow_match_invites, allow_direct_messages,
+          show_online_status, show_public_stats, updated_at_ms
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(player_id) DO UPDATE SET
+          allow_friend_requests = excluded.allow_friend_requests,
+          allow_match_invites = excluded.allow_match_invites,
+          allow_direct_messages = excluded.allow_direct_messages,
+          show_online_status = excluded.show_online_status,
+          show_public_stats = excluded.show_public_stats,
+          updated_at_ms = excluded.updated_at_ms`,
+      )
+      .bind(
+        playerId,
+        merged.allowFriendRequests,
+        merged.allowMatchInvites,
+        merged.allowDirectMessages,
+        merged.showOnlineStatus ? 1 : 0,
+        merged.showPublicStats ? 1 : 0,
+        now,
+      )
+      .run();
+    return merged;
   }
 
   private async getPlayerRow(db: ProgressionSqlDb, playerId: string) {
@@ -280,14 +409,25 @@ export class SocialService {
       nextStatus = 'offline';
     } else if (params.status === 'in_match') {
       nextStatus = 'in_match';
+    } else if (params.status === 'in_tournament') {
+      nextStatus = 'in_tournament';
+    } else if (params.status === 'spectating') {
+      nextStatus = 'spectating';
     } else if (params.status === 'busy') {
       nextStatus = 'busy';
     } else if (params.status === 'online') {
-      nextStatus = params.manualStatus === 'busy' || (params.manualStatus === undefined && existing?.manual_status === 'busy')
-        ? 'busy'
-        : 'online';
+      nextStatus =
+        params.manualStatus === 'busy' ||
+        (params.manualStatus === undefined && existing?.manual_status === 'busy')
+          ? 'busy'
+          : 'online';
     } else {
-      nextStatus = prevEffective === 'in_match' ? 'in_match' : nextManual;
+      nextStatus =
+        prevEffective === 'in_match' ||
+        prevEffective === 'spectating' ||
+        prevEffective === 'in_tournament'
+          ? prevEffective
+          : nextManual;
     }
 
     const nextRoomId =
@@ -506,6 +646,16 @@ export class SocialService {
         .bind(now, now, low, high)
         .run();
       return { ok: true, outcome: 'accepted' };
+    }
+
+    const targetPrivacy = await this.getPrivacySettings(targetPlayerId);
+    if (targetPrivacy.allowFriendRequests === 'nobody') {
+      return {
+        ok: false,
+        status: 403,
+        code: 'PRIVACY_RESTRICTED',
+        message: 'This player is not accepting incoming friend requests.',
+      };
     }
 
     const friendCountRow = await db
@@ -768,10 +918,12 @@ export class SocialService {
     roomCode: string | null;
     ruleProfileId: RuleProfileId;
     calledShotsEnabled: boolean;
+    inviteKind?: MatchInviteKind;
     ttlMs: number;
   }): Promise<{ ok: true; invitation: MatchInvitationRecord } | SocialError> {
     const db = await this.ensureSchema();
     const targetId = params.targetPlayerId.trim();
+    const inviteKind: MatchInviteKind = params.inviteKind === 'spectate' ? 'spectate' : 'match';
     if (!isValidPlayerIdFormat(params.senderId) || !isValidPlayerIdFormat(targetId)) {
       return { ok: false, status: 400, code: 'INVALID_INPUT', message: 'Invalid player ID.' };
     }
@@ -801,7 +953,16 @@ export class SocialService {
       };
     }
 
-    if (!(await this.areFriends(params.senderId, targetId))) {
+    const targetPrivacy = await this.getPrivacySettings(targetId);
+    if (targetPrivacy.allowMatchInvites === 'nobody') {
+      return {
+        ok: false,
+        status: 403,
+        code: 'PRIVACY_RESTRICTED',
+        message: 'This player has disabled incoming match and spectate invitations.',
+      };
+    }
+    if (targetPrivacy.allowMatchInvites === 'friends' && !(await this.areFriends(params.senderId, targetId))) {
       return {
         ok: false,
         status: 403,
@@ -816,17 +977,17 @@ export class SocialService {
     const dup = await db
       .prepare(
         `SELECT invite_id FROM match_invitations
-         WHERE sender_id = ? AND recipient_id = ? AND status = 'pending' AND expires_at_ms > ?
+         WHERE sender_id = ? AND recipient_id = ? AND invite_kind = ? AND status = 'pending' AND expires_at_ms > ?
          LIMIT 1`,
       )
-      .bind(params.senderId, targetId, now)
+      .bind(params.senderId, targetId, inviteKind, now)
       .first<{ invite_id: string }>();
     if (dup) {
       return {
         ok: false,
         status: 409,
         code: 'INVITE_ALREADY_EXISTS',
-        message: 'You already have a pending match invitation sent to this player.',
+        message: `You already have a pending ${inviteKind === 'spectate' ? 'spectate' : 'match'} invitation sent to this player.`,
       };
     }
 
@@ -853,12 +1014,13 @@ export class SocialService {
     await db
       .prepare(
         `INSERT INTO match_invitations (
-          invite_id, sender_id, recipient_id, room_id, room_code,
+          invite_id, invite_kind, sender_id, recipient_id, room_id, room_code,
           rule_profile_id, called_shots_enabled, status, created_at_ms, expires_at_ms
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`,
       )
       .bind(
         inviteId,
+        inviteKind,
         params.senderId,
         targetId,
         params.roomId,
@@ -872,6 +1034,7 @@ export class SocialService {
 
     const invitation: MatchInvitationRecord = {
       inviteId,
+      inviteKind,
       senderId: String(senderRow.player_id),
       senderName: String(senderRow.display_name),
       senderAvatar: sanitizeAvatarId(senderRow.avatar_id),
@@ -969,19 +1132,22 @@ export class SocialService {
       };
     }
 
-    if (action === 'accept' && !(await this.areFriends(invite.senderId, invite.recipientId))) {
-      await db
-        .prepare(
-          `UPDATE match_invitations SET status = 'cancelled', responded_at_ms = ? WHERE invite_id = ?`,
-        )
-        .bind(now, invite.inviteId)
-        .run();
-      return {
-        ok: false,
-        status: 403,
-        code: 'UNAUTHORIZED',
-        message: 'Friendship is no longer active.',
-      };
+    if (action === 'accept') {
+      const recipientPrivacy = await this.getPrivacySettings(invite.recipientId);
+      if (recipientPrivacy.allowMatchInvites === 'friends' && !(await this.areFriends(invite.senderId, invite.recipientId))) {
+        await db
+          .prepare(
+            `UPDATE match_invitations SET status = 'cancelled', responded_at_ms = ? WHERE invite_id = ?`,
+          )
+          .bind(now, invite.inviteId)
+          .run();
+        return {
+          ok: false,
+          status: 403,
+          code: 'UNAUTHORIZED',
+          message: 'Friendship is no longer active.',
+        };
+      }
     }
 
     return { ok: true, invitation: invite };
@@ -1060,7 +1226,16 @@ export class SocialService {
       };
     }
 
-    if (!(await this.areFriends(params.senderId, recipientId))) {
+    const recipientPrivacy = await this.getPrivacySettings(recipientId);
+    if (recipientPrivacy.allowDirectMessages === 'nobody') {
+      return {
+        ok: false,
+        status: 403,
+        code: 'PRIVACY_RESTRICTED',
+        message: 'This player has disabled incoming direct messages.',
+      };
+    }
+    if (recipientPrivacy.allowDirectMessages === 'friends' && !(await this.areFriends(params.senderId, recipientId))) {
       return {
         ok: false,
         status: 403,
@@ -1106,8 +1281,9 @@ export class SocialService {
     viewerId: string,
     peerIdRaw: string,
     limit: number = SOCIAL_LIMITS.maxDmHistory,
+    beforeMs?: number | null,
   ): Promise<
-    { ok: true; messages: DirectMessageRecord[]; markedReadAtMs: number | null } | SocialError
+    { ok: true; messages: DirectMessageRecord[]; hasMore: boolean; markedReadAtMs: number | null } | SocialError
   > {
     const db = await this.ensureSchema();
     const peerId = peerIdRaw.trim();
@@ -1127,19 +1303,36 @@ export class SocialService {
       .bind(now, pairLow, pairHigh, peerId, viewerId)
       .run();
 
-    const rows = await db
-      .prepare(
-        `SELECT dm.*, p.display_name AS sender_name, p.avatar_id AS sender_avatar
-         FROM direct_messages dm
-         LEFT JOIN players p ON p.player_id = dm.sender_id
-         WHERE dm.pair_low_id = ? AND dm.pair_high_id = ?
-         ORDER BY dm.created_at_ms DESC
-         LIMIT ?`,
-      )
-      .bind(pairLow, pairHigh, safeLimit)
-      .all<Record<string, unknown>>();
+    const hasCursor = typeof beforeMs === 'number' && Number.isFinite(beforeMs) && beforeMs > 0;
+    const rows = hasCursor
+      ? await db
+          .prepare(
+            `SELECT dm.*, p.display_name AS sender_name, p.avatar_id AS sender_avatar
+             FROM direct_messages dm
+             LEFT JOIN players p ON p.player_id = dm.sender_id
+             WHERE dm.pair_low_id = ? AND dm.pair_high_id = ? AND dm.created_at_ms < ?
+             ORDER BY dm.created_at_ms DESC
+             LIMIT ?`,
+          )
+          .bind(pairLow, pairHigh, Math.floor(beforeMs!), safeLimit + 1)
+          .all<Record<string, unknown>>()
+      : await db
+          .prepare(
+            `SELECT dm.*, p.display_name AS sender_name, p.avatar_id AS sender_avatar
+             FROM direct_messages dm
+             LEFT JOIN players p ON p.player_id = dm.sender_id
+             WHERE dm.pair_low_id = ? AND dm.pair_high_id = ?
+             ORDER BY dm.created_at_ms DESC
+             LIMIT ?`,
+          )
+          .bind(pairLow, pairHigh, safeLimit + 1)
+          .all<Record<string, unknown>>();
 
-    const messages: DirectMessageRecord[] = (rows.results ?? [])
+    const rawList = rows.results ?? [];
+    const hasMore = rawList.length > safeLimit;
+    const sliced = hasMore ? rawList.slice(0, safeLimit) : rawList;
+
+    const messages: DirectMessageRecord[] = sliced
       .map((r) => ({
         messageId: String(r.message_id),
         senderId: String(r.sender_id),
@@ -1155,6 +1348,7 @@ export class SocialService {
     return {
       ok: true,
       messages,
+      hasMore,
       markedReadAtMs: (markRes.meta?.changes ?? 0) > 0 ? now : null,
     };
   }
@@ -1223,12 +1417,18 @@ export class SocialService {
       totalUnreadDmCount += count;
     }
 
+    const friendIds = (friendRows.results ?? []).map((r) => String(r.player_id));
+    const privacyMap = await this.getPrivacySettingsMap(friendIds);
+
     const friends: FriendRecord[] = (friendRows.results ?? []).map((r) => {
       const fid = String(r.player_id);
+      const showOnline = privacyMap.get(fid)?.showOnlineStatus ?? true;
       const rawStatus = r.presence_status ? String(r.presence_status) : 'offline';
       const exp = r.expires_at_ms !== null && r.expires_at_ms !== undefined ? Number(r.expires_at_ms) : 0;
       const presence: PresenceStatus =
-        rawStatus !== 'offline' && exp > now ? this.normalizePresence(rawStatus) : 'offline';
+        showOnline && rawStatus !== 'offline' && exp > now
+          ? this.normalizePresence(rawStatus)
+          : 'offline';
       return {
         playerId: fid,
         username: r.username ? String(r.username) : null,
@@ -1240,7 +1440,7 @@ export class SocialService {
         totalMatches: Number(r.total_matches),
         presence,
         lastSeenAtMs:
-          r.last_heartbeat_ms !== null && r.last_heartbeat_ms !== undefined
+          showOnline && r.last_heartbeat_ms !== null && r.last_heartbeat_ms !== undefined
             ? Number(r.last_heartbeat_ms)
             : null,
         unreadDmCount: unreadBySender.get(fid) ?? 0,
@@ -1334,16 +1534,268 @@ export class SocialService {
       outgoingInvitations.push(await this.hydrateInviteRow(db, r));
     }
 
+    const [privacy, notifData] = await Promise.all([
+      this.getPrivacySettings(playerId),
+      this.getNotifications(playerId, { limit: 35, nowMs: now }),
+    ]);
+
     return {
       selfPresence,
       friends,
+      friendsTotal: friends.length,
       incomingRequests: (incReqRows.results ?? []).map((r) => mapReq(r, 'incoming')),
       outgoingRequests: (outReqRows.results ?? []).map((r) => mapReq(r, 'outgoing')),
       blocked,
       incomingInvitations,
       outgoingInvitations,
       totalUnreadDmCount,
+      privacy,
+      notifications: notifData.notifications,
+      unreadNotificationCount: notifData.unreadCount,
     };
+  }
+
+  public async getFriendsPaginated(
+    playerId: string,
+    opts?: { limit?: number; offset?: number; query?: string },
+  ): Promise<{ friends: FriendRecord[]; total: number; hasMore: boolean }> {
+    const overview = await this.getOverview(playerId);
+    const cleaned = (opts?.query ?? '').trim().toLowerCase();
+    const filtered = cleaned
+      ? overview.friends.filter(
+          (f) =>
+            f.displayName.toLowerCase().includes(cleaned) ||
+            (f.username && f.username.toLowerCase().includes(cleaned)) ||
+            f.playerId.toLowerCase().includes(cleaned),
+        )
+      : overview.friends;
+    const total = filtered.length;
+    const offset = Math.max(0, Math.floor(opts?.offset ?? 0));
+    const limit = Math.max(1, Math.min(100, Math.floor(opts?.limit ?? 25)));
+    const items = filtered.slice(offset, offset + limit);
+    return {
+      friends: items,
+      total,
+      hasMore: offset + items.length < total,
+    };
+  }
+
+  public async createNotification(params: {
+    recipientId: string;
+    type: NotificationType;
+    title: string;
+    body: string;
+    actorId?: string | null;
+    actorName?: string | null;
+    referenceId?: string | null;
+    dedupeKey?: string | null;
+    ttlMs?: number | null;
+    nowMs?: number;
+  }): Promise<{ notification: SocialNotificationRecord; unreadCount: number }> {
+    const db = await this.ensureSchema();
+    const now = params.nowMs ?? Date.now();
+    await this.expireNotifications(now);
+
+    const ttlMs =
+      params.ttlMs === null
+        ? null
+        : typeof params.ttlMs === 'number' && Number.isFinite(params.ttlMs)
+          ? Math.max(1000, params.ttlMs)
+          : SOCIAL_LIMITS.defaultNotificationTtlMs;
+    const expiresAtMs = ttlMs !== null ? now + ttlMs : null;
+    const dedupeKey = params.dedupeKey ? params.dedupeKey.slice(0, 120) : null;
+
+    if (dedupeKey) {
+      await db
+        .prepare(
+          `DELETE FROM social_notifications
+           WHERE recipient_id = ? AND dedupe_key = ? AND read_at_ms IS NULL`,
+        )
+        .bind(params.recipientId, dedupeKey)
+        .run();
+    }
+
+    const notificationId = `notif_${crypto.randomUUID().replace(/-/g, '').slice(0, 14)}`;
+    const title = sanitizeClubText(params.title, 80) || 'Notification';
+    const body = sanitizeClubText(params.body, 220) || '';
+
+    await db
+      .prepare(
+        `INSERT INTO social_notifications (
+          notification_id, recipient_id, type, title, body,
+          actor_id, actor_name, reference_id, dedupe_key, read_at_ms, created_at_ms, expires_at_ms
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)`,
+      )
+      .bind(
+        notificationId,
+        params.recipientId,
+        params.type,
+        title,
+        body,
+        params.actorId ?? null,
+        params.actorName ?? null,
+        params.referenceId ?? null,
+        dedupeKey,
+        now,
+        expiresAtMs,
+      )
+      .run();
+
+    await db
+      .prepare(
+        `DELETE FROM social_notifications
+         WHERE recipient_id = ?
+           AND notification_id NOT IN (
+             SELECT notification_id FROM social_notifications
+             WHERE recipient_id = ?
+             ORDER BY created_at_ms DESC
+             LIMIT ?
+           )`,
+      )
+      .bind(params.recipientId, params.recipientId, SOCIAL_LIMITS.maxNotifications)
+      .run();
+
+    const unreadRow = await db
+      .prepare(
+        `SELECT COUNT(*) AS c FROM social_notifications
+         WHERE recipient_id = ? AND read_at_ms IS NULL AND (expires_at_ms IS NULL OR expires_at_ms > ?)`,
+      )
+      .bind(params.recipientId, now)
+      .first<{ c: number }>();
+
+    const notification: SocialNotificationRecord = {
+      notificationId,
+      recipientId: params.recipientId,
+      type: params.type,
+      title,
+      body,
+      actorId: params.actorId ?? null,
+      actorName: params.actorName ?? null,
+      referenceId: params.referenceId ?? null,
+      dedupeKey,
+      readAtMs: null,
+      createdAtMs: now,
+      expiresAtMs,
+    };
+
+    return {
+      notification,
+      unreadCount: Number(unreadRow?.c ?? 0),
+    };
+  }
+
+  public async getNotifications(
+    playerId: string,
+    opts?: { limit?: number; unreadOnly?: boolean; nowMs?: number },
+  ): Promise<{ notifications: SocialNotificationRecord[]; unreadCount: number }> {
+    const db = await this.ensureSchema();
+    const now = opts?.nowMs ?? Date.now();
+    await this.expireNotifications(now);
+    const safeLimit = Math.max(1, Math.min(100, opts?.limit ?? 40));
+
+    const rows = opts?.unreadOnly
+      ? await db
+          .prepare(
+            `SELECT * FROM social_notifications
+             WHERE recipient_id = ? AND read_at_ms IS NULL AND (expires_at_ms IS NULL OR expires_at_ms > ?)
+             ORDER BY created_at_ms DESC LIMIT ?`,
+          )
+          .bind(playerId, now, safeLimit)
+          .all<Record<string, unknown>>()
+      : await db
+          .prepare(
+            `SELECT * FROM social_notifications
+             WHERE recipient_id = ? AND (expires_at_ms IS NULL OR expires_at_ms > ?)
+             ORDER BY created_at_ms DESC LIMIT ?`,
+          )
+          .bind(playerId, now, safeLimit)
+          .all<Record<string, unknown>>();
+
+    const unreadRow = await db
+      .prepare(
+        `SELECT COUNT(*) AS c FROM social_notifications
+         WHERE recipient_id = ? AND read_at_ms IS NULL AND (expires_at_ms IS NULL OR expires_at_ms > ?)`,
+      )
+      .bind(playerId, now)
+      .first<{ c: number }>();
+
+    return {
+      notifications: (rows.results ?? []).map((r) => ({
+        notificationId: String(r.notification_id),
+        recipientId: String(r.recipient_id),
+        type: String(r.type) as NotificationType,
+        title: String(r.title),
+        body: String(r.body),
+        actorId: r.actor_id ? String(r.actor_id) : null,
+        actorName: r.actor_name ? String(r.actor_name) : null,
+        referenceId: r.reference_id ? String(r.reference_id) : null,
+        dedupeKey: r.dedupe_key ? String(r.dedupe_key) : null,
+        readAtMs:
+          r.read_at_ms !== null && r.read_at_ms !== undefined ? Number(r.read_at_ms) : null,
+        createdAtMs: Number(r.created_at_ms),
+        expiresAtMs:
+          r.expires_at_ms !== null && r.expires_at_ms !== undefined
+            ? Number(r.expires_at_ms)
+            : null,
+      })),
+      unreadCount: Number(unreadRow?.c ?? 0),
+    };
+  }
+
+  public async markNotificationRead(
+    playerId: string,
+    notificationId?: string,
+  ): Promise<{ notifications: SocialNotificationRecord[]; unreadCount: number }> {
+    const db = await this.ensureSchema();
+    const now = Date.now();
+    if (notificationId && notificationId.trim()) {
+      await db
+        .prepare(
+          `UPDATE social_notifications SET read_at_ms = ?
+           WHERE recipient_id = ? AND notification_id = ? AND read_at_ms IS NULL`,
+        )
+        .bind(now, playerId, notificationId.trim())
+        .run();
+    } else {
+      await db
+        .prepare(
+          `UPDATE social_notifications SET read_at_ms = ?
+           WHERE recipient_id = ? AND read_at_ms IS NULL`,
+        )
+        .bind(now, playerId)
+        .run();
+    }
+    return this.getNotifications(playerId, { limit: 40, nowMs: now });
+  }
+
+  public async clearNotifications(
+    playerId: string,
+    notificationId?: string,
+  ): Promise<{ notifications: SocialNotificationRecord[]; unreadCount: number }> {
+    const db = await this.ensureSchema();
+    if (notificationId && notificationId.trim()) {
+      await db
+        .prepare('DELETE FROM social_notifications WHERE recipient_id = ? AND notification_id = ?')
+        .bind(playerId, notificationId.trim())
+        .run();
+    } else {
+      await db
+        .prepare('DELETE FROM social_notifications WHERE recipient_id = ?')
+        .bind(playerId)
+        .run();
+    }
+    return this.getNotifications(playerId, { limit: 40 });
+  }
+
+  public async expireNotifications(now = Date.now()): Promise<number> {
+    const db = await this.ensureSchema();
+    const res = await db
+      .prepare(
+        `DELETE FROM social_notifications WHERE expires_at_ms IS NOT NULL AND expires_at_ms <= ?`,
+      )
+      .bind(now)
+      .run();
+    return Number(res.meta?.changes ?? 0);
   }
 
   public async searchPlayersForSocial(
@@ -1426,6 +1878,9 @@ export class SocialService {
       }
     }
 
+    const searchIds = (rows.results ?? []).map((r) => String(r.player_id));
+    const privacyMap = await this.getPrivacySettingsMap(searchIds);
+
     const out: SocialSearchPlayerItem[] = [];
     for (const r of rows.results ?? []) {
       const pid = String(r.player_id);
@@ -1445,10 +1900,13 @@ export class SocialService {
         }
       }
 
+      const showOnline = relationship === 'self' || (privacyMap.get(pid)?.showOnlineStatus ?? true);
       const rawStatus = r.presence_status ? String(r.presence_status) : 'offline';
       const exp = r.expires_at_ms !== null && r.expires_at_ms !== undefined ? Number(r.expires_at_ms) : 0;
       const presence: PresenceStatus =
-        rawStatus !== 'offline' && exp > now ? this.normalizePresence(rawStatus) : 'offline';
+        showOnline && rawStatus !== 'offline' && exp > now
+          ? this.normalizePresence(rawStatus)
+          : 'offline';
 
       out.push({
         playerId: pid,
@@ -1534,6 +1992,7 @@ export class SocialService {
 
     return {
       inviteId: String(r.invite_id),
+      inviteKind: r.invite_kind === 'spectate' ? 'spectate' : 'match',
       senderId,
       senderName: senderRow ? String(senderRow.display_name) : 'Player',
       senderAvatar: sanitizeAvatarId(senderRow?.avatar_id),
@@ -1556,7 +2015,15 @@ export class SocialService {
   }
 
   private normalizePresence(raw: unknown): PresenceStatus {
-    if (raw === 'online' || raw === 'in_match' || raw === 'busy') return raw;
+    if (
+      raw === 'online' ||
+      raw === 'in_match' ||
+      raw === 'in_tournament' ||
+      raw === 'spectating' ||
+      raw === 'busy'
+    ) {
+      return raw;
+    }
     return 'offline';
   }
 }
