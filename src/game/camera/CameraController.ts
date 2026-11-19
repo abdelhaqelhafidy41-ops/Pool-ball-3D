@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import type { SpectatorCameraMode } from '../../multiplayer/shared/protocol';
 import type { CameraPreset } from '../../store/useGameStore';
 import type { ReplayCameraMode } from '../replay/types';
 import { TABLE_DIMENSIONS } from '../utils/constants';
@@ -12,6 +13,14 @@ export interface ReplayCameraFocusParams {
   focusBallPos: THREE.Vector3;
   cueAngle: number;
   elapsedSec: number;
+}
+
+export interface SpectatorCameraFocusParams {
+  cueBallPos: THREE.Vector3;
+  focusBallPos: THREE.Vector3;
+  cueAngle: number;
+  elapsedSec: number;
+  zoomOffset?: number;
 }
 
 export class CameraController {
@@ -85,6 +94,112 @@ export class CameraController {
       }
       this.hasSavedGameplayPose = false;
     }
+  }
+
+  public saveBeforeSpectate() {
+    this.saveBeforeReplay();
+  }
+
+  public restoreAfterSpectate() {
+    this.restoreAfterReplay();
+  }
+
+  public updateSpectatorCamera(
+    mode: SpectatorCameraMode,
+    focus: SpectatorCameraFocusParams,
+    delta: number,
+  ) {
+    const surfaceY = TABLE_DIMENSIONS.surfaceY;
+    this.controls.autoRotate = false;
+
+    if (mode === 'free') {
+      this.controls.enableRotate = true;
+      this.controls.enableZoom = true;
+      this.isTransitioning = false;
+      this.controls.update();
+      this.enforceTableBoundary();
+      return;
+    }
+
+    const zoomFactor = THREE.MathUtils.clamp(1 + (focus.zoomOffset ?? 0), 0.55, 1.75);
+
+    switch (mode) {
+      case 'topDown':
+        _desiredPos.set(0, 3.65 * zoomFactor, 0.04);
+        _desiredTarget.set(0, surfaceY, 0);
+        break;
+
+      case 'ballFollow': {
+        const fx = focus.focusBallPos.x;
+        const fz = focus.focusBallPos.z;
+        const backX = Math.cos(focus.cueAngle);
+        const backZ = Math.sin(focus.cueAngle);
+        _desiredTarget.set(fx, surfaceY + 0.04, fz);
+        _desiredPos.set(
+          THREE.MathUtils.clamp(fx - backX * 1.15 * zoomFactor, -2.8, 2.8),
+          Math.max(0.45, surfaceY + 0.72 * zoomFactor),
+          THREE.MathUtils.clamp(fz - backZ * 1.15 * zoomFactor, -2.2, 2.2),
+        );
+        break;
+      }
+
+      case 'activeShot': {
+        const cx = focus.cueBallPos.x;
+        const cz = focus.cueBallPos.z;
+        const dirX = Math.cos(focus.cueAngle);
+        const dirZ = Math.sin(focus.cueAngle);
+        _desiredPos.set(
+          cx - dirX * 1.12 * zoomFactor,
+          Math.max(0.42, surfaceY + 0.42 * zoomFactor),
+          cz - dirZ * 1.12 * zoomFactor,
+        );
+        _desiredTarget.set(cx + dirX * 0.55, surfaceY + 0.03, cz + dirZ * 0.55);
+        break;
+      }
+
+      case 'cinematic': {
+        const orbitAngle = focus.elapsedSec * 0.22 - 2.35;
+        const radius = 2.45 * zoomFactor;
+        _desiredTarget.set(
+          THREE.MathUtils.clamp(focus.focusBallPos.x * 0.45, -0.7, 0.7),
+          surfaceY + 0.04,
+          THREE.MathUtils.clamp(focus.focusBallPos.z * 0.45, -0.4, 0.4),
+        );
+        _desiredPos.set(
+          _desiredTarget.x + Math.cos(orbitAngle) * radius,
+          Math.max(0.65, 1.62 * zoomFactor + Math.sin(focus.elapsedSec * 0.4) * 0.14),
+          _desiredTarget.z + Math.sin(orbitAngle) * radius,
+        );
+        break;
+      }
+
+      case 'overview':
+      default:
+        _desiredTarget.set(0.05, surfaceY + 0.02, 0);
+        _desiredPos.set(
+          -2.28 * zoomFactor,
+          Math.max(0.65, 1.84 * zoomFactor),
+          1.98 * zoomFactor,
+        );
+        break;
+    }
+
+    if (this.isSoftwareGl) {
+      this.camera.position.copy(_desiredPos);
+      this.controls.target.copy(_desiredTarget);
+    } else {
+      const lambda = mode === 'ballFollow' ? 5.2 : 6.0;
+      this.camera.position.x = THREE.MathUtils.damp(this.camera.position.x, _desiredPos.x, lambda, delta);
+      this.camera.position.y = THREE.MathUtils.damp(this.camera.position.y, _desiredPos.y, lambda, delta);
+      this.camera.position.z = THREE.MathUtils.damp(this.camera.position.z, _desiredPos.z, lambda, delta);
+
+      this.controls.target.x = THREE.MathUtils.damp(this.controls.target.x, _desiredTarget.x, lambda, delta);
+      this.controls.target.y = THREE.MathUtils.damp(this.controls.target.y, _desiredTarget.y, lambda, delta);
+      this.controls.target.z = THREE.MathUtils.damp(this.controls.target.z, _desiredTarget.z, lambda, delta);
+    }
+
+    this.controls.update();
+    this.enforceTableBoundary();
   }
 
   public updateReplayCamera(

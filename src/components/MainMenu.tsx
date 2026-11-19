@@ -5,6 +5,7 @@ import {
   Coins,
   Cpu,
   Crown,
+  Eye,
   Globe,
   History,
   KeyRound,
@@ -362,14 +363,25 @@ export function MainMenu({ onStartMatch, onToggleFullscreen }: MainMenuProps) {
               <span className="text-[10px] font-bold uppercase tracking-[0.18em] text-amber-400">
                 Online Multiplayer
               </span>
-              <button
-                type="button"
-                onClick={() => handleOpenOnline('quick')}
-                className="inline-flex items-center gap-1 text-[11px] font-bold text-emerald-300 hover:text-emerald-200 cursor-pointer"
-              >
-                <Globe className="h-3 w-3" />
-                Play Online
-              </button>
+              <div className="flex items-center gap-3">
+                <button
+                  type="button"
+                  data-testid="menu-watch-live-btn"
+                  onClick={() => handleOpenOnline('spectate')}
+                  className="inline-flex items-center gap-1 text-[11px] font-bold text-amber-300 hover:text-amber-200 cursor-pointer whitespace-nowrap"
+                >
+                  <Eye className="h-3 w-3" />
+                  Watch Live
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleOpenOnline('quick')}
+                  className="inline-flex items-center gap-1 text-[11px] font-bold text-emerald-300 hover:text-emerald-200 cursor-pointer whitespace-nowrap"
+                >
+                  <Globe className="h-3 w-3" />
+                  Play Online
+                </button>
+              </div>
             </div>
             <div className="grid grid-cols-2 gap-1.5">
               <button

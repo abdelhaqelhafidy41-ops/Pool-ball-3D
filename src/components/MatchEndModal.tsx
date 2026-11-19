@@ -42,6 +42,8 @@ export function MatchEndModal({ onPlayAgain, onMainMenu, onWatchReplay }: MatchE
   const matchPlayer1LegalEightBallWin = useGameStore((s) => s.matchPlayer1LegalEightBallWin);
   const openStoreModal = useGameStore((s) => s.openStoreModal);
   const openBattlePassModal = useGameStore((s) => s.openBattlePassModal);
+  const onlineSpectating = useGameStore((s) => s.onlineSpectating);
+  const spectateReturnTarget = useGameStore((s) => s.spectateReturnTarget);
   const claimedAiMatchIdsRef = useRef<Set<string>>(new Set());
   const claimingAiMatchIdsRef = useRef<Set<string>>(new Set());
   const reportedAiBpIdsRef = useRef<Set<string>>(new Set());
@@ -154,6 +156,114 @@ export function MatchEndModal({ onPlayAgain, onMainMenu, onWatchReplay }: MatchE
       : matchConfig.player2Name.trim() || 'Player 2';
 
   const winnerName = winner === 'player1' ? p1Name : p2Name;
+
+  if (isOnline && onlineSpectating) {
+    return (
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label="Broadcast Match Result"
+        className="fixed inset-0 z-40 flex items-center justify-center bg-black/70 p-3 sm:p-4"
+      >
+        <div
+          data-testid="spectator-match-end-card"
+          className="modal-scroll-y max-h-[92dvh] w-full max-w-md rounded-2xl border border-amber-400/35 bg-[#0e151e] p-5 sm:p-6 text-slate-100 shadow-2xl"
+        >
+          <div className="flex flex-col items-center text-center">
+            <div className="flex h-12 w-12 items-center justify-center rounded-xl border border-amber-400/40 bg-amber-500/15">
+              <Trophy className="h-6 w-6 text-amber-400" />
+            </div>
+            <p className="mt-3 text-[11px] font-bold uppercase tracking-[0.2em] text-amber-400">
+              {onlineRoom?.tournament
+                ? `${onlineRoom.tournament.tournamentTitle} · ${onlineRoom.tournament.roundLabel}`
+                : 'Live Broadcast · Final'}
+            </p>
+            <h2 className="mt-1 text-2xl font-extrabold tracking-tight text-white">
+              {winnerName} Wins!
+            </h2>
+            <p className="mt-1.5 text-sm text-slate-300">
+              {gameOverReason ?? 'Official 8-Ball rack completed.'}
+            </p>
+          </div>
+
+          <div className="mt-5 grid grid-cols-2 gap-2.5">
+            <div className="rounded-xl border border-white/10 bg-white/5 px-3 py-2.5">
+              <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+                Rack Shots
+              </div>
+              <div className="mt-0.5 text-lg font-mono font-bold tabular-nums text-white">
+                {shotCount}
+              </div>
+            </div>
+            <div className="rounded-xl border border-white/10 bg-white/5 px-3 py-2.5">
+              <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+                Balls Pocketed
+              </div>
+              <div className="mt-0.5 text-lg font-mono font-bold tabular-nums text-white">
+                {pocketedNumbers.length}/15
+              </div>
+            </div>
+          </div>
+
+          <div className="mt-4 space-y-2.5">
+            {replayShots.length > 0 && (
+              <button
+                type="button"
+                onClick={() => {
+                  soundEngine.playUiClick();
+                  onWatchReplay();
+                }}
+                className="inline-flex w-full items-center justify-center gap-2 rounded-xl border border-amber-400/40 bg-amber-500/15 px-4 py-2.5 text-xs font-extrabold uppercase tracking-wider text-amber-200 hover:bg-amber-500/25 transition-colors cursor-pointer whitespace-nowrap"
+              >
+                <Film className="h-4 w-4 text-amber-400" />
+                Watch Broadcast Replay
+              </button>
+            )}
+
+            {spectateReturnTarget === 'tournament' && onlineRoom?.tournament && (
+              <button
+                type="button"
+                onClick={() => {
+                  soundEngine.playUiClick();
+                  multiplayerManager.leaveSpectatorMode('tournament');
+                }}
+                className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-amber-500 px-4 py-2.5 text-xs font-extrabold uppercase tracking-wider text-slate-950 hover:bg-amber-400 transition-colors cursor-pointer whitespace-nowrap"
+              >
+                <Crown className="h-4 w-4" />
+                Back to Tournament Bracket
+              </button>
+            )}
+
+            <div className="flex items-center gap-2.5">
+              <button
+                type="button"
+                onClick={() => {
+                  soundEngine.playUiClick();
+                  multiplayerManager.leaveSpectatorMode('lobby');
+                }}
+                className="inline-flex flex-1 items-center justify-center gap-2 rounded-xl border border-white/15 bg-white/5 px-4 py-2.5 text-xs font-bold uppercase tracking-wider text-slate-200 hover:bg-white/10 transition-colors cursor-pointer whitespace-nowrap"
+              >
+                <Globe className="h-4 w-4 text-emerald-400" />
+                Live Matches
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  soundEngine.playUiClick();
+                  multiplayerManager.leaveSpectatorMode('menu');
+                }}
+                className="inline-flex flex-1 items-center justify-center gap-2 rounded-xl border border-white/15 bg-white/5 px-4 py-2.5 text-xs font-bold uppercase tracking-wider text-slate-200 hover:bg-white/10 transition-colors cursor-pointer whitespace-nowrap"
+              >
+                <Home className="h-4 w-4" />
+                Main Menu
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   const isPlayerDefeat =
     isOnline && onlineLocalRole !== null
       ? winner !== onlineLocalRole

@@ -37,6 +37,8 @@ import type {
   OnlineModeIntent,
   OnlineRoomInfo,
   OpponentConnectionState,
+  SpectatableMatchSummary,
+  SpectatorCameraMode,
 } from '../multiplayer/shared/protocol';
 import type {
   BlockedPlayerRecord,
@@ -459,6 +461,17 @@ export interface GameState {
   onlineHistory: MatchHistoryRecord[];
   onlineRecordedMatchIds: string[];
 
+  // Spectator Mode State (Phase 14)
+  onlineSpectating: boolean;
+  spectatorSessionId: string | null;
+  spectatorCameraMode: SpectatorCameraMode;
+  spectatorZoomOffset: number;
+  spectatorMutedPlayerIds: string[];
+  spectatableMatches: SpectatableMatchSummary[];
+  spectatableMatchesLoading: boolean;
+  spectateReturnTarget: 'menu' | 'lobby' | 'tournament' | null;
+  spectateReturnTournamentId: string | null;
+
   // Competitive Progression State (Phase 5)
   ownProfile: PublicPlayerProfile | null;
   lastOnlineMatchProgression: MatchProgressionRewardSummary | null;
@@ -641,6 +654,19 @@ export interface GameState {
   ) => void;
   clearOnlineMatchSession: () => void;
 
+  // Spectator Actions (Phase 14)
+  setOnlineSpectating: (spectating: boolean, spectatorSessionId?: string | null) => void;
+  setSpectatableMatches: (matches: SpectatableMatchSummary[]) => void;
+  setSpectatableMatchesLoading: (loading: boolean) => void;
+  setSpectatorCameraMode: (mode: SpectatorCameraMode) => void;
+  adjustSpectatorZoom: (delta: number) => void;
+  resetSpectatorZoom: () => void;
+  toggleMuteSpectatorChatUser: (playerId: string) => void;
+  setSpectateReturnContext: (
+    target: 'menu' | 'lobby' | 'tournament' | null,
+    tournamentId?: string | null,
+  ) => void;
+
   // Progression Actions (Phase 5)
   setOwnProfile: (profile: PublicPlayerProfile | null) => void;
   setLastOnlineMatchProgression: (summary: MatchProgressionRewardSummary | null) => void;
@@ -756,6 +782,7 @@ export interface GameState {
 
 export function canLocalPlayerAct(state: GameState): boolean {
   if (state.replayActive) return false;
+  if (state.onlineSpectating) return false;
   if (state.matchConfig.opponentType === 'online') {
     if (state.onlineConnectionStatus !== 'connected') return false;
     if (!state.onlineLocalRole) return false;
@@ -891,6 +918,16 @@ export const useGameStore = create<GameState>((set) => ({
   onlineRematchVotes: [],
   onlineHistory: [],
   onlineRecordedMatchIds: [],
+
+  onlineSpectating: false,
+  spectatorSessionId: null,
+  spectatorCameraMode: 'overview',
+  spectatorZoomOffset: 0,
+  spectatorMutedPlayerIds: [],
+  spectatableMatches: [],
+  spectatableMatchesLoading: false,
+  spectateReturnTarget: null,
+  spectateReturnTournamentId: null,
 
   ownProfile: null,
   lastOnlineMatchProgression: null,
@@ -1236,6 +1273,12 @@ export const useGameStore = create<GameState>((set) => ({
 
   setOnlineRoom: (onlineRoom) =>
     set((state) => {
+      if (state.onlineSpectating) {
+        return {
+          onlineRoom,
+          onlineLocalRole: null,
+        };
+      }
       const localRole =
         onlineRoom && state.onlineSessionId
           ? onlineRoom.players.find((p) => p.sessionId === state.onlineSessionId)?.role ?? null
@@ -1364,7 +1407,48 @@ export const useGameStore = create<GameState>((set) => ({
       roomChatMessages: [],
       roomChatOpen: false,
       roomChatUnreadCount: 0,
+      onlineSpectating: false,
+      spectatorSessionId: null,
+      spectatorCameraMode: 'overview',
+      spectatorZoomOffset: 0,
+      spectateReturnTarget: null,
+      spectateReturnTournamentId: null,
     })),
+
+  setOnlineSpectating: (onlineSpectating, spectatorSessionId) =>
+    set((state) => ({
+      onlineSpectating,
+      spectatorSessionId:
+        spectatorSessionId !== undefined
+          ? spectatorSessionId
+          : onlineSpectating
+            ? state.spectatorSessionId
+            : null,
+      onlineLocalRole: onlineSpectating ? null : state.onlineLocalRole,
+    })),
+  setSpectatableMatches: (spectatableMatches) => set({ spectatableMatches }),
+  setSpectatableMatchesLoading: (spectatableMatchesLoading) => set({ spectatableMatchesLoading }),
+  setSpectatorCameraMode: (spectatorCameraMode) =>
+    set({ spectatorCameraMode, spectatorZoomOffset: 0 }),
+  adjustSpectatorZoom: (delta) =>
+    set((state) => ({
+      spectatorZoomOffset: Math.max(-0.45, Math.min(0.75, state.spectatorZoomOffset + delta)),
+    })),
+  resetSpectatorZoom: () => set({ spectatorZoomOffset: 0 }),
+  toggleMuteSpectatorChatUser: (playerId) =>
+    set((state) => {
+      const exists = state.spectatorMutedPlayerIds.includes(playerId);
+      return {
+        spectatorMutedPlayerIds: exists
+          ? state.spectatorMutedPlayerIds.filter((id) => id !== playerId)
+          : [...state.spectatorMutedPlayerIds, playerId],
+      };
+    }),
+  setSpectateReturnContext: (spectateReturnTarget, spectateReturnTournamentId = null) =>
+    set({
+      spectateReturnTarget,
+      spectateReturnTournamentId: spectateReturnTournamentId ?? null,
+    }),
 
   setOwnProfile: (ownProfile) => set({ ownProfile }),
   setLastOnlineMatchProgression: (lastOnlineMatchProgression) =>

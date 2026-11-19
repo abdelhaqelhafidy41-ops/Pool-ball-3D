@@ -11,11 +11,16 @@ import type {
   MatchHistoryRecord,
   MultiplayerErrorCode,
   OnlineAvatarId,
+  OnlineBallFrame,
+  OnlineMatchSnapshot,
   OnlineRoomInfo,
   OnlineRoomStatus,
   OnlineRoomTournamentContext,
   ServerToClientMessage,
+  SpectatableMatchPlayer,
+  SpectatableMatchSummary,
 } from '../../src/multiplayer/shared/protocol';
+import type { RoomChatMessageRecord } from '../../src/multiplayer/shared/social';
 import {
   isValidManualPresence,
   sanitizeChatText,
@@ -139,6 +144,11 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
         rule_profile_id TEXT NOT NULL,
         called_shots_enabled INTEGER NOT NULL,
         status TEXT NOT NULL,
+        allow_spectators INTEGER NOT NULL DEFAULT 1,
+        allow_spectator_chat INTEGER NOT NULL DEFAULT 1,
+        spectator_count INTEGER NOT NULL DEFAULT 0,
+        max_spectators INTEGER NOT NULL DEFAULT 16,
+        meta_json TEXT,
         created_at_ms INTEGER NOT NULL,
         expires_at_ms INTEGER NOT NULL
       );
@@ -175,6 +185,11 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
       'ALTER TABLE match_history ADD COLUMN player2_id TEXT',
       'ALTER TABLE match_history ADD COLUMN payload_json TEXT',
       "ALTER TABLE rooms ADD COLUMN match_type TEXT NOT NULL DEFAULT 'quick'",
+      'ALTER TABLE rooms ADD COLUMN allow_spectators INTEGER NOT NULL DEFAULT 1',
+      'ALTER TABLE rooms ADD COLUMN allow_spectator_chat INTEGER NOT NULL DEFAULT 1',
+      'ALTER TABLE rooms ADD COLUMN spectator_count INTEGER NOT NULL DEFAULT 0',
+      'ALTER TABLE rooms ADD COLUMN max_spectators INTEGER NOT NULL DEFAULT 16',
+      'ALTER TABLE rooms ADD COLUMN meta_json TEXT',
       'ALTER TABLE match_queue ADD COLUMN player_id TEXT',
       "ALTER TABLE match_queue ADD COLUMN queue_mode TEXT NOT NULL DEFAULT 'quick'",
       'ALTER TABLE match_queue ADD COLUMN elo INTEGER NOT NULL DEFAULT 1200',
@@ -648,18 +663,40 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
         const expiresAtMs = now + this.config.roomTtlMs;
         const roomId = `room_${crypto.randomUUID().replace(/-/g, '').slice(0, 12)}`;
         const roomCode = this.generateUniqueCode();
+        const isPrivateRoom = msg.isPrivate !== false;
+        const hostPlayerId = session.player_id ?? session.session_id;
+        const [hostCosmetics, hostProfile] = await Promise.all([
+          this.getEconomyService().getEquippedCosmetics(hostPlayerId),
+          this.getProgressionService().getPublicProfile(hostPlayerId),
+        ]);
+        const initialMeta = JSON.stringify({
+          players: [
+            {
+              playerId: hostPlayerId,
+              displayName: session.display_name,
+              avatarId: sanitizeAvatarId(session.avatar_id),
+              role: 'player1',
+              elo: hostProfile?.elo,
+              rankTier: hostProfile?.rankTier,
+            } satisfies SpectatableMatchPlayer,
+          ],
+          tournament: null,
+        });
 
         this.ctx.storage.sql.exec(
           `INSERT INTO rooms (
             room_id, room_code, host_session_id, is_private, match_type, rule_profile_id,
-            called_shots_enabled, status, created_at_ms, expires_at_ms
-          ) VALUES (?, ?, ?, ?, 'private', ?, ?, 'waiting', ?, ?)`,
+            called_shots_enabled, status, allow_spectators, allow_spectator_chat,
+            spectator_count, max_spectators, meta_json, created_at_ms, expires_at_ms
+          ) VALUES (?, ?, ?, ?, 'private', ?, ?, 'waiting', 0, 1, 0, ?, ?, ?, ?)`,
           roomId,
           roomCode,
           session.session_id,
-          msg.isPrivate !== false ? 1 : 0,
+          isPrivateRoom ? 1 : 0,
           ruleProfileId,
           calledShotsEnabled ? 1 : 0,
+          this.config.maxSpectatorsPerRoom,
+          initialMeta,
           now,
           expiresAtMs,
         );
@@ -669,8 +706,6 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
           session.session_id,
         );
 
-        const hostPlayerId = session.player_id ?? session.session_id;
-        const hostCosmetics = await this.getEconomyService().getEquippedCosmetics(hostPlayerId);
         const roomStub = this.env.POOL_ROOM.get(this.env.POOL_ROOM.idFromName(roomId));
         const roomInfo = await roomStub.initPrivateRoom({
           roomId,
@@ -685,6 +720,8 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
             reconnectToken: session.reconnect_token,
             displayName: session.display_name,
             avatarId: sanitizeAvatarId(session.avatar_id),
+            elo: hostProfile?.elo,
+            rankTier: hostProfile?.rankTier,
             equippedCosmetics: hostCosmetics,
             latencyMs: session.latency_ms,
           },
@@ -744,7 +781,10 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
         }
 
         const joinPlayerId = session.player_id ?? session.session_id;
-        const joinCosmetics = await this.getEconomyService().getEquippedCosmetics(joinPlayerId);
+        const [joinCosmetics, joinProfile] = await Promise.all([
+          this.getEconomyService().getEquippedCosmetics(joinPlayerId),
+          this.getProgressionService().getPublicProfile(joinPlayerId),
+        ]);
         const roomStub = this.env.POOL_ROOM.get(this.env.POOL_ROOM.idFromName(roomRow.room_id));
         const joinRes = await roomStub.joinRoom({
           sessionId: session.session_id,
@@ -752,6 +792,8 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
           reconnectToken: session.reconnect_token,
           displayName: session.display_name,
           avatarId: sanitizeAvatarId(session.avatar_id),
+          elo: joinProfile?.elo,
+          rankTier: joinProfile?.rankTier,
           equippedCosmetics: joinCosmetics,
           latencyMs: session.latency_ms,
         });
@@ -956,6 +998,42 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
         break;
       }
 
+      case 'room:spectate': {
+        if (session.active_room_id || session.in_matchmaking === 1) {
+          this.sendError(
+            ws,
+            'ALREADY_IN_MATCH',
+            'Leave your current room or matchmaking queue before spectating.',
+          );
+          return;
+        }
+        const specRes = await this.spectateJoin({
+          roomId: msg.roomId,
+          roomCode: msg.roomCode,
+          targetPlayerId: msg.targetPlayerId,
+          shareToken: msg.shareToken,
+          sessionId: session.session_id,
+          playerId,
+          displayName: session.display_name,
+          avatarId: sanitizeAvatarId(session.avatar_id),
+          trustedWsSession: true,
+        });
+        if (!specRes.ok) {
+          this.sendError(ws, specRes.code as MultiplayerErrorCode, specRes.message);
+          return;
+        }
+        this.sendSocket(ws, {
+          type: 'spectate:joined',
+          room: specRes.room,
+          match: specRes.match,
+          balls: specRes.balls,
+          chatHistory: specRes.chatHistory,
+          spectatorSessionId: specRes.spectatorSessionId,
+          spectatorReconnectToken: specRes.spectatorReconnectToken,
+        });
+        break;
+      }
+
       default:
         this.sendError(ws, 'INVALID_INPUT', 'Connect to your room socket for match actions.');
     }
@@ -1071,14 +1149,83 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
     }
   }
 
+  public async onRoomMetaUpdated(
+    roomId: string,
+    meta: {
+      status: OnlineRoomStatus;
+      isPrivate: boolean;
+      allowSpectators: boolean;
+      allowSpectatorChat: boolean;
+      spectatorCount: number;
+      maxSpectators: number;
+      matchType: OnlineMatchType;
+      ruleProfileId: RuleProfileId;
+      calledShotsEnabled: boolean;
+      players: SpectatableMatchPlayer[];
+      tournament?: OnlineRoomTournamentContext | null;
+    },
+  ): Promise<void> {
+    this.ensureSchema();
+    const serialized = JSON.stringify({
+      players: meta.players,
+      tournament: meta.tournament ?? null,
+    });
+    this.ctx.storage.sql.exec(
+      `UPDATE rooms
+       SET status = ?, is_private = ?, match_type = ?, rule_profile_id = ?,
+           called_shots_enabled = ?, allow_spectators = ?, allow_spectator_chat = ?,
+           spectator_count = ?, max_spectators = ?, meta_json = ?
+       WHERE room_id = ?`,
+      meta.status,
+      meta.isPrivate ? 1 : 0,
+      meta.matchType,
+      meta.ruleProfileId,
+      meta.calledShotsEnabled ? 1 : 0,
+      meta.allowSpectators ? 1 : 0,
+      meta.allowSpectatorChat ? 1 : 0,
+      Math.max(0, Math.floor(meta.spectatorCount)),
+      Math.max(1, Math.floor(meta.maxSpectators)),
+      serialized,
+      roomId,
+    );
+  }
+
+  public async onSpectatorLeftRoom(roomId: string, playerId: string): Promise<void> {
+    this.ensureSchema();
+    if (!playerId) return;
+    const sess = this.findLatestSessionByPlayerId(playerId);
+    const activeMatchRoom =
+      sess?.active_room_id && sess.active_room_id !== roomId
+        ? this.ctx.storage.sql
+            .exec<{ status: string }>(
+              'SELECT status FROM rooms WHERE room_id = ? LIMIT 1',
+              sess.active_room_id,
+            )
+            .toArray()[0]?.status === 'playing'
+        : false;
+    if (activeMatchRoom) return;
+
+    const hasLobbySocket = this.findSocketsByPlayerId(playerId).length > 0;
+    const res = await this.getSocialService().setPresence({
+      playerId,
+      status: hasLobbySocket ? 'online' : 'offline',
+      activeRoomId: null,
+      ttlMs: this.config.presenceTtlMs,
+    });
+    if (res.changed) {
+      await this.broadcastPresenceChanged(playerId, res.status, res.lastSeenAtMs);
+    }
+  }
+
   public async onRoomClosed(
     roomId: string,
     sessionIds: string[],
     playerIds: string[] = [],
+    spectatorPlayerIds: string[] = [],
   ): Promise<void> {
     this.ensureSchema();
     this.ctx.storage.sql.exec('DELETE FROM rooms WHERE room_id = ?', roomId);
-    const resolvedPlayerIds = new Set<string>(playerIds);
+    const resolvedPlayerIds = new Set<string>([...playerIds, ...spectatorPlayerIds]);
     for (const sid of sessionIds) {
       const sess = this.getSession(sid);
       if (sess?.player_id) resolvedPlayerIds.add(sess.player_id);
@@ -1719,6 +1866,393 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
       reporterId: auth.playerId,
       ...input,
     });
+  }
+
+  // ===== Phase 14 Spectator & Live Broadcast RPC Methods =====
+
+  private parseRoomMetaJson(raw: unknown): {
+    players: SpectatableMatchPlayer[];
+    tournament: OnlineRoomTournamentContext | null;
+  } {
+    if (typeof raw !== 'string' || !raw) {
+      return { players: [], tournament: null };
+    }
+    try {
+      const parsed = JSON.parse(raw) as {
+        players?: SpectatableMatchPlayer[];
+        tournament?: OnlineRoomTournamentContext | null;
+      };
+      return {
+        players: Array.isArray(parsed.players) ? parsed.players : [],
+        tournament: parsed.tournament ?? null,
+      };
+    } catch {
+      return { players: [], tournament: null };
+    }
+  }
+
+  public async listSpectatableMatches(filters?: {
+    matchType?: OnlineMatchType | 'all' | null;
+    status?: string | null;
+    tournamentId?: string | null;
+  }): Promise<SpectatableMatchSummary[]> {
+    this.ensureSchema();
+    await this.pruneExpiredWaitingRooms();
+    const now = Date.now();
+    const rows = this.ctx.storage.sql
+      .exec<Record<string, SqlStorageValue>>(
+        `SELECT * FROM rooms
+         WHERE is_private = 0
+           AND allow_spectators = 1
+           AND status IN ('waiting', 'ready', 'playing')
+           AND (status = 'playing' OR expires_at_ms > ?)
+         ORDER BY CASE WHEN status = 'playing' THEN 0 ELSE 1 END, spectator_count DESC, created_at_ms DESC
+         LIMIT 50`,
+        now,
+      )
+      .toArray();
+
+    const wantType =
+      filters?.matchType && filters.matchType !== 'all' ? filters.matchType : null;
+    const wantStatus = filters?.status?.trim() || null;
+    const wantTournament = filters?.tournamentId?.trim() || null;
+
+    const results: SpectatableMatchSummary[] = [];
+    for (const r of rows) {
+      const matchType = (String(r.match_type ?? 'quick') as OnlineMatchType) || 'quick';
+      const status = String(r.status) as OnlineRoomStatus;
+      if (wantType && matchType !== wantType) continue;
+      if (wantStatus && status !== wantStatus) continue;
+
+      const meta = this.parseRoomMetaJson(r.meta_json);
+      if (wantTournament && meta.tournament?.tournamentId !== wantTournament) continue;
+      if (meta.players.length === 0) continue;
+
+      results.push({
+        roomId: String(r.room_id),
+        roomCode: String(r.room_code),
+        matchType,
+        ruleProfileId: r.rule_profile_id === 'wpa' ? 'wpa' : 'casual',
+        calledShotsEnabled: Number(r.called_shots_enabled) === 1,
+        status,
+        isPrivate: Number(r.is_private) === 1,
+        allowSpectators: Number(r.allow_spectators) === 1,
+        allowSpectatorChat: Number(r.allow_spectator_chat ?? 1) === 1,
+        spectatorCount: Number(r.spectator_count ?? 0),
+        maxSpectators: Number(r.max_spectators ?? this.config.maxSpectatorsPerRoom),
+        createdAtMs: Number(r.created_at_ms),
+        startedAtMs: status === 'playing' ? Number(r.created_at_ms) : null,
+        players: meta.players,
+        tournament: meta.tournament,
+      });
+    }
+    return results;
+  }
+
+  private resolveRoomRecordForSpectate(query: {
+    roomId?: string;
+    roomCode?: string;
+    targetPlayerId?: string;
+  }): Record<string, SqlStorageValue> | null {
+    const cleanRoomId = typeof query.roomId === 'string' ? query.roomId.trim() : '';
+    const cleanCode = typeof query.roomCode === 'string' ? query.roomCode.trim().toUpperCase() : '';
+    const cleanTargetPlayer =
+      typeof query.targetPlayerId === 'string' ? query.targetPlayerId.trim() : '';
+
+    if (cleanRoomId) {
+      const rows = this.ctx.storage.sql
+        .exec<Record<string, SqlStorageValue>>(
+          'SELECT * FROM rooms WHERE room_id = ? LIMIT 1',
+          cleanRoomId,
+        )
+        .toArray();
+      return rows[0] ?? null;
+    }
+
+    if (cleanCode) {
+      const rows = this.ctx.storage.sql
+        .exec<Record<string, SqlStorageValue>>(
+          'SELECT * FROM rooms WHERE room_code = ? LIMIT 1',
+          cleanCode,
+        )
+        .toArray();
+      return rows[0] ?? null;
+    }
+
+    if (cleanTargetPlayer) {
+      const sess =
+        this.findLatestConnectedSessionByPlayerId(cleanTargetPlayer) ??
+        this.findLatestSessionByPlayerId(cleanTargetPlayer);
+      if (sess?.active_room_id) {
+        const rows = this.ctx.storage.sql
+          .exec<Record<string, SqlStorageValue>>(
+            'SELECT * FROM rooms WHERE room_id = ? LIMIT 1',
+            sess.active_room_id,
+          )
+          .toArray();
+        return rows[0] ?? null;
+      }
+    }
+
+    return null;
+  }
+
+  public async resolveSpectateTarget(query: {
+    roomId?: string;
+    roomCode?: string;
+    targetPlayerId?: string;
+    shareToken?: string;
+  }): Promise<
+    | { ok: true; match: SpectatableMatchSummary }
+    | { ok: false; status: number; code: MultiplayerErrorCode; message: string }
+  > {
+    this.ensureSchema();
+    await this.pruneExpiredWaitingRooms();
+    const row = this.resolveRoomRecordForSpectate(query);
+    if (!row) {
+      return {
+        ok: false,
+        status: 404,
+        code: 'INVALID_ROOM',
+        message: 'Live match room not found.',
+      };
+    }
+
+    const roomId = String(row.room_id);
+    const roomCode = String(row.room_code);
+    const isPrivate = Number(row.is_private) === 1;
+    const allowSpectators = Number(row.allow_spectators) === 1;
+    if (!allowSpectators) {
+      return {
+        ok: false,
+        status: 403,
+        code: 'SPECTATE_UNAVAILABLE',
+        message: 'Spectators are not enabled for this match.',
+      };
+    }
+
+    if (isPrivate) {
+      const codeMatch =
+        typeof query.roomCode === 'string' &&
+        query.roomCode.trim().toUpperCase() === roomCode.toUpperCase();
+      const hasToken = typeof query.shareToken === 'string' && query.shareToken.trim().length > 0;
+      if (!codeMatch && !hasToken) {
+        return {
+          ok: false,
+          status: 403,
+          code: 'SPECTATE_UNAVAILABLE',
+          message: 'Private matches require a room code or host spectator link.',
+        };
+      }
+      if (hasToken && !codeMatch) {
+        const roomStub = this.env.POOL_ROOM.get(this.env.POOL_ROOM.idFromName(roomId));
+        const resume = await roomStub.getResumeData();
+        if (!resume || !resume.room.allowSpectators) {
+          return {
+            ok: false,
+            status: 403,
+            code: 'SPECTATE_UNAVAILABLE',
+            message: 'Spectators are not enabled for this private match.',
+          };
+        }
+      }
+    }
+
+    const meta = this.parseRoomMetaJson(row.meta_json);
+    return {
+      ok: true,
+      match: {
+        roomId,
+        roomCode,
+        matchType: (String(row.match_type ?? 'quick') as OnlineMatchType) || 'quick',
+        ruleProfileId: row.rule_profile_id === 'wpa' ? 'wpa' : 'casual',
+        calledShotsEnabled: Number(row.called_shots_enabled) === 1,
+        status: String(row.status) as OnlineRoomStatus,
+        isPrivate,
+        allowSpectators,
+        allowSpectatorChat: Number(row.allow_spectator_chat ?? 1) === 1,
+        spectatorCount: Number(row.spectator_count ?? 0),
+        maxSpectators: Number(row.max_spectators ?? this.config.maxSpectatorsPerRoom),
+        createdAtMs: Number(row.created_at_ms),
+        startedAtMs: row.status === 'playing' ? Number(row.created_at_ms) : null,
+        players: meta.players,
+        tournament: meta.tournament,
+      },
+    };
+  }
+
+  public async spectateJoin(input: {
+    roomId?: string;
+    roomCode?: string;
+    targetPlayerId?: string;
+    shareToken?: string;
+    sessionId?: string;
+    playerId?: string;
+    playerToken?: string;
+    displayName?: string;
+    avatarId?: OnlineAvatarId;
+    trustedWsSession?: boolean;
+  }): Promise<
+    | {
+        ok: true;
+        room: OnlineRoomInfo;
+        match: OnlineMatchSnapshot | null;
+        balls: OnlineBallFrame[] | null;
+        chatHistory: RoomChatMessageRecord[];
+        spectatorSessionId: string;
+        spectatorReconnectToken: string;
+      }
+    | { ok: false; status: number; code: MultiplayerErrorCode; message: string }
+  > {
+    this.ensureSchema();
+    await this.pruneExpiredWaitingRooms();
+
+    const row = this.resolveRoomRecordForSpectate(input);
+    if (!row) {
+      return {
+        ok: false,
+        status: 404,
+        code: 'INVALID_ROOM',
+        message: 'Live match room not found or has ended.',
+      };
+    }
+
+    const roomId = String(row.room_id);
+    const status = String(row.status);
+    if (status === 'expired' || status === 'cancelled') {
+      return {
+        ok: false,
+        status: 410,
+        code: 'ROOM_EXPIRED',
+        message: 'Match room is no longer active.',
+      };
+    }
+
+    let resolvedPlayerId: string | undefined;
+    let resolvedName = sanitizeDisplayName(input.displayName || 'Spectator');
+    let resolvedAvatar = sanitizeAvatarId(input.avatarId);
+
+    if (input.trustedWsSession && input.playerId) {
+      resolvedPlayerId = input.playerId;
+    } else if (
+      typeof input.playerId === 'string' &&
+      input.playerId.trim().length > 0 &&
+      typeof input.playerToken === 'string' &&
+      input.playerToken.trim().length > 0
+    ) {
+      const auth = await this.authenticateRestPlayer(input.playerId, input.playerToken);
+      if (!auth.ok) {
+        return auth;
+      }
+      resolvedPlayerId = auth.playerId;
+      const profile = await this.getProgressionService().getPublicProfile(auth.playerId);
+      if (profile) {
+        resolvedName = sanitizeDisplayName(input.displayName || profile.displayName);
+        resolvedAvatar = sanitizeAvatarId(input.avatarId ?? profile.avatarId);
+      }
+    }
+
+    if (resolvedPlayerId) {
+      const activeSess =
+        (input.sessionId ? this.getSession(input.sessionId) : null) ??
+        this.findLatestConnectedSessionByPlayerId(resolvedPlayerId);
+      if (activeSess && (activeSess.active_room_id || activeSess.in_matchmaking === 1)) {
+        if (activeSess.active_room_id !== roomId) {
+          return {
+            ok: false,
+            status: 409,
+            code: 'ALREADY_IN_MATCH',
+            message: 'Leave your current room or matchmaking queue before spectating.',
+          };
+        }
+      }
+    }
+
+    const roomStub = this.env.POOL_ROOM.get(this.env.POOL_ROOM.idFromName(roomId));
+    const joinRes = await roomStub.joinAsSpectator({
+      sessionId: input.sessionId,
+      playerId: resolvedPlayerId,
+      displayName: resolvedName,
+      avatarId: resolvedAvatar,
+      roomCode: input.roomCode,
+      shareToken: input.shareToken,
+    });
+
+    if (!joinRes.ok) {
+      const httpStatus =
+        joinRes.code === 'SPECTATE_UNAVAILABLE' || joinRes.code === 'BLOCKED_PLAYER'
+          ? 403
+          : joinRes.code === 'ROOM_FULL' || joinRes.code === 'ALREADY_IN_MATCH'
+            ? 409
+            : joinRes.code === 'ROOM_EXPIRED'
+              ? 410
+              : joinRes.code === 'INVALID_ROOM'
+                ? 404
+                : 400;
+      return {
+        ok: false,
+        status: httpStatus,
+        code: joinRes.code,
+        message: joinRes.message,
+      };
+    }
+
+    if (resolvedPlayerId) {
+      const pres = await this.getSocialService().setPresence({
+        playerId: resolvedPlayerId,
+        status: 'spectating',
+        activeRoomId: roomId,
+        ttlMs: Math.max(this.config.presenceTtlMs, 120_000),
+      });
+      if (pres.changed) {
+        await this.broadcastPresenceChanged(resolvedPlayerId, pres.status, pres.lastSeenAtMs);
+      }
+    }
+
+    await this.scheduleNextAlarm();
+    return joinRes;
+  }
+
+  public async spectateLeave(input: {
+    roomId: string;
+    sessionId?: string;
+    playerId?: string;
+    playerToken?: string;
+  }): Promise<{ ok: true; removed: boolean } | SocialError> {
+    this.ensureSchema();
+    const cleanRoomId = typeof input.roomId === 'string' ? input.roomId.trim() : '';
+    if (!cleanRoomId) {
+      return {
+        ok: false,
+        status: 400,
+        code: 'INVALID_INPUT',
+        message: 'roomId is required.',
+      };
+    }
+
+    let lookupId = typeof input.sessionId === 'string' ? input.sessionId.trim() : '';
+    if (
+      typeof input.playerId === 'string' &&
+      input.playerId.trim().length > 0 &&
+      typeof input.playerToken === 'string' &&
+      input.playerToken.trim().length > 0
+    ) {
+      const auth = await this.authenticateRestPlayer(input.playerId, input.playerToken);
+      if (!auth.ok) return auth;
+      if (!lookupId) lookupId = auth.playerId;
+    }
+
+    if (!lookupId) {
+      return {
+        ok: false,
+        status: 400,
+        code: 'INVALID_INPUT',
+        message: 'sessionId or authenticated player credentials required.',
+      };
+    }
+
+    const roomStub = this.env.POOL_ROOM.get(this.env.POOL_ROOM.idFromName(cleanRoomId));
+    return roomStub.leaveSpectatorBySession(lookupId);
   }
 
   // ===== Phase 8 Economy & Store RPC Methods =====
@@ -2371,29 +2905,21 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
 
     const p1Sess = this.findLatestSessionByPlayerId(p1Id);
     const p2Sess = this.findLatestSessionByPlayerId(p2Id);
-    const [p1Cosmetics, p2Cosmetics] = await Promise.all([
+    const [p1Cosmetics, p2Cosmetics, p1Profile, p2Profile] = await Promise.all([
       this.getEconomyService().getEquippedCosmetics(p1Id),
       this.getEconomyService().getEquippedCosmetics(p2Id),
+      this.getProgressionService().getPublicProfile(p1Id),
+      this.getProgressionService().getPublicProfile(p2Id),
     ]);
 
     const p1SessionId = p1Sess?.session_id ?? `ply_${crypto.randomUUID().replace(/-/g, '').slice(0, 16)}`;
     const p2SessionId = p2Sess?.session_id ?? `ply_${crypto.randomUUID().replace(/-/g, '').slice(0, 16)}`;
     const p1Reconnect = p1Sess?.reconnect_token ?? randomHexToken(24);
     const p2Reconnect = p2Sess?.reconnect_token ?? randomHexToken(24);
-
-    this.ctx.storage.sql.exec(
-      `INSERT INTO rooms (
-        room_id, room_code, host_session_id, is_private, rule_profile_id,
-        called_shots_enabled, status, created_at_ms, expires_at_ms
-      ) VALUES (?, ?, ?, 0, ?, ?, 'waiting', ?, ?)`,
-      roomId,
-      roomCode,
-      p1SessionId,
-      tournament.ruleProfileId,
-      tournament.calledShotsEnabled ? 1 : 0,
-      now,
-      expiresAtMs,
-    );
+    const p1Name = match.player1Name ?? p1Sess?.display_name ?? 'Player 1';
+    const p2Name = match.player2Name ?? p2Sess?.display_name ?? 'Player 2';
+    const p1Avatar = sanitizeAvatarId(match.player1Avatar ?? p1Sess?.avatar_id);
+    const p2Avatar = sanitizeAvatarId(match.player2Avatar ?? p2Sess?.avatar_id);
 
     const tourneyContext: OnlineRoomTournamentContext = {
       tournamentId: tournament.tournamentId,
@@ -2403,6 +2929,47 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
       roundLabel: match.roundLabel,
       readyDeadlineMs: match.readyDeadlineMs,
     };
+    const tourneyAllowSpectators = !tournament.isPrivate;
+    const tourneyMetaJson = JSON.stringify({
+      players: [
+        {
+          playerId: p1Id,
+          displayName: p1Name,
+          avatarId: p1Avatar,
+          role: 'player1',
+          elo: p1Profile?.elo,
+          rankTier: p1Profile?.rankTier,
+        },
+        {
+          playerId: p2Id,
+          displayName: p2Name,
+          avatarId: p2Avatar,
+          role: 'player2',
+          elo: p2Profile?.elo,
+          rankTier: p2Profile?.rankTier,
+        },
+      ] satisfies SpectatableMatchPlayer[],
+      tournament: tourneyContext,
+    });
+
+    this.ctx.storage.sql.exec(
+      `INSERT INTO rooms (
+        room_id, room_code, host_session_id, is_private, match_type, rule_profile_id,
+        called_shots_enabled, status, allow_spectators, allow_spectator_chat,
+        spectator_count, max_spectators, meta_json, created_at_ms, expires_at_ms
+      ) VALUES (?, ?, ?, ?, 'tournament', ?, ?, 'waiting', ?, 1, 0, ?, ?, ?, ?)`,
+      roomId,
+      roomCode,
+      p1SessionId,
+      tournament.isPrivate ? 1 : 0,
+      tournament.ruleProfileId,
+      tournament.calledShotsEnabled ? 1 : 0,
+      tourneyAllowSpectators ? 1 : 0,
+      this.config.maxSpectatorsPerRoom,
+      tourneyMetaJson,
+      now,
+      expiresAtMs,
+    );
 
     const roomStub = this.env.POOL_ROOM.get(this.env.POOL_ROOM.idFromName(roomId));
     const roomInfo = await roomStub.initTournamentRoom({
@@ -2410,6 +2977,7 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
       roomCode,
       ruleProfileId: tournament.ruleProfileId,
       calledShotsEnabled: tournament.calledShotsEnabled,
+      allowSpectators: tourneyAllowSpectators,
       tournament: tourneyContext,
       createdAtMs: now,
       expiresAtMs,
@@ -2417,8 +2985,10 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
         sessionId: p1SessionId,
         playerId: p1Id,
         reconnectToken: p1Reconnect,
-        displayName: match.player1Name ?? p1Sess?.display_name ?? 'Player 1',
-        avatarId: sanitizeAvatarId(match.player1Avatar ?? p1Sess?.avatar_id),
+        displayName: p1Name,
+        avatarId: p1Avatar,
+        elo: p1Profile?.elo,
+        rankTier: p1Profile?.rankTier,
         equippedCosmetics: p1Cosmetics,
         latencyMs: p1Sess?.latency_ms ?? 35,
       },
@@ -2426,8 +2996,10 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
         sessionId: p2SessionId,
         playerId: p2Id,
         reconnectToken: p2Reconnect,
-        displayName: match.player2Name ?? p2Sess?.display_name ?? 'Player 2',
-        avatarId: sanitizeAvatarId(match.player2Avatar ?? p2Sess?.avatar_id),
+        displayName: p2Name,
+        avatarId: p2Avatar,
+        elo: p2Profile?.elo,
+        rankTier: p2Profile?.rankTier,
         equippedCosmetics: p2Cosmetics,
         latencyMs: p2Sess?.latency_ms ?? 35,
       },
@@ -2964,24 +3536,51 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
     const roomId = `room_${crypto.randomUUID().replace(/-/g, '').slice(0, 12)}`;
     const roomCode = this.generateUniqueCode();
 
+    const [hostCosmetics, guestCosmetics, hostProfile, guestProfile] = await Promise.all([
+      this.getEconomyService().getEquippedCosmetics(inv.senderId),
+      this.getEconomyService().getEquippedCosmetics(actorPlayerId),
+      this.getProgressionService().getPublicProfile(inv.senderId),
+      this.getProgressionService().getPublicProfile(actorPlayerId),
+    ]);
+
+    const inviteMetaJson = JSON.stringify({
+      players: [
+        {
+          playerId: inv.senderId,
+          displayName: senderSess.display_name,
+          avatarId: sanitizeAvatarId(senderSess.avatar_id),
+          role: 'player1',
+          elo: hostProfile?.elo,
+          rankTier: hostProfile?.rankTier,
+        },
+        {
+          playerId: actorPlayerId,
+          displayName: recipientSess.display_name,
+          avatarId: sanitizeAvatarId(recipientSess.avatar_id),
+          role: 'player2',
+          elo: guestProfile?.elo,
+          rankTier: guestProfile?.rankTier,
+        },
+      ] satisfies SpectatableMatchPlayer[],
+      tournament: null,
+    });
+
     this.ctx.storage.sql.exec(
       `INSERT INTO rooms (
-        room_id, room_code, host_session_id, is_private, rule_profile_id,
-        called_shots_enabled, status, created_at_ms, expires_at_ms
-      ) VALUES (?, ?, ?, 1, ?, ?, 'waiting', ?, ?)`,
+        room_id, room_code, host_session_id, is_private, match_type, rule_profile_id,
+        called_shots_enabled, status, allow_spectators, allow_spectator_chat,
+        spectator_count, max_spectators, meta_json, created_at_ms, expires_at_ms
+      ) VALUES (?, ?, ?, 1, 'private', ?, ?, 'waiting', 0, 1, 0, ?, ?, ?, ?)`,
       roomId,
       roomCode,
       senderSess.session_id,
       inv.ruleProfileId,
       inv.calledShotsEnabled ? 1 : 0,
+      this.config.maxSpectatorsPerRoom,
+      inviteMetaJson,
       now,
       expiresAtMs,
     );
-
-    const [hostCosmetics, guestCosmetics] = await Promise.all([
-      this.getEconomyService().getEquippedCosmetics(inv.senderId),
-      this.getEconomyService().getEquippedCosmetics(actorPlayerId),
-    ]);
 
     const roomStub = this.env.POOL_ROOM.get(this.env.POOL_ROOM.idFromName(roomId));
     await roomStub.initPrivateRoom({
@@ -2997,6 +3596,8 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
         reconnectToken: senderSess.reconnect_token,
         displayName: senderSess.display_name,
         avatarId: sanitizeAvatarId(senderSess.avatar_id),
+        elo: hostProfile?.elo,
+        rankTier: hostProfile?.rankTier,
         equippedCosmetics: hostCosmetics,
         latencyMs: senderSess.latency_ms,
       },
@@ -3008,6 +3609,8 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
       reconnectToken: recipientSess.reconnect_token,
       displayName: recipientSess.display_name,
       avatarId: sanitizeAvatarId(recipientSess.avatar_id),
+      elo: guestProfile?.elo,
+      rankTier: guestProfile?.rankTier,
       equippedCosmetics: guestCosmetics,
       latencyMs: recipientSess.latency_ms,
     });
@@ -3591,17 +4194,51 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
         const calledShotsEnabled = entryA.called_shots_enabled === 1;
         const expiresAtMs = now + this.config.roomTtlMs;
 
+        const p1Id = sessA.player_id ?? sessA.session_id;
+        const p2Id = sessB.player_id ?? sessB.session_id;
+        const [p1Cosmetics, p2Cosmetics, p1Profile, p2Profile] = await Promise.all([
+          this.getEconomyService().getEquippedCosmetics(p1Id),
+          this.getEconomyService().getEquippedCosmetics(p2Id),
+          this.getProgressionService().getPublicProfile(p1Id),
+          this.getProgressionService().getPublicProfile(p2Id),
+        ]);
+
+        const matchedMetaJson = JSON.stringify({
+          players: [
+            {
+              playerId: p1Id,
+              displayName: sessA.display_name,
+              avatarId: sanitizeAvatarId(sessA.avatar_id),
+              role: 'player1',
+              elo: p1Profile?.elo,
+              rankTier: p1Profile?.rankTier,
+            },
+            {
+              playerId: p2Id,
+              displayName: sessB.display_name,
+              avatarId: sanitizeAvatarId(sessB.avatar_id),
+              role: 'player2',
+              elo: p2Profile?.elo,
+              rankTier: p2Profile?.rankTier,
+            },
+          ] satisfies SpectatableMatchPlayer[],
+          tournament: null,
+        });
+
         this.ctx.storage.sql.exec(
           `INSERT INTO rooms (
             room_id, room_code, host_session_id, is_private, match_type, rule_profile_id,
-            called_shots_enabled, status, created_at_ms, expires_at_ms
-          ) VALUES (?, ?, ?, 0, ?, ?, ?, 'playing', ?, ?)`,
+            called_shots_enabled, status, allow_spectators, allow_spectator_chat,
+            spectator_count, max_spectators, meta_json, created_at_ms, expires_at_ms
+          ) VALUES (?, ?, ?, 0, ?, ?, ?, 'playing', 1, 1, 0, ?, ?, ?, ?)`,
           roomId,
           roomCode,
           sessA.session_id,
           matchType,
           ruleProfileId,
           calledShotsEnabled ? 1 : 0,
+          this.config.maxSpectatorsPerRoom,
+          matchedMetaJson,
           now,
           expiresAtMs,
         );
@@ -3623,13 +4260,6 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
           matchedAtMs: now,
         });
 
-        const p1Id = sessA.player_id ?? sessA.session_id;
-        const p2Id = sessB.player_id ?? sessB.session_id;
-        const [p1Cosmetics, p2Cosmetics] = await Promise.all([
-          this.getEconomyService().getEquippedCosmetics(p1Id),
-          this.getEconomyService().getEquippedCosmetics(p2Id),
-        ]);
-
         const roomStub = this.env.POOL_ROOM.get(this.env.POOL_ROOM.idFromName(roomId));
         const started = await roomStub.initMatchedRoom({
           roomId,
@@ -3645,6 +4275,8 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
             reconnectToken: sessA.reconnect_token,
             displayName: sessA.display_name,
             avatarId: sanitizeAvatarId(sessA.avatar_id),
+            elo: p1Profile?.elo,
+            rankTier: p1Profile?.rankTier,
             equippedCosmetics: p1Cosmetics,
             latencyMs: sessA.latency_ms,
           },
@@ -3654,6 +4286,8 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
             reconnectToken: sessB.reconnect_token,
             displayName: sessB.display_name,
             avatarId: sanitizeAvatarId(sessB.avatar_id),
+            elo: p2Profile?.elo,
+            rankTier: p2Profile?.rankTier,
             equippedCosmetics: p2Cosmetics,
             latencyMs: sessB.latency_ms,
           },

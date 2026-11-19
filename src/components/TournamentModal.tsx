@@ -6,6 +6,7 @@ import {
   Coins,
   Copy,
   Crown,
+  Eye,
   KeyRound,
   Play,
   PlusCircle,
@@ -121,19 +122,30 @@ function BracketMatchCard({
   viewerPlayerId,
   nowMs,
   busyMatchId,
+  isPrivateTournament,
   onEnterMatch,
+  onSpectateMatch,
 }: {
   match: TournamentMatch;
   viewerPlayerId: string | null;
   nowMs: number;
   busyMatchId: string | null;
+  isPrivateTournament?: boolean;
   onEnterMatch: (matchId: string) => void;
+  onSpectateMatch?: (roomId: string) => void;
 }) {
   const isParticipant = Boolean(
     viewerPlayerId && (match.player1Id === viewerPlayerId || match.player2Id === viewerPlayerId),
   );
   const canJoin =
     isParticipant && (match.status === 'ready' || match.status === 'in_progress');
+  const canWatchLive = Boolean(
+    !isParticipant &&
+      !isPrivateTournament &&
+      match.status === 'in_progress' &&
+      match.roomId &&
+      onSpectateMatch,
+  );
   const p1Av = match.player1Avatar ? getAvatarVisualMeta(match.player1Avatar) : null;
   const p2Av = match.player2Avatar ? getAvatarVisualMeta(match.player2Avatar) : null;
   const p1Won = Boolean(match.winnerId && match.winnerId === match.player1Id);
@@ -237,6 +249,17 @@ function BracketMatchCard({
         >
           <Swords className="h-3.5 w-3.5 shrink-0" />
           {busyMatchId === match.bracketMatchId ? 'Connecting...' : 'Enter Match'}
+        </button>
+      )}
+      {canWatchLive && match.roomId && (
+        <button
+          type="button"
+          data-testid={`watch-bracket-match-${match.bracketMatchId}`}
+          onClick={() => onSpectateMatch?.(match.roomId!)}
+          className="mt-2 inline-flex w-full items-center justify-center gap-1.5 rounded-lg border border-emerald-400/45 bg-emerald-500/15 px-3 py-1.5 text-[11px] font-extrabold uppercase tracking-wider text-emerald-200 hover:bg-emerald-500/25 cursor-pointer whitespace-nowrap"
+        >
+          <Eye className="h-3.5 w-3.5 shrink-0" />
+          Watch Live
         </button>
       )}
     </div>
@@ -1185,6 +1208,60 @@ export function TournamentModal() {
                       </div>
                     )}
 
+                  {/* Ongoing Live Matches Broadcast Strip */}
+                  {!detailTournament.isPrivate && (() => {
+                    const liveMatches = detail.matches.filter(
+                      (m) =>
+                        m.status === 'in_progress' &&
+                        m.roomId &&
+                        (!selfPlayerId ||
+                          (m.player1Id !== selfPlayerId && m.player2Id !== selfPlayerId)),
+                    );
+                    if (liveMatches.length === 0) return null;
+                    return (
+                      <div className="rounded-xl border border-emerald-400/35 bg-emerald-500/8 p-3 space-y-2">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="inline-flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wider text-emerald-300">
+                            <Eye className="h-3.5 w-3.5" />
+                            Ongoing Live Matches ({liveMatches.length})
+                          </span>
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                          {liveMatches.map((m) => (
+                            <div
+                              key={m.bracketMatchId}
+                              className="flex items-center justify-between gap-3 rounded-lg border border-white/10 bg-[#101924] px-3 py-1.5 text-xs"
+                            >
+                              <div className="min-w-0">
+                                <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+                                  {m.roundLabel}
+                                </div>
+                                <div className="font-bold text-white truncate max-w-[200px]">
+                                  {m.player1Name ?? 'Player 1'} vs {m.player2Name ?? 'Player 2'}
+                                </div>
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  soundEngine.playUiClick();
+                                  void multiplayerManager.joinSpectate({
+                                    roomId: m.roomId!,
+                                    returnTarget: 'tournament',
+                                    tournamentId: detailTournament.tournamentId,
+                                  });
+                                }}
+                                className="inline-flex items-center gap-1 rounded-lg bg-emerald-500 px-2.5 py-1 text-[11px] font-extrabold text-slate-950 hover:bg-emerald-400 cursor-pointer whitespace-nowrap shrink-0"
+                              >
+                                <Eye className="h-3 w-3" />
+                                Watch Live
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    );
+                  })()}
+
                   {/* Single-Elimination Bracket Tree */}
                   {detail.matches.length === 0 ? (
                     <div className="rounded-xl border border-white/10 bg-black/25 py-8 px-4 text-center text-xs text-slate-400">
@@ -1219,8 +1296,16 @@ export function TournamentModal() {
                                     viewerPlayerId={selfPlayerId}
                                     nowMs={nowMs}
                                     busyMatchId={busyMatchId}
+                                    isPrivateTournament={detailTournament.isPrivate}
                                     onEnterMatch={(mid) =>
                                       void handleEnterMatch(detailTournament.tournamentId, mid)
+                                    }
+                                    onSpectateMatch={(rid) =>
+                                      void multiplayerManager.joinSpectate({
+                                        roomId: rid,
+                                        returnTarget: 'tournament',
+                                        tournamentId: detailTournament.tournamentId,
+                                      })
                                     }
                                   />
                                 ))}
@@ -1238,8 +1323,16 @@ export function TournamentModal() {
                               viewerPlayerId={selfPlayerId}
                               nowMs={nowMs}
                               busyMatchId={busyMatchId}
+                              isPrivateTournament={detailTournament.isPrivate}
                               onEnterMatch={(mid) =>
                                 void handleEnterMatch(detailTournament.tournamentId, mid)
+                              }
+                              onSpectateMatch={(rid) =>
+                                void multiplayerManager.joinSpectate({
+                                  roomId: rid,
+                                  returnTarget: 'tournament',
+                                  tournamentId: detailTournament.tournamentId,
+                                })
                               }
                             />
                           </div>

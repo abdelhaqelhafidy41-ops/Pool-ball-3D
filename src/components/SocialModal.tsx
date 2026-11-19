@@ -2,6 +2,7 @@ import {
   Ban,
   Check,
   Clock,
+  Eye,
   Flag,
   MessageSquare,
   Search,
@@ -35,9 +36,14 @@ export function presenceLabel(status: PresenceStatus): string {
       return 'Online';
     case 'in_match':
       return 'In Match';
+    case 'in_tournament':
+      return 'In Tournament';
+    case 'spectating':
+      return 'Spectating';
     case 'busy':
       return 'Busy';
     case 'offline':
+    default:
       return 'Offline';
   }
 }
@@ -48,9 +54,14 @@ export function presenceDotClass(status: PresenceStatus): string {
       return 'bg-emerald-400';
     case 'in_match':
       return 'bg-sky-400';
+    case 'in_tournament':
+      return 'bg-amber-300';
+    case 'spectating':
+      return 'bg-violet-400';
     case 'busy':
       return 'bg-amber-400';
     case 'offline':
+    default:
       return 'bg-slate-500';
   }
 }
@@ -633,6 +644,39 @@ export function SocialModal() {
                         </div>
 
                         <div className="flex flex-wrap items-center gap-1.5">
+                          {f.presence === 'in_match' && (
+                            <button
+                              type="button"
+                              disabled={busyActionId === `watch:${f.playerId}`}
+                              onClick={() => {
+                                soundEngine.playUiClick();
+                                setBusyActionId(`watch:${f.playerId}`);
+                                void multiplayerManager
+                                  .joinSpectate({
+                                    targetPlayerId: f.playerId,
+                                    returnTarget: 'menu',
+                                  })
+                                  .then((res) => {
+                                    if (res.ok) {
+                                      closeSocialModal();
+                                    } else {
+                                      setSocialNotice({
+                                        type: 'err',
+                                        text:
+                                          res.error ??
+                                          'Friend match cannot be spectated (private or ended).',
+                                      });
+                                    }
+                                  })
+                                  .finally(() => setBusyActionId(null));
+                              }}
+                              className="inline-flex items-center gap-1 rounded-lg border border-amber-400/45 bg-amber-500/15 px-2.5 py-1 text-[11px] font-extrabold text-amber-200 hover:bg-amber-500/25 disabled:opacity-45 cursor-pointer whitespace-nowrap"
+                            >
+                              <Eye className="h-3 w-3 text-amber-400" />
+                              Watch
+                            </button>
+                          )}
+
                           <button
                             type="button"
                             disabled={alreadyInvited || busyActionId === `inv:${f.playerId}`}

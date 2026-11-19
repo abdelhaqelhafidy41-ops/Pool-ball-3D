@@ -99,6 +99,7 @@ function isRoomScopedMessage(msg: ClientToServerMessage): boolean {
     case 'room:cancel':
     case 'room:leave':
     case 'room:rematch':
+    case 'room:set_spectators':
     case 'game:aim':
     case 'game:spin':
     case 'game:called_shot':
@@ -137,6 +138,7 @@ export class NetworkManager {
 
   private sessionId: string | null = null;
   private reconnectToken: string | null = null;
+  private roomSessionOverride: { sessionId: string; reconnectToken: string } | null = null;
   private activeRoomId: string | null = null;
   private profileProvider: () => { displayName: string; avatarId: OnlineAvatarId };
   private lastLatencyMs = 35;
@@ -200,11 +202,18 @@ export class NetworkManager {
     }
   }
 
+  public setRoomSessionOverride(creds: { sessionId: string; reconnectToken: string } | null): void {
+    this.roomSessionOverride = creds ? { ...creds } : null;
+  }
+
   public bindRoomSocket(roomId: string | null): void {
     const normalized = roomId?.trim() || null;
     if (this.activeRoomId === normalized) return;
 
     this.activeRoomId = normalized;
+    if (!normalized) {
+      this.roomSessionOverride = null;
+    }
     this.closeRoomSocketOnly();
 
     if (!this.intentionallyClosed) {
@@ -237,6 +246,7 @@ export class NetworkManager {
   public disconnect(): void {
     this.intentionallyClosed = true;
     this.activeRoomId = null;
+    this.roomSessionOverride = null;
     this.lobbyPendingMessages = [];
     this.roomPendingMessages = [];
     this.closeLobbySocketOnly();
@@ -344,7 +354,7 @@ export class NetworkManager {
     socket.onopen = () => {
       if (this.lobbyWs !== socket) return;
       this.lobbyReconnectAttempts = 0;
-      this.sendIdentityHandshake(socket);
+      this.sendIdentityHandshake(socket, false);
     };
 
     socket.onmessage = (evt) => {
@@ -459,7 +469,7 @@ export class NetworkManager {
     socket.onopen = () => {
       if (this.roomWs !== socket) return;
       this.roomReconnectAttempts = 0;
-      this.sendIdentityHandshake(socket);
+      this.sendIdentityHandshake(socket, true);
     };
 
     socket.onmessage = (evt) => {
@@ -519,14 +529,21 @@ export class NetworkManager {
     };
   }
 
-  private sendIdentityHandshake(socket: WebSocket): void {
+  private sendIdentityHandshake(socket: WebSocket, isRoomSocket: boolean): void {
     const profile = this.profileProvider();
     const storedIdentity = getStoredPlayerIdentity();
-    if (this.sessionId && this.reconnectToken) {
+    const roomCreds =
+      isRoomSocket && this.roomSessionOverride
+        ? this.roomSessionOverride
+        : this.sessionId && this.reconnectToken
+          ? { sessionId: this.sessionId, reconnectToken: this.reconnectToken }
+          : null;
+
+    if (roomCreds) {
       this.sendRaw(socket, {
         type: 'session:resume',
-        sessionId: this.sessionId,
-        reconnectToken: this.reconnectToken,
+        sessionId: roomCreds.sessionId,
+        reconnectToken: roomCreds.reconnectToken,
         displayName: profile.displayName,
         avatarId: profile.avatarId,
         playerId: storedIdentity?.playerId,

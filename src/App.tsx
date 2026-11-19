@@ -26,6 +26,7 @@ import { useGameStore } from './store/useGameStore';
 
 export default function App() {
   const actionsRef = useRef<PoolSceneActions | null>(null);
+  const spectateLinkHandledRef = useRef(false);
   const setIsFullscreen = useGameStore((s) => s.setIsFullscreen);
   const setScreen = useGameStore((s) => s.setScreen);
   const ownPlayerId = useGameStore((s) => s.ownProfile?.playerId ?? null);
@@ -59,6 +60,23 @@ export default function App() {
     void socialClient.fetchOverview();
     void economyClient.refreshWallet();
     void battlePassClient.refreshOverview({ skipTransitionToasts: true });
+
+    if (!spectateLinkHandledRef.current && typeof window !== 'undefined') {
+      spectateLinkHandledRef.current = true;
+      const url = new URL(window.location.href);
+      const spectateCode = url.searchParams.get('spectate')?.trim().toUpperCase();
+      const shareToken = url.searchParams.get('token')?.trim();
+      if (spectateCode) {
+        url.searchParams.delete('spectate');
+        url.searchParams.delete('token');
+        window.history.replaceState({}, '', url.pathname + url.search + url.hash);
+        void multiplayerManager.joinSpectate({
+          roomCode: spectateCode,
+          shareToken: shareToken || undefined,
+          returnTarget: 'lobby',
+        });
+      }
+    }
   }, [ownPlayerId]);
 
   const handleStartMatch = useCallback(() => {

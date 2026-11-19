@@ -26,6 +26,9 @@ export function MiniatureCueController({ onShoot }: MiniatureCueControllerProps)
   const cueAngle = useGameStore((s) => s.cueAngle);
   const setDragState = useGameStore((s) => s.setDragState);
   const canAct = useGameStore(canLocalPlayerAct);
+  const onlineSpectating = useGameStore((s) => s.onlineSpectating);
+
+  if (onlineSpectating) return null;
 
   const disabled =
     ballsMoving ||

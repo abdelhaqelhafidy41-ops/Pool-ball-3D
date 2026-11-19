@@ -13,6 +13,7 @@ import type {
   OnlineRoomTournamentContext,
   ServerToClientMessage,
 } from '../../src/multiplayer/shared/protocol';
+import { getRankForElo, type RankTierDefinition } from '../../src/multiplayer/shared/ranked';
 import {
   DEFAULT_EQUIPPED_COSMETICS,
   sanitizeEquippedCosmetics,
@@ -22,6 +23,7 @@ import {
   clampLatency,
   constantTimeEqual,
   loadWorkerConfig,
+  randomHexToken,
   sanitizeAvatarId,
   sanitizeDisplayName,
   type Env,
@@ -49,10 +51,25 @@ import { checkChatAntiSpam } from './SocialService';
 interface RoomSocketAttachment {
   sessionId: string | null;
   role: PlayerId | null;
+  isSpectator?: boolean;
 }
 
 interface StoredPlayerRecord extends OnlinePlayerProfile {
   reconnectToken: string;
+}
+
+interface StoredSpectatorRecord {
+  sessionId: string;
+  playerId: string;
+  reconnectToken: string;
+  displayName: string;
+  avatarId: OnlineAvatarId;
+  connected: boolean;
+  disconnectedAtMs: number | null;
+  reconnectDeadlineMs: number | null;
+  reconnectCount: number;
+  joinedAtMs: number;
+  lastActiveAtMs: number;
 }
 
 interface StoredRoomState {
@@ -64,9 +81,14 @@ interface StoredRoomState {
   ruleProfileId: RuleProfileId;
   calledShotsEnabled: boolean;
   status: OnlineRoomStatus;
+  allowSpectators: boolean;
+  allowSpectatorChat: boolean;
+  maxSpectators: number;
+  spectatorShareToken: string;
   createdAtMs: number;
   expiresAtMs: number;
   players: StoredPlayerRecord[];
+  spectators: StoredSpectatorRecord[];
   tournament?: OnlineRoomTournamentContext | null;
 }
 
@@ -76,6 +98,8 @@ export interface InitRoomPlayerInput {
   reconnectToken: string;
   displayName: string;
   avatarId: OnlineAvatarId;
+  elo?: number;
+  rankTier?: RankTierDefinition;
   equippedCosmetics?: EquippedCosmetics;
   latencyMs: number;
 }
@@ -105,9 +129,14 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
         room_code TEXT NOT NULL,
         host_session_id TEXT NOT NULL,
         is_private INTEGER NOT NULL,
+        match_type TEXT,
         rule_profile_id TEXT NOT NULL,
         called_shots_enabled INTEGER NOT NULL,
         status TEXT NOT NULL,
+        allow_spectators INTEGER NOT NULL DEFAULT 1,
+        allow_spectator_chat INTEGER NOT NULL DEFAULT 1,
+        max_spectators INTEGER NOT NULL DEFAULT 16,
+        spectator_share_token TEXT,
         created_at_ms INTEGER NOT NULL,
         expires_at_ms INTEGER NOT NULL,
         tournament_json TEXT
@@ -118,6 +147,8 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
         reconnect_token TEXT NOT NULL,
         display_name TEXT NOT NULL,
         avatar_id TEXT NOT NULL,
+        elo INTEGER,
+        rank_tier_json TEXT,
         cosmetics_json TEXT,
         role TEXT NOT NULL,
         connected INTEGER NOT NULL,
@@ -126,6 +157,19 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
         disconnected_at_ms INTEGER,
         reconnect_deadline_ms INTEGER,
         rematch_requested INTEGER NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS room_spectators (
+        session_id TEXT PRIMARY KEY,
+        player_id TEXT NOT NULL,
+        reconnect_token TEXT NOT NULL,
+        display_name TEXT NOT NULL,
+        avatar_id TEXT NOT NULL,
+        connected INTEGER NOT NULL,
+        disconnected_at_ms INTEGER,
+        reconnect_deadline_ms INTEGER,
+        reconnect_count INTEGER NOT NULL DEFAULT 0,
+        joined_at_ms INTEGER NOT NULL,
+        last_active_at_ms INTEGER NOT NULL
       );
       CREATE TABLE IF NOT EXISTS match_state (
         id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -142,29 +186,30 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
         sender_name TEXT NOT NULL,
         sender_avatar TEXT NOT NULL,
         sender_role TEXT NOT NULL,
+        channel TEXT NOT NULL DEFAULT 'match',
         body TEXT NOT NULL,
         created_at_ms INTEGER NOT NULL
       );
     `);
-    try {
-      sql.exec('ALTER TABLE room_meta ADD COLUMN tournament_json TEXT');
-    } catch {
-      // Already present
-    }
-    try {
-      sql.exec('ALTER TABLE room_meta ADD COLUMN match_type TEXT');
-    } catch {
-      // Already present
-    }
-    try {
-      sql.exec('ALTER TABLE room_players ADD COLUMN player_id TEXT');
-    } catch {
-      // Already present
-    }
-    try {
-      sql.exec('ALTER TABLE room_players ADD COLUMN cosmetics_json TEXT');
-    } catch {
-      // Already present
+    const alterStmts = [
+      'ALTER TABLE room_meta ADD COLUMN tournament_json TEXT',
+      'ALTER TABLE room_meta ADD COLUMN match_type TEXT',
+      'ALTER TABLE room_meta ADD COLUMN allow_spectators INTEGER NOT NULL DEFAULT 1',
+      'ALTER TABLE room_meta ADD COLUMN allow_spectator_chat INTEGER NOT NULL DEFAULT 1',
+      'ALTER TABLE room_meta ADD COLUMN max_spectators INTEGER NOT NULL DEFAULT 16',
+      'ALTER TABLE room_meta ADD COLUMN spectator_share_token TEXT',
+      'ALTER TABLE room_players ADD COLUMN player_id TEXT',
+      'ALTER TABLE room_players ADD COLUMN cosmetics_json TEXT',
+      'ALTER TABLE room_players ADD COLUMN elo INTEGER',
+      'ALTER TABLE room_players ADD COLUMN rank_tier_json TEXT',
+      "ALTER TABLE room_chat_messages ADD COLUMN channel TEXT NOT NULL DEFAULT 'match'",
+    ];
+    for (const stmt of alterStmts) {
+      try {
+        sql.exec(stmt);
+      } catch {
+        // Already present
+      }
     }
     this.schemaReady = true;
   }
@@ -208,6 +253,12 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
                     ? 'private'
                     : 'quick';
 
+      const spectatorRows = sql
+        .exec<Record<string, SqlStorageValue>>(
+          'SELECT * FROM room_spectators ORDER BY joined_at_ms ASC',
+        )
+        .toArray();
+
       this.room = {
         roomId: String(m.room_id),
         roomCode: String(m.room_code),
@@ -217,6 +268,22 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
         ruleProfileId: m.rule_profile_id === 'wpa' ? 'wpa' : 'casual',
         calledShotsEnabled: Number(m.called_shots_enabled) === 1,
         status: String(m.status) as OnlineRoomStatus,
+        allowSpectators:
+          m.allow_spectators === undefined || m.allow_spectators === null
+            ? Number(m.is_private) !== 1
+            : Number(m.allow_spectators) === 1,
+        allowSpectatorChat:
+          m.allow_spectator_chat === undefined || m.allow_spectator_chat === null
+            ? true
+            : Number(m.allow_spectator_chat) === 1,
+        maxSpectators:
+          typeof m.max_spectators === 'number' && m.max_spectators > 0
+            ? Number(m.max_spectators)
+            : this.config.maxSpectatorsPerRoom,
+        spectatorShareToken:
+          typeof m.spectator_share_token === 'string' && m.spectator_share_token.length > 0
+            ? m.spectator_share_token
+            : randomHexToken(12),
         createdAtMs: Number(m.created_at_ms),
         expiresAtMs: Number(m.expires_at_ms),
         tournament: parsedTournament,
@@ -229,12 +296,23 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
               equipped = { ...DEFAULT_EQUIPPED_COSMETICS };
             }
           }
+          let rankTier: RankTierDefinition | undefined;
+          if (typeof p.rank_tier_json === 'string' && p.rank_tier_json.length > 0) {
+            try {
+              rankTier = JSON.parse(p.rank_tier_json) as RankTierDefinition;
+            } catch {
+              rankTier = undefined;
+            }
+          }
+          const elo = typeof p.elo === 'number' ? Number(p.elo) : undefined;
           return {
             sessionId: String(p.session_id),
             playerId: p.player_id ? String(p.player_id) : String(p.session_id),
             reconnectToken: String(p.reconnect_token),
             displayName: String(p.display_name),
             avatarId: sanitizeAvatarId(p.avatar_id),
+            elo,
+            rankTier: rankTier ?? (elo !== undefined ? getRankForElo(elo) : undefined),
             equippedCosmetics: equipped,
             role: p.role === 'player2' ? 'player2' : 'player1',
             connected: Number(p.connected) === 1,
@@ -251,6 +329,25 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
             rematchRequested: Number(p.rematch_requested) === 1,
           };
         }),
+        spectators: spectatorRows.map((s) => ({
+          sessionId: String(s.session_id),
+          playerId: String(s.player_id),
+          reconnectToken: String(s.reconnect_token),
+          displayName: String(s.display_name),
+          avatarId: sanitizeAvatarId(s.avatar_id),
+          connected: Number(s.connected) === 1,
+          disconnectedAtMs:
+            s.disconnected_at_ms === null || s.disconnected_at_ms === undefined
+              ? null
+              : Number(s.disconnected_at_ms),
+          reconnectDeadlineMs:
+            s.reconnect_deadline_ms === null || s.reconnect_deadline_ms === undefined
+              ? null
+              : Number(s.reconnect_deadline_ms),
+          reconnectCount: Number(s.reconnect_count ?? 0),
+          joinedAtMs: Number(s.joined_at_ms),
+          lastActiveAtMs: Number(s.last_active_at_ms),
+        })),
       };
 
       const matchRows = sql
@@ -286,8 +383,9 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
     sql.exec(
       `INSERT OR REPLACE INTO room_meta (
         id, room_id, room_code, host_session_id, is_private, match_type,
-        rule_profile_id, called_shots_enabled, status, created_at_ms, expires_at_ms, tournament_json
-      ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        rule_profile_id, called_shots_enabled, status, allow_spectators, allow_spectator_chat,
+        max_spectators, spectator_share_token, created_at_ms, expires_at_ms, tournament_json
+      ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       this.room.roomId,
       this.room.roomCode,
       this.room.hostSessionId,
@@ -296,6 +394,10 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
       this.room.ruleProfileId,
       this.room.calledShotsEnabled ? 1 : 0,
       this.room.status,
+      this.room.allowSpectators ? 1 : 0,
+      this.room.allowSpectatorChat ? 1 : 0,
+      this.room.maxSpectators,
+      this.room.spectatorShareToken,
       this.room.createdAtMs,
       this.room.expiresAtMs,
       this.room.tournament ? JSON.stringify(this.room.tournament) : null,
@@ -305,14 +407,17 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
     for (const p of this.room.players) {
       sql.exec(
         `INSERT INTO room_players (
-          session_id, player_id, reconnect_token, display_name, avatar_id, cosmetics_json, role,
-          connected, ready, latency_ms, disconnected_at_ms, reconnect_deadline_ms, rematch_requested
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          session_id, player_id, reconnect_token, display_name, avatar_id, elo, rank_tier_json,
+          cosmetics_json, role, connected, ready, latency_ms, disconnected_at_ms,
+          reconnect_deadline_ms, rematch_requested
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         p.sessionId,
         p.playerId ?? p.sessionId,
         p.reconnectToken,
         p.displayName,
         p.avatarId,
+        p.elo ?? null,
+        p.rankTier ? JSON.stringify(p.rankTier) : null,
         JSON.stringify(p.equippedCosmetics ?? DEFAULT_EQUIPPED_COSMETICS),
         p.role,
         p.connected ? 1 : 0,
@@ -321,6 +426,28 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
         p.disconnectedAtMs,
         p.reconnectDeadlineMs,
         p.rematchRequested ? 1 : 0,
+      );
+    }
+
+    sql.exec('DELETE FROM room_spectators');
+    for (const s of this.room.spectators) {
+      sql.exec(
+        `INSERT INTO room_spectators (
+          session_id, player_id, reconnect_token, display_name, avatar_id,
+          connected, disconnected_at_ms, reconnect_deadline_ms, reconnect_count,
+          joined_at_ms, last_active_at_ms
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        s.sessionId,
+        s.playerId,
+        s.reconnectToken,
+        s.displayName,
+        s.avatarId,
+        s.connected ? 1 : 0,
+        s.disconnectedAtMs,
+        s.reconnectDeadlineMs,
+        s.reconnectCount,
+        s.joinedAtMs,
+        s.lastActiveAtMs,
       );
     }
   }
@@ -365,6 +492,8 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
     ruleProfileId: RuleProfileId;
     calledShotsEnabled: boolean;
     host: InitRoomPlayerInput;
+    allowSpectators?: boolean;
+    allowSpectatorChat?: boolean;
     createdAtMs: number;
     expiresAtMs: number;
   }): Promise<OnlineRoomInfo> {
@@ -374,6 +503,7 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
     this.ctx.storage.sql.exec('DELETE FROM match_state');
     this.ctx.storage.sql.exec('DELETE FROM used_shot_tokens');
     this.ctx.storage.sql.exec('DELETE FROM room_chat_messages');
+    this.ctx.storage.sql.exec('DELETE FROM room_spectators');
 
     this.room = {
       roomId: params.roomId,
@@ -384,6 +514,10 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
       ruleProfileId: params.ruleProfileId,
       calledShotsEnabled: params.calledShotsEnabled,
       status: 'waiting',
+      allowSpectators: Boolean(params.allowSpectators ?? false),
+      allowSpectatorChat: params.allowSpectatorChat !== false,
+      maxSpectators: this.config.maxSpectatorsPerRoom,
+      spectatorShareToken: randomHexToken(12),
       createdAtMs: params.createdAtMs,
       expiresAtMs: params.expiresAtMs,
       players: [
@@ -393,6 +527,10 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
           reconnectToken: params.host.reconnectToken,
           displayName: sanitizeDisplayName(params.host.displayName),
           avatarId: sanitizeAvatarId(params.host.avatarId),
+          elo: params.host.elo,
+          rankTier:
+            params.host.rankTier ??
+            (params.host.elo !== undefined ? getRankForElo(params.host.elo) : undefined),
           equippedCosmetics: sanitizeEquippedCosmetics(params.host.equippedCosmetics),
           role: 'player1',
           connected: true,
@@ -403,11 +541,12 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
           rematchRequested: false,
         },
       ],
+      spectators: [],
     };
 
     this.persistRoomState();
     await this.scheduleNextAlarm();
-    return this.toRoomInfo(this.room);
+    return this.toRoomInfo(this.room, true);
   }
 
   public async initMatchedRoom(params: {
@@ -424,6 +563,7 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
     await this.ensureHydrated();
     this.ctx.storage.sql.exec('DELETE FROM used_shot_tokens');
     this.ctx.storage.sql.exec('DELETE FROM room_chat_messages');
+    this.ctx.storage.sql.exec('DELETE FROM room_spectators');
 
     this.room = {
       roomId: params.roomId,
@@ -434,6 +574,10 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
       ruleProfileId: params.ruleProfileId,
       calledShotsEnabled: params.calledShotsEnabled,
       status: 'ready',
+      allowSpectators: true,
+      allowSpectatorChat: true,
+      maxSpectators: this.config.maxSpectatorsPerRoom,
+      spectatorShareToken: randomHexToken(12),
       createdAtMs: params.createdAtMs,
       expiresAtMs: params.expiresAtMs,
       players: [
@@ -443,6 +587,10 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
           reconnectToken: params.player1.reconnectToken,
           displayName: sanitizeDisplayName(params.player1.displayName),
           avatarId: sanitizeAvatarId(params.player1.avatarId),
+          elo: params.player1.elo,
+          rankTier:
+            params.player1.rankTier ??
+            (params.player1.elo !== undefined ? getRankForElo(params.player1.elo) : undefined),
           equippedCosmetics: sanitizeEquippedCosmetics(params.player1.equippedCosmetics),
           role: 'player1',
           connected: true,
@@ -458,6 +606,10 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
           reconnectToken: params.player2.reconnectToken,
           displayName: sanitizeDisplayName(params.player2.displayName),
           avatarId: sanitizeAvatarId(params.player2.avatarId),
+          elo: params.player2.elo,
+          rankTier:
+            params.player2.rankTier ??
+            (params.player2.elo !== undefined ? getRankForElo(params.player2.elo) : undefined),
           equippedCosmetics: sanitizeEquippedCosmetics(params.player2.equippedCosmetics),
           role: 'player2',
           connected: true,
@@ -468,6 +620,7 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
           rematchRequested: false,
         },
       ],
+      spectators: [],
     };
 
     const started = await this.initializeAndStartMatch(this.room);
@@ -487,6 +640,7 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
     tournament: OnlineRoomTournamentContext;
     player1: InitRoomPlayerInput;
     player2: InitRoomPlayerInput;
+    allowSpectators?: boolean;
     createdAtMs: number;
     expiresAtMs: number;
   }): Promise<OnlineRoomInfo> {
@@ -496,6 +650,7 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
     this.ctx.storage.sql.exec('DELETE FROM match_state');
     this.ctx.storage.sql.exec('DELETE FROM used_shot_tokens');
     this.ctx.storage.sql.exec('DELETE FROM room_chat_messages');
+    this.ctx.storage.sql.exec('DELETE FROM room_spectators');
 
     this.room = {
       roomId: params.roomId,
@@ -506,6 +661,10 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
       ruleProfileId: params.ruleProfileId,
       calledShotsEnabled: params.calledShotsEnabled,
       status: 'waiting',
+      allowSpectators: params.allowSpectators !== false,
+      allowSpectatorChat: true,
+      maxSpectators: this.config.maxSpectatorsPerRoom,
+      spectatorShareToken: randomHexToken(12),
       createdAtMs: params.createdAtMs,
       expiresAtMs: params.expiresAtMs,
       tournament: params.tournament,
@@ -516,6 +675,10 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
           reconnectToken: params.player1.reconnectToken,
           displayName: sanitizeDisplayName(params.player1.displayName),
           avatarId: sanitizeAvatarId(params.player1.avatarId),
+          elo: params.player1.elo,
+          rankTier:
+            params.player1.rankTier ??
+            (params.player1.elo !== undefined ? getRankForElo(params.player1.elo) : undefined),
           equippedCosmetics: sanitizeEquippedCosmetics(params.player1.equippedCosmetics),
           role: 'player1',
           connected: false,
@@ -531,6 +694,10 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
           reconnectToken: params.player2.reconnectToken,
           displayName: sanitizeDisplayName(params.player2.displayName),
           avatarId: sanitizeAvatarId(params.player2.avatarId),
+          elo: params.player2.elo,
+          rankTier:
+            params.player2.rankTier ??
+            (params.player2.elo !== undefined ? getRankForElo(params.player2.elo) : undefined),
           equippedCosmetics: sanitizeEquippedCosmetics(params.player2.equippedCosmetics),
           role: 'player2',
           connected: false,
@@ -541,6 +708,7 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
           rematchRequested: false,
         },
       ],
+      spectators: [],
     };
 
     this.persistRoomState();
@@ -572,6 +740,10 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
     existing.reconnectToken = input.reconnectToken;
     existing.displayName = sanitizeDisplayName(input.displayName);
     existing.avatarId = sanitizeAvatarId(input.avatarId);
+    if (input.elo !== undefined) {
+      existing.elo = input.elo;
+      existing.rankTier = input.rankTier ?? getRankForElo(input.elo);
+    }
     if (input.equippedCosmetics) {
       existing.equippedCosmetics = sanitizeEquippedCosmetics(input.equippedCosmetics);
     }
@@ -633,6 +805,10 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
       reconnectToken: player.reconnectToken,
       displayName: sanitizeDisplayName(player.displayName),
       avatarId: sanitizeAvatarId(player.avatarId),
+      elo: player.elo,
+      rankTier:
+        player.rankTier ??
+        (player.elo !== undefined ? getRankForElo(player.elo) : undefined),
       equippedCosmetics: sanitizeEquippedCosmetics(player.equippedCosmetics),
       role: 'player2',
       connected: true,
@@ -646,9 +822,232 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
     this.updateWaitingStatus(this.room);
     this.persistRoomState();
     this.broadcastRoomUpdate(this.room);
+    await this.notifyMatchmakerRoomMeta();
     await this.scheduleNextAlarm();
 
     return { ok: true, room: this.toRoomInfo(this.room) };
+  }
+
+  public async joinAsSpectator(input: {
+    sessionId?: string;
+    playerId?: string;
+    displayName: string;
+    avatarId: OnlineAvatarId;
+    roomCode?: string;
+    shareToken?: string;
+  }): Promise<
+    | {
+        ok: true;
+        room: OnlineRoomInfo;
+        match: OnlineMatchSnapshot | null;
+        balls: OnlineBallFrame[] | null;
+        chatHistory: RoomChatMessageRecord[];
+        spectatorSessionId: string;
+        spectatorReconnectToken: string;
+      }
+    | { ok: false; code: MultiplayerErrorCode; message: string }
+  > {
+    await this.ensureHydrated();
+    if (!this.room) {
+      return { ok: false, code: 'SPECTATE_UNAVAILABLE', message: 'Match room no longer exists.' };
+    }
+
+    const now = Date.now();
+    if (
+      this.room.status === 'expired' ||
+      this.room.status === 'cancelled' ||
+      ((this.room.status === 'waiting' || this.room.status === 'ready') &&
+        now > this.room.expiresAtMs)
+    ) {
+      return { ok: false, code: 'ROOM_EXPIRED', message: 'Match room is no longer active.' };
+    }
+    if (this.room.status === 'finished') {
+      return {
+        ok: false,
+        code: 'SPECTATE_UNAVAILABLE',
+        message: 'This match has already finished.',
+      };
+    }
+
+    if (!this.room.allowSpectators) {
+      return {
+        ok: false,
+        code: 'SPECTATE_UNAVAILABLE',
+        message: 'Spectators are not enabled for this match.',
+      };
+    }
+
+    // Private rooms require an authorized share token OR matching room code even after host enables spectators
+    if (this.room.isPrivate) {
+      const providedToken = typeof input.shareToken === 'string' ? input.shareToken.trim() : '';
+      const providedCode = typeof input.roomCode === 'string' ? input.roomCode.trim().toUpperCase() : '';
+      const tokenValid =
+        providedToken.length > 0 && constantTimeEqual(providedToken, this.room.spectatorShareToken);
+      const codeValid =
+        providedCode.length > 0 && providedCode === this.room.roomCode.toUpperCase();
+      if (!tokenValid && !codeValid) {
+        return {
+          ok: false,
+          code: 'SPECTATE_UNAVAILABLE',
+          message: 'A valid room code or host share link is required to spectate this private room.',
+        };
+      }
+    }
+
+    const specPlayerId =
+      typeof input.playerId === 'string' && input.playerId.trim().length > 0
+        ? input.playerId.trim()
+        : input.sessionId?.trim() || `spec_${crypto.randomUUID().replace(/-/g, '').slice(0, 14)}`;
+
+    const isRoomPlayer = this.room.players.some(
+      (p) =>
+        (p.playerId && p.playerId === specPlayerId) ||
+        (input.sessionId && p.sessionId === input.sessionId),
+    );
+    if (isRoomPlayer) {
+      return {
+        ok: false,
+        code: 'ALREADY_IN_MATCH',
+        message: 'You are an active player in this match.',
+      };
+    }
+
+    for (const p of this.room.players) {
+      const targetId = p.playerId ?? p.sessionId;
+      if (targetId && targetId !== specPlayerId) {
+        const blocked = await this.getMatchmakerStub().socialIsBlockedBetween(
+          specPlayerId,
+          targetId,
+        );
+        if (blocked) {
+          return {
+            ok: false,
+            code: 'BLOCKED_PLAYER',
+            message: 'Spectating is unavailable due to an active player block.',
+          };
+        }
+      }
+    }
+
+    this.pruneExpiredSpectators(now);
+
+    const existing = this.room.spectators.find(
+      (s) =>
+        s.playerId === specPlayerId ||
+        (input.sessionId && s.sessionId === input.sessionId),
+    );
+
+    let specRecord: StoredSpectatorRecord;
+    if (existing) {
+      existing.displayName = sanitizeDisplayName(input.displayName);
+      existing.avatarId = sanitizeAvatarId(input.avatarId);
+      existing.connected = true;
+      existing.disconnectedAtMs = null;
+      existing.reconnectDeadlineMs = null;
+      existing.lastActiveAtMs = now;
+      specRecord = existing;
+    } else {
+      if (this.room.spectators.length >= this.room.maxSpectators) {
+        return {
+          ok: false,
+          code: 'ROOM_FULL',
+          message: `Spectator capacity reached (${this.room.maxSpectators}/${this.room.maxSpectators}).`,
+        };
+      }
+      const preferredSid =
+        typeof input.sessionId === 'string' &&
+        input.sessionId.trim().length > 0 &&
+        !this.room.players.some((p) => p.sessionId === input.sessionId)
+          ? input.sessionId.trim()
+          : `spec_${crypto.randomUUID().replace(/-/g, '').slice(0, 14)}`;
+
+      specRecord = {
+        sessionId: preferredSid,
+        playerId: specPlayerId,
+        reconnectToken: randomHexToken(24),
+        displayName: sanitizeDisplayName(input.displayName),
+        avatarId: sanitizeAvatarId(input.avatarId),
+        connected: true,
+        disconnectedAtMs: null,
+        reconnectDeadlineMs: null,
+        reconnectCount: 0,
+        joinedAtMs: now,
+        lastActiveAtMs: now,
+      };
+      this.room.spectators.push(specRecord);
+    }
+
+    this.persistRoomState();
+    await this.notifyMatchmakerRoomMeta();
+    this.broadcastRoomUpdate(this.room);
+    await this.scheduleNextAlarm();
+
+    return {
+      ok: true,
+      room: this.toRoomInfo(this.room, false),
+      match: this.match ? this.match.getSnapshot() : null,
+      balls: this.match ? this.match.physics.getBallFrames() : null,
+      chatHistory: this.loadRoomChatHistory(this.room.roomId),
+      spectatorSessionId: specRecord.sessionId,
+      spectatorReconnectToken: specRecord.reconnectToken,
+    };
+  }
+
+  public async setSpectatorSettingsByHost(
+    sessionId: string,
+    settings: { allowSpectators: boolean; allowSpectatorChat?: boolean },
+  ): Promise<
+    | { ok: true; room: OnlineRoomInfo }
+    | { ok: false; code: MultiplayerErrorCode; message: string }
+  > {
+    await this.ensureHydrated();
+    if (!this.room) {
+      return { ok: false, code: 'INVALID_ROOM', message: 'Room no longer exists.' };
+    }
+    if (this.room.hostSessionId !== sessionId) {
+      return {
+        ok: false,
+        code: 'UNAUTHORIZED',
+        message: 'Only the room host can change spectator access.',
+      };
+    }
+    const nextAllow = Boolean(settings.allowSpectators);
+    const nextChat =
+      settings.allowSpectatorChat !== undefined
+        ? Boolean(settings.allowSpectatorChat)
+        : this.room.allowSpectatorChat;
+
+    this.room.allowSpectators = nextAllow;
+    this.room.allowSpectatorChat = nextChat;
+
+    if (!nextAllow && this.room.spectators.length > 0) {
+      await this.evictAllSpectators('Host disabled spectator access.');
+    }
+
+    this.persistRoomState();
+    await this.notifyMatchmakerRoomMeta();
+    this.broadcastRoomUpdate(this.room);
+    await this.scheduleNextAlarm();
+    return { ok: true, room: this.toRoomInfo(this.room, true) };
+  }
+
+  public async leaveSpectatorBySession(
+    sessionIdOrPlayerId: string,
+  ): Promise<{ ok: true; removed: boolean }> {
+    await this.ensureHydrated();
+    if (!this.room) return { ok: true, removed: false };
+    const idx = this.room.spectators.findIndex(
+      (s) => s.sessionId === sessionIdOrPlayerId || s.playerId === sessionIdOrPlayerId,
+    );
+    if (idx === -1) return { ok: true, removed: false };
+    const [removed] = this.room.spectators.splice(idx, 1);
+    this.closeSpectatorSockets(removed.sessionId, 'Left spectator mode.');
+    this.persistRoomState();
+    await this.notifyMatchmakerRoomMeta();
+    await this.notifyMatchmakerSpectatorLeft(this.room.roomId, removed.playerId);
+    this.broadcastRoomUpdate(this.room);
+    await this.scheduleNextAlarm();
+    return { ok: true, removed: true };
   }
 
   public async updatePlayerProfile(
@@ -779,10 +1178,15 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
     const attachment = this.getAttachment(ws);
 
     if (msg.type === 'ping') {
-      if (attachment.sessionId && this.room && typeof msg.latencyMs === 'number') {
-        const p = this.room.players.find((pl) => pl.sessionId === attachment.sessionId);
-        if (p) {
-          p.latencyMs = clampLatency(msg.latencyMs);
+      if (attachment.sessionId && this.room) {
+        if (attachment.isSpectator) {
+          const s = this.room.spectators.find((sp) => sp.sessionId === attachment.sessionId);
+          if (s) s.lastActiveAtMs = Date.now();
+        } else if (typeof msg.latencyMs === 'number') {
+          const p = this.room.players.find((pl) => pl.sessionId === attachment.sessionId);
+          if (p) {
+            p.latencyMs = clampLatency(msg.latencyMs);
+          }
         }
       }
       this.sendSocket(ws, {
@@ -801,6 +1205,55 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
     if (!attachment.sessionId || !this.room) {
       this.sendError(ws, 'UNAUTHORIZED', 'Initialize or resume a valid room session first.');
       return;
+    }
+
+    if (attachment.isSpectator) {
+      const spectator = this.room.spectators.find((s) => s.sessionId === attachment.sessionId);
+      if (!spectator) {
+        this.sendError(ws, 'UNAUTHORIZED', 'Spectator session is no longer active.');
+        return;
+      }
+      if (!this.room.allowSpectators) {
+        this.sendError(ws, 'SPECTATE_UNAVAILABLE', 'Spectator access was disabled by the host.');
+        return;
+      }
+      spectator.lastActiveAtMs = Date.now();
+
+      switch (msg.type) {
+        case 'room:leave': {
+          await this.handleSpectatorLeave(spectator.sessionId, ws);
+          return;
+        }
+        case 'game:request_sync': {
+          if (this.match) {
+            this.sendSocket(ws, {
+              type: 'match:state_sync',
+              room: this.toRoomInfo(this.room, false),
+              match: this.match.getSnapshot(),
+              balls: this.match.physics.getBallFrames(),
+            });
+          } else {
+            this.sendSocket(ws, {
+              type: 'room:updated',
+              room: this.toRoomInfo(this.room, false),
+            });
+          }
+          return;
+        }
+        case 'chat:room_send': {
+          await this.handleSpectatorChatMessage(ws, spectator, msg.body, msg.clientMessageId);
+          return;
+        }
+        default: {
+          // Strict read-only enforcement: block all gameplay & room mutation commands without penalizing match players
+          this.sendError(
+            ws,
+            'UNAUTHORIZED',
+            'Spectators have read-only access and cannot perform gameplay or room actions.',
+          );
+          return;
+        }
+      }
     }
 
     const player = this.room.players.find((p) => p.sessionId === attachment.sessionId);
@@ -822,7 +1275,20 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
         }
         this.persistRoomState();
         this.persistMatchState();
+        await this.notifyMatchmakerRoomMeta();
         this.broadcastRoomUpdate(this.room);
+        break;
+      }
+
+      case 'room:set_spectators': {
+        const res = await this.setSpectatorSettingsByHost(player.sessionId, {
+          allowSpectators: Boolean(msg.allowSpectators),
+          allowSpectatorChat:
+            msg.allowSpectatorChat !== undefined ? Boolean(msg.allowSpectatorChat) : undefined,
+        });
+        if (!res.ok) {
+          this.sendError(ws, res.code, res.message);
+        }
         break;
       }
 
@@ -834,6 +1300,7 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
         player.ready = Boolean(msg.ready);
         this.updateWaitingStatus(this.room);
         this.persistRoomState();
+        await this.notifyMatchmakerRoomMeta();
         this.broadcastRoomUpdate(this.room);
         if (
           this.room.tournament &&
@@ -1044,6 +1511,18 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
       }
     }
 
+    if (this.room) {
+      const removedSpecIds = this.pruneExpiredSpectators(now);
+      if (removedSpecIds.length > 0) {
+        this.persistRoomState();
+        await this.notifyMatchmakerRoomMeta();
+        for (const pid of removedSpecIds) {
+          await this.notifyMatchmakerSpectatorLeft(this.room.roomId, pid);
+        }
+        this.broadcastRoomUpdate(this.room);
+      }
+    }
+
     if (
       this.room &&
       (this.room.status === 'waiting' || this.room.status === 'ready') &&
@@ -1066,65 +1545,168 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
     }
 
     const player = this.room.players.find((p) => p.sessionId === msg.sessionId);
-    if (!player || !constantTimeEqual(msg.reconnectToken, player.reconnectToken)) {
+    if (player && constantTimeEqual(msg.reconnectToken, player.reconnectToken)) {
+      const wasDisconnected = !player.connected;
+      if (msg.displayName) {
+        player.displayName = sanitizeDisplayName(msg.displayName);
+      }
+      if (msg.avatarId) {
+        player.avatarId = sanitizeAvatarId(msg.avatarId);
+      }
+
+      for (const existingWs of this.ctx.getWebSockets()) {
+        if (existingWs === ws) continue;
+        const att = this.getAttachment(existingWs);
+        if (att.sessionId === player.sessionId) {
+          att.sessionId = null;
+          att.role = null;
+          att.isSpectator = false;
+          existingWs.serializeAttachment(att);
+          try {
+            existingWs.close(4001, 'Replaced by resumed session');
+          } catch {
+            // Ignore close errors on stale socket
+          }
+        }
+      }
+
+      const nextAttachment: RoomSocketAttachment = {
+        sessionId: player.sessionId,
+        role: player.role,
+        isSpectator: false,
+      };
+      ws.serializeAttachment(nextAttachment);
+
+      player.connected = true;
+      player.disconnectedAtMs = null;
+      player.reconnectDeadlineMs = null;
+
+      if (this.match && this.room.players.length === 2) {
+        const p1 = this.room.players.find((p) => p.role === 'player1');
+        const p2 = this.room.players.find((p) => p.role === 'player2');
+        if (p1 && p2) {
+          this.match.updatePlayerNames(p1.displayName, p2.displayName);
+        }
+      }
+
+      this.updateWaitingStatus(this.room);
+      this.persistRoomState();
+      this.persistMatchState();
+      await this.scheduleNextAlarm();
+
+      const includeToken = player.sessionId === this.room.hostSessionId;
+      this.sendSocket(ws, {
+        type: 'session:ready',
+        sessionId: player.sessionId,
+        reconnectToken: player.reconnectToken,
+        playerId: player.playerId ?? player.sessionId,
+        displayName: player.displayName,
+        avatarId: player.avatarId,
+        isSpectator: false,
+        spectatorCount: this.room.spectators.length,
+        resumedRoom: this.toRoomInfo(this.room, includeToken),
+        resumedMatch: this.match ? this.match.getSnapshot() : null,
+        balls: this.match ? this.match.physics.getBallFrames() : null,
+        serverTimeMs: Date.now(),
+      });
+
+      const chatHistory = this.loadRoomChatHistory(this.room.roomId);
+      if (chatHistory.length > 0) {
+        this.sendSocket(ws, {
+          type: 'chat:room_history',
+          roomId: this.room.roomId,
+          messages: chatHistory,
+        });
+      }
+
+      if (wasDisconnected) {
+        this.broadcastToOthers(player.sessionId, {
+          type: 'opponent:reconnected',
+          roomId: this.room.roomId,
+          sessionId: player.sessionId,
+          displayName: player.displayName,
+        });
+      }
+      this.broadcastRoomUpdate(this.room);
+      return;
+    }
+
+    // Spectator resume path (read-only)
+    const spec = this.room.spectators.find((s) => s.sessionId === msg.sessionId);
+    if (!spec || !constantTimeEqual(msg.reconnectToken, spec.reconnectToken)) {
       this.sendError(ws, 'UNAUTHORIZED', 'Invalid room session or reconnect token.');
       return;
     }
 
-    const wasDisconnected = !player.connected;
+    if (!this.room.allowSpectators) {
+      this.sendError(ws, 'SPECTATE_UNAVAILABLE', 'Spectator access was disabled by the host.');
+      return;
+    }
+
+    const wasSpecDisconnected = !spec.connected;
+    if (wasSpecDisconnected && spec.reconnectCount >= this.config.spectatorReconnectLimit) {
+      this.room.spectators = this.room.spectators.filter((s) => s.sessionId !== spec.sessionId);
+      this.persistRoomState();
+      await this.notifyMatchmakerRoomMeta();
+      await this.notifyMatchmakerSpectatorLeft(this.room.roomId, spec.playerId);
+      this.sendError(
+        ws,
+        'RATE_LIMITED',
+        'Spectator reconnect limit reached for this match session.',
+      );
+      return;
+    }
+
     if (msg.displayName) {
-      player.displayName = sanitizeDisplayName(msg.displayName);
+      spec.displayName = sanitizeDisplayName(msg.displayName);
     }
     if (msg.avatarId) {
-      player.avatarId = sanitizeAvatarId(msg.avatarId);
+      spec.avatarId = sanitizeAvatarId(msg.avatarId);
     }
+    if (wasSpecDisconnected) {
+      spec.reconnectCount += 1;
+    }
+    spec.connected = true;
+    spec.disconnectedAtMs = null;
+    spec.reconnectDeadlineMs = null;
+    spec.lastActiveAtMs = Date.now();
 
     for (const existingWs of this.ctx.getWebSockets()) {
       if (existingWs === ws) continue;
       const att = this.getAttachment(existingWs);
-      if (att.sessionId === player.sessionId) {
+      if (att.sessionId === spec.sessionId) {
         att.sessionId = null;
         att.role = null;
+        att.isSpectator = false;
         existingWs.serializeAttachment(att);
         try {
-          existingWs.close(4001, 'Replaced by resumed session');
+          existingWs.close(4001, 'Replaced by resumed spectator session');
         } catch {
           // Ignore close errors on stale socket
         }
       }
     }
 
-    const nextAttachment: RoomSocketAttachment = {
-      sessionId: player.sessionId,
-      role: player.role,
-    };
-    ws.serializeAttachment(nextAttachment);
+    ws.serializeAttachment({
+      sessionId: spec.sessionId,
+      role: null,
+      isSpectator: true,
+    } satisfies RoomSocketAttachment);
 
-    player.connected = true;
-    player.disconnectedAtMs = null;
-    player.reconnectDeadlineMs = null;
-
-    if (this.match && this.room.players.length === 2) {
-      const p1 = this.room.players.find((p) => p.role === 'player1');
-      const p2 = this.room.players.find((p) => p.role === 'player2');
-      if (p1 && p2) {
-        this.match.updatePlayerNames(p1.displayName, p2.displayName);
-      }
-    }
-
-    this.updateWaitingStatus(this.room);
     this.persistRoomState();
-    this.persistMatchState();
+    await this.notifyMatchmakerRoomMeta();
     await this.scheduleNextAlarm();
 
     this.sendSocket(ws, {
       type: 'session:ready',
-      sessionId: player.sessionId,
-      reconnectToken: player.reconnectToken,
-      playerId: player.playerId ?? player.sessionId,
-      displayName: player.displayName,
-      avatarId: player.avatarId,
-      resumedRoom: this.toRoomInfo(this.room),
+      sessionId: spec.sessionId,
+      reconnectToken: spec.reconnectToken,
+      playerId: spec.playerId,
+      displayName: spec.displayName,
+      avatarId: spec.avatarId,
+      isSpectator: true,
+      spectatorCount: this.room.spectators.length,
+      resumedRoom: this.toRoomInfo(this.room, false),
       resumedMatch: this.match ? this.match.getSnapshot() : null,
       balls: this.match ? this.match.physics.getBallFrames() : null,
       serverTimeMs: Date.now(),
@@ -1139,15 +1721,9 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
       });
     }
 
-    if (wasDisconnected) {
-      this.broadcastToOthers(player.sessionId, {
-        type: 'opponent:reconnected',
-        roomId: this.room.roomId,
-        sessionId: player.sessionId,
-        displayName: player.displayName,
-      });
+    if (wasSpecDisconnected) {
+      this.broadcastRoomUpdate(this.room);
     }
-    this.broadcastRoomUpdate(this.room);
   }
 
   private async handleSocketClosed(ws: WebSocket): Promise<void> {
@@ -1161,6 +1737,20 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
       if (otherAtt.sessionId === att.sessionId) {
         return;
       }
+    }
+
+    if (att.isSpectator) {
+      const spec = this.room.spectators.find((s) => s.sessionId === att.sessionId);
+      if (!spec) return;
+      const now = Date.now();
+      spec.connected = false;
+      spec.disconnectedAtMs = now;
+      spec.reconnectDeadlineMs = now + this.config.spectatorReconnectGraceMs;
+      this.persistRoomState();
+      await this.notifyMatchmakerRoomMeta();
+      this.broadcastRoomUpdate(this.room);
+      await this.scheduleNextAlarm();
+      return;
     }
 
     const player = this.room.players.find((p) => p.sessionId === att.sessionId);
@@ -1180,6 +1770,28 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
       displayName: player.displayName,
       graceDeadlineMs: deadlineMs,
     });
+    this.broadcastRoomUpdate(this.room);
+    await this.scheduleNextAlarm();
+  }
+
+  private async handleSpectatorLeave(sessionId: string, ws?: WebSocket): Promise<void> {
+    if (!this.room) return;
+    const spec = this.room.spectators.find((s) => s.sessionId === sessionId);
+    if (!spec) return;
+
+    this.room.spectators = this.room.spectators.filter((s) => s.sessionId !== sessionId);
+    if (ws) {
+      ws.serializeAttachment({ sessionId: null, role: null, isSpectator: false });
+      try {
+        ws.close(1000, 'Left spectator mode');
+      } catch {
+        // Ignore close errors
+      }
+    }
+    this.closeSpectatorSockets(sessionId, 'Left spectator mode');
+    this.persistRoomState();
+    await this.notifyMatchmakerRoomMeta();
+    await this.notifyMatchmakerSpectatorLeft(this.room.roomId, spec.playerId);
     this.broadcastRoomUpdate(this.room);
     await this.scheduleNextAlarm();
   }
@@ -1207,6 +1819,7 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
       this.room.players = this.room.players.filter((p) => p.sessionId !== sessionId);
       this.updateWaitingStatus(this.room);
       this.persistRoomState();
+      await this.notifyMatchmakerRoomMeta();
       this.broadcastRoomUpdate(this.room);
       await this.scheduleNextAlarm();
       return;
@@ -1218,6 +1831,7 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
     } else {
       this.persistRoomState();
       this.persistMatchState();
+      await this.notifyMatchmakerRoomMeta();
       this.broadcastRoomUpdate(this.room);
       await this.scheduleNextAlarm();
     }
@@ -1635,6 +2249,7 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
     const roomId = this.room.roomId;
     const sessionIds = this.room.players.map((p) => p.sessionId);
     const playerIds = this.room.players.map((p) => p.playerId ?? p.sessionId);
+    const spectatorPlayerIds = this.room.spectators.map((s) => s.playerId);
 
     this.broadcastToRoom({
       type: 'room:closed',
@@ -1656,7 +2271,64 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
     this.schemaReady = false;
     await this.ctx.storage.deleteAlarm();
     await this.ctx.storage.deleteAll();
-    await this.notifyMatchmakerRoomClosed(roomId, sessionIds, playerIds);
+    await this.notifyMatchmakerRoomClosed(roomId, sessionIds, playerIds, spectatorPlayerIds);
+  }
+
+  private pruneExpiredSpectators(now = Date.now()): string[] {
+    if (!this.room || this.room.spectators.length === 0) return [];
+    const removedPlayerIds: string[] = [];
+    this.room.spectators = this.room.spectators.filter((s) => {
+      if (!s.connected && s.reconnectDeadlineMs !== null && now >= s.reconnectDeadlineMs) {
+        removedPlayerIds.push(s.playerId);
+        return false;
+      }
+      return true;
+    });
+    return removedPlayerIds;
+  }
+
+  private closeSpectatorSockets(targetSessionId: string | null, reason: string): void {
+    for (const sock of this.ctx.getWebSockets()) {
+      const att = this.getAttachment(sock);
+      if (!att.isSpectator) continue;
+      if (targetSessionId !== null && att.sessionId !== targetSessionId) continue;
+      att.sessionId = null;
+      att.role = null;
+      att.isSpectator = false;
+      sock.serializeAttachment(att);
+      try {
+        sock.close(4003, reason);
+      } catch {
+        // Ignore closed socket
+      }
+    }
+  }
+
+  private async evictAllSpectators(reason: string): Promise<void> {
+    if (!this.room) return;
+    const removed = [...this.room.spectators];
+    this.room.spectators = [];
+    for (const sock of this.ctx.getWebSockets()) {
+      const att = this.getAttachment(sock);
+      if (!att.isSpectator) continue;
+      this.sendSocket(sock, {
+        type: 'room:closed',
+        roomId: this.room.roomId,
+        reason,
+      });
+      att.sessionId = null;
+      att.role = null;
+      att.isSpectator = false;
+      sock.serializeAttachment(att);
+      try {
+        sock.close(4003, reason);
+      } catch {
+        // Ignore close error
+      }
+    }
+    for (const sp of removed) {
+      await this.notifyMatchmakerSpectatorLeft(this.room.roomId, sp.playerId);
+    }
   }
 
   private updateWaitingStatus(room: StoredRoomState): void {
@@ -1668,7 +2340,7 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
     }
   }
 
-  private toRoomInfo(room: StoredRoomState): OnlineRoomInfo {
+  private toRoomInfo(room: StoredRoomState, includeShareToken = false): OnlineRoomInfo {
     const matchType: OnlineMatchType =
       room.matchType ??
       (room.tournament ? 'tournament' : room.isPrivate ? 'private' : 'quick');
@@ -1681,11 +2353,24 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
       ruleProfileId: room.ruleProfileId,
       calledShotsEnabled: room.calledShotsEnabled,
       status: room.status,
+      allowSpectators: room.allowSpectators,
+      allowSpectatorChat: room.allowSpectatorChat,
+      maxSpectators: room.maxSpectators,
+      spectatorShareToken: includeShareToken ? room.spectatorShareToken : undefined,
+      spectatorCount: room.spectators.length,
+      spectators: room.spectators.map((s) => ({
+        playerId: s.playerId,
+        displayName: s.displayName,
+        avatarId: s.avatarId,
+        connected: s.connected,
+      })),
       players: room.players.map((p) => ({
         sessionId: p.sessionId,
         playerId: p.playerId ?? p.sessionId,
         displayName: p.displayName,
         avatarId: p.avatarId,
+        elo: p.elo,
+        rankTier: p.rankTier,
         equippedCosmetics: p.equippedCosmetics ?? DEFAULT_EQUIPPED_COSMETICS,
         role: p.role,
         connected: p.connected,
@@ -1711,6 +2396,11 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
     for (const p of this.room.players) {
       if (!p.connected && p.reconnectDeadlineMs !== null) {
         candidates.push(p.reconnectDeadlineMs);
+      }
+    }
+    for (const s of this.room.spectators) {
+      if (!s.connected && s.reconnectDeadlineMs !== null) {
+        candidates.push(s.reconnectDeadlineMs);
       }
     }
     if (this.room.status === 'waiting' || this.room.status === 'ready') {
@@ -1746,7 +2436,7 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
 
   private getAttachment(ws: WebSocket): RoomSocketAttachment {
     const raw = ws.deserializeAttachment() as RoomSocketAttachment | null;
-    return raw ?? { sessionId: null, role: null };
+    return raw ?? { sessionId: null, role: null, isSpectator: false };
   }
 
   private sendSocket(ws: WebSocket, msg: ServerToClientMessage): void {
@@ -1788,17 +2478,30 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
   }
 
   private broadcastRoomUpdate(room: StoredRoomState): void {
-    this.broadcastToRoom({
+    const publicEncoded = JSON.stringify({
       type: 'room:updated',
-      room: this.toRoomInfo(room),
-    });
+      room: this.toRoomInfo(room, false),
+    } satisfies ServerToClientMessage);
+    const hostEncoded = JSON.stringify({
+      type: 'room:updated',
+      room: this.toRoomInfo(room, true),
+    } satisfies ServerToClientMessage);
+    for (const ws of this.ctx.getWebSockets()) {
+      const att = this.getAttachment(ws);
+      if (!att.sessionId) continue;
+      try {
+        ws.send(!att.isSpectator && att.sessionId === room.hostSessionId ? hostEncoded : publicEncoded);
+      } catch {
+        // Ignore closed socket
+      }
+    }
   }
 
   private broadcastStateSync(room: StoredRoomState): void {
     if (!this.match) return;
     this.broadcastToRoom({
       type: 'match:state_sync',
-      room: this.toRoomInfo(room),
+      room: this.toRoomInfo(room, false),
       match: this.match.getSnapshot(),
       balls: this.match.physics.getBallFrames(),
     });
@@ -1856,20 +2559,95 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
       senderName: sender.displayName,
       senderAvatar: sender.avatarId,
       senderRole: sender.role,
+      channel: 'match',
       body: textCheck.text,
       createdAtMs: now,
     };
 
+    this.persistAndBroadcastChatMessage(message, clientMessageId);
+  }
+
+  private async handleSpectatorChatMessage(
+    ws: WebSocket,
+    sender: StoredSpectatorRecord,
+    rawBody: unknown,
+    clientMessageId?: string,
+  ): Promise<void> {
+    if (!this.room) {
+      this.sendError(ws, 'INVALID_ROOM', 'Room no longer exists.');
+      return;
+    }
+    if (!this.room.allowSpectatorChat) {
+      this.sendError(
+        ws,
+        'SPECTATOR_CHAT_DISABLED',
+        'Spectator chat is currently disabled for this match.',
+      );
+      return;
+    }
+
+    const textCheck = sanitizeChatText(rawBody);
+    if (!textCheck.ok) {
+      this.sendError(ws, textCheck.code, textCheck.message);
+      return;
+    }
+
+    const spamCheck = checkChatAntiSpam(`spec:${sender.playerId}`, textCheck.text, Date.now());
+    if (!spamCheck.ok) {
+      this.sendError(ws, 'RATE_LIMITED', spamCheck.message);
+      return;
+    }
+
+    for (const peer of this.room.players) {
+      const peerPlayerId = peer.playerId ?? peer.sessionId;
+      if (peerPlayerId && peerPlayerId !== sender.playerId) {
+        const blocked = await this.getMatchmakerStub().socialIsBlockedBetween(
+          sender.playerId,
+          peerPlayerId,
+        );
+        if (blocked) {
+          this.sendError(
+            ws,
+            'BLOCKED_PLAYER',
+            'Spectator chat is unavailable because of an active block.',
+          );
+          return;
+        }
+      }
+    }
+
+    const message: RoomChatMessageRecord = {
+      messageId: `sc_${crypto.randomUUID().replace(/-/g, '').slice(0, 14)}`,
+      roomId: this.room.roomId,
+      senderSessionId: sender.sessionId,
+      senderPlayerId: sender.playerId,
+      senderName: sender.displayName,
+      senderAvatar: sender.avatarId,
+      senderRole: 'spectator',
+      channel: 'spectator',
+      body: textCheck.text,
+      createdAtMs: Date.now(),
+    };
+
+    this.persistAndBroadcastChatMessage(message, clientMessageId);
+  }
+
+  private persistAndBroadcastChatMessage(
+    message: RoomChatMessageRecord,
+    clientMessageId?: string,
+  ): void {
+    if (!this.room) return;
     this.ctx.storage.sql.exec(
       `INSERT INTO room_chat_messages (
-        message_id, sender_session_id, sender_player_id, sender_name, sender_avatar, sender_role, body, created_at_ms
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        message_id, sender_session_id, sender_player_id, sender_name, sender_avatar, sender_role, channel, body, created_at_ms
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       message.messageId,
       message.senderSessionId,
       message.senderPlayerId,
       message.senderName,
       message.senderAvatar,
       message.senderRole,
+      message.channel ?? (message.senderRole === 'spectator' ? 'spectator' : 'match'),
       message.body,
       message.createdAtMs,
     );
@@ -1908,17 +2686,27 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
       )
       .toArray();
 
-    return rows.map((r) => ({
-      messageId: String(r.message_id),
-      roomId,
-      senderSessionId: String(r.sender_session_id),
-      senderPlayerId: String(r.sender_player_id),
-      senderName: String(r.sender_name),
-      senderAvatar: sanitizeAvatarId(r.sender_avatar),
-      senderRole: r.sender_role === 'player2' ? 'player2' : 'player1',
-      body: String(r.body),
-      createdAtMs: Number(r.created_at_ms),
-    }));
+    return rows.map((r) => {
+      const role: RoomChatMessageRecord['senderRole'] =
+        r.sender_role === 'spectator'
+          ? 'spectator'
+          : r.sender_role === 'player2'
+            ? 'player2'
+            : 'player1';
+      return {
+        messageId: String(r.message_id),
+        roomId,
+        senderSessionId: String(r.sender_session_id),
+        senderPlayerId: String(r.sender_player_id),
+        senderName: String(r.sender_name),
+        senderAvatar: sanitizeAvatarId(r.sender_avatar),
+        senderRole: role,
+        channel:
+          r.channel === 'spectator' || role === 'spectator' ? 'spectator' : 'match',
+        body: String(r.body),
+        createdAtMs: Number(r.created_at_ms),
+      };
+    });
   }
 
   private getMatchmakerStub() {
@@ -1929,6 +2717,37 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
     if (!this.room) return;
     const playerIds = this.room.players.map((p) => p.playerId ?? p.sessionId);
     await this.getMatchmakerStub().onRoomStatusChanged(this.room.roomId, status, playerIds);
+    await this.notifyMatchmakerRoomMeta();
+  }
+
+  private async notifyMatchmakerRoomMeta(): Promise<void> {
+    if (!this.room) return;
+    try {
+      await this.getMatchmakerStub().onRoomMetaUpdated(this.room.roomId, {
+        status: this.room.status,
+        isPrivate: this.room.isPrivate,
+        allowSpectators: this.room.allowSpectators,
+        allowSpectatorChat: this.room.allowSpectatorChat,
+        spectatorCount: this.room.spectators.length,
+        maxSpectators: this.room.maxSpectators,
+        matchType:
+          this.room.matchType ??
+          (this.room.tournament ? 'tournament' : this.room.isPrivate ? 'private' : 'quick'),
+        ruleProfileId: this.room.ruleProfileId,
+        calledShotsEnabled: this.room.calledShotsEnabled,
+        players: this.room.players.map((p) => ({
+          playerId: p.playerId ?? p.sessionId,
+          displayName: p.displayName,
+          avatarId: p.avatarId,
+          role: p.role,
+          elo: p.elo,
+          rankTier: p.rankTier,
+        })),
+        tournament: this.room.tournament ?? null,
+      });
+    } catch {
+      // Non-blocking sync
+    }
   }
 
   private async notifyMatchmakerPlayerLeft(
@@ -1939,12 +2758,29 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
     await this.getMatchmakerStub().onPlayerLeftRoom(this.room.roomId, sessionId, playerId);
   }
 
+  private async notifyMatchmakerSpectatorLeft(
+    roomId: string,
+    playerId: string,
+  ): Promise<void> {
+    try {
+      await this.getMatchmakerStub().onSpectatorLeftRoom(roomId, playerId);
+    } catch {
+      // Non-blocking sync
+    }
+  }
+
   private async notifyMatchmakerRoomClosed(
     roomId: string,
     sessionIds: string[],
     playerIds: string[] = [],
+    spectatorPlayerIds: string[] = [],
   ): Promise<void> {
-    await this.getMatchmakerStub().onRoomClosed(roomId, sessionIds, playerIds);
+    await this.getMatchmakerStub().onRoomClosed(
+      roomId,
+      sessionIds,
+      playerIds,
+      spectatorPlayerIds,
+    );
   }
 
   private async notifyMatchmakerHistory(record: MatchHistoryRecord): Promise<void> {

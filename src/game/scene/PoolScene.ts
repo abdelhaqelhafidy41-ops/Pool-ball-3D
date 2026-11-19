@@ -111,6 +111,9 @@ export class PoolScene {
   private replayCameraMode: ReplayCameraMode = 'original';
   private replayElapsedWallSec = 0;
   private lastSavedReplayReqSeq = 0;
+  private spectatorElapsedSec = 0;
+  private wasSpectatingScene = false;
+  private spectatorFocusPos = new THREE.Vector3();
 
   // 3D Ball-in-Hand placement visuals & Called Pocket ring
   private placementGroup = new THREE.Group();
@@ -383,11 +386,14 @@ export class PoolScene {
           if (this.replayController.isActive()) {
             this.exitReplay();
           }
-          if (snapshot.totalMatchShots === 0) {
+          const stNow = useGameStore.getState();
+          if (
+            snapshot.totalMatchShots === 0 ||
+            (stNow.onlineSpectating && this.currentMatchId !== snapshot.matchId)
+          ) {
             this.currentMatchId = snapshot.matchId;
             this.activeMatchReplayRecord = null;
             this.shotRecorder.clearMatchShots();
-            const stNow = useGameStore.getState();
             const onlineRoom = stNow.onlineRoom;
             const p1Rec = onlineRoom?.players.find((p) => p.role === 'player1');
             const p2Rec = onlineRoom?.players.find((p) => p.role === 'player2');
@@ -407,6 +413,13 @@ export class PoolScene {
             });
             this.lastOnlineShotSeqRecorded = -1;
             stNow.setReplayShots([]);
+          }
+          if (stNow.onlineSpectating && !this.wasSpectatingScene) {
+            this.cameraController.saveBeforeSpectate();
+            this.wasSpectatingScene = true;
+            this.spectatorElapsedSec = 0;
+          } else if (!stNow.onlineSpectating && this.wasSpectatingScene) {
+            this.wasSpectatingScene = false;
           }
           this.strikeAnim.active = false;
           this.strikeAnim.impulseApplied = false;
@@ -566,6 +579,11 @@ export class PoolScene {
           if (this.replayController.isActive()) {
             this.exitReplay();
           }
+          if (this.wasSpectatingScene) {
+            this.cameraController.restoreAfterSpectate();
+            this.wasSpectatingScene = false;
+            this.spectatorElapsedSec = 0;
+          }
           this.shotRecorder.clearMatchShots();
           this.lastOnlineShotSeqRecorded = -1;
           this.strikeAnim.active = false;
@@ -640,7 +658,9 @@ export class PoolScene {
           ) {
             const isLocalTurn =
               state.matchConfig.opponentType === 'online'
-                ? state.activePlayer === state.onlineLocalRole
+                ? state.onlineSpectating
+                  ? true
+                  : state.activePlayer === state.onlineLocalRole
                 : state.matchConfig.opponentType === 'ai'
                   ? state.activePlayer === 'player1'
                   : true;
@@ -661,7 +681,9 @@ export class PoolScene {
           ) {
             const isVictory =
               state.matchConfig.opponentType === 'online'
-                ? state.winner === state.onlineLocalRole
+                ? state.onlineSpectating
+                  ? Boolean(state.winner)
+                  : state.winner === state.onlineLocalRole
                 : state.matchConfig.opponentType === 'ai'
                   ? state.winner === 'player1'
                   : true;
@@ -2470,8 +2492,38 @@ export class PoolScene {
       this.strikeAnim.active,
     );
 
-    // 7. Camera update (OrbitControls + smooth transitions + table boundary guard)
-    this.cameraController.update(dt, latestStore.screen === 'menu');
+    // 7. Camera update (Spectator broadcast camera OR OrbitControls + smooth transitions + table boundary guard)
+    if (
+      latestStore.screen === 'playing' &&
+      latestStore.onlineSpectating &&
+      latestStore.matchPhase !== 'GAME_OVER'
+    ) {
+      this.spectatorElapsedSec += dt;
+      this.spectatorFocusPos.copy(_cueBallPos);
+      let fastestSpeedSq = 0.0025;
+      for (let i = 0; i < _onlineFrames.length; i++) {
+        const b = _onlineFrames[i];
+        if (b.pocketed) continue;
+        const spSq = b.vx * b.vx + b.vz * b.vz;
+        if (spSq > fastestSpeedSq) {
+          fastestSpeedSq = spSq;
+          this.spectatorFocusPos.set(b.x, b.y, b.z);
+        }
+      }
+      this.cameraController.updateSpectatorCamera(
+        latestStore.spectatorCameraMode,
+        {
+          cueBallPos: _cueBallPos,
+          focusBallPos: this.spectatorFocusPos,
+          cueAngle: this.strikeAnim.active ? this.strikeAnim.angle : latestStore.cueAngle,
+          elapsedSec: this.spectatorElapsedSec,
+          zoomOffset: latestStore.spectatorZoomOffset,
+        },
+        dt,
+      );
+    } else {
+      this.cameraController.update(dt, latestStore.screen === 'menu');
+    }
   }
 
   public dispose() {

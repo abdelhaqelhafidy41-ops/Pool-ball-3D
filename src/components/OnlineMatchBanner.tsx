@@ -13,6 +13,7 @@ export function OnlineMatchBanner() {
   const onlineConnectionStatus = useGameStore((s) => s.onlineConnectionStatus);
   const onlineLatencyMs = useGameStore((s) => s.onlineLatencyMs);
   const onlineOpponentStatus = useGameStore((s) => s.onlineOpponentStatus);
+  const onlineSpectating = useGameStore((s) => s.onlineSpectating);
 
   const [nowMs, setNowMs] = useState(() => Date.now());
 
@@ -26,7 +27,7 @@ export function OnlineMatchBanner() {
     return () => window.clearInterval(id);
   }, [onlineOpponentStatus.state, onlineOpponentStatus.graceDeadlineMs]);
 
-  if (screen !== 'playing' || matchConfig.opponentType !== 'online') {
+  if (screen !== 'playing' || matchConfig.opponentType !== 'online' || onlineSpectating) {
     return null;
   }
 
@@ -86,7 +87,7 @@ export function OnlineMatchBanner() {
           <span className="inline-flex items-center gap-1 text-[10px] font-mono tabular-nums text-slate-300 whitespace-nowrap">
             <span
               className={`h-1.5 w-1.5 rounded-full ${
-                onlineConnectionStatus === 'connected' ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400'
+                onlineConnectionStatus === 'connected' ? 'bg-emerald-400' : 'bg-amber-400'
               }`}
             />
             {onlineLatencyMs !== null ? `${onlineLatencyMs}ms` : 'Online'}

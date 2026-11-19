@@ -37,7 +37,14 @@ import type { RankTierDefinition } from './ranked';
 
 export type ConnectionState = 'disconnected' | 'connecting' | 'connected' | 'reconnecting';
 export type OpponentConnectionState = 'connected' | 'disconnected' | 'reconnected';
-export type OnlineModeIntent = 'quick' | 'ranked' | 'create' | 'join' | 'friend';
+export type OnlineModeIntent = 'quick' | 'ranked' | 'create' | 'join' | 'friend' | 'spectate';
+export type SpectatorCameraMode =
+  | 'overview'
+  | 'topDown'
+  | 'ballFollow'
+  | 'activeShot'
+  | 'cinematic'
+  | 'free';
 
 export type StarterAvatarId =
   | 'cue_gold'
@@ -79,6 +86,8 @@ export interface OnlinePlayerProfile {
   playerId?: string;
   displayName: string;
   avatarId: OnlineAvatarId;
+  elo?: number;
+  rankTier?: RankTierDefinition;
   equippedCosmetics?: EquippedCosmetics;
   role: PlayerId;
   connected: boolean;
@@ -106,6 +115,40 @@ export interface OnlineRoomTournamentContext {
   readyDeadlineMs: number | null;
 }
 
+export interface SpectatorSummary {
+  playerId: string;
+  displayName: string;
+  avatarId: OnlineAvatarId;
+  connected?: boolean;
+}
+
+export interface SpectatableMatchPlayer {
+  playerId: string;
+  displayName: string;
+  avatarId: OnlineAvatarId;
+  role: PlayerId;
+  elo?: number;
+  rankTier?: RankTierDefinition;
+}
+
+export interface SpectatableMatchSummary {
+  roomId: string;
+  roomCode: string;
+  matchType: OnlineMatchType;
+  ruleProfileId: RuleProfileId;
+  calledShotsEnabled: boolean;
+  status: OnlineRoomStatus;
+  isPrivate: boolean;
+  allowSpectators: boolean;
+  allowSpectatorChat: boolean;
+  spectatorCount: number;
+  maxSpectators: number;
+  createdAtMs: number;
+  startedAtMs?: number | null;
+  players: SpectatableMatchPlayer[];
+  tournament?: OnlineRoomTournamentContext | null;
+}
+
 export interface OnlineRoomInfo {
   roomId: string;
   roomCode: string;
@@ -116,12 +159,12 @@ export interface OnlineRoomInfo {
   calledShotsEnabled: boolean;
   status: OnlineRoomStatus;
   players: OnlinePlayerProfile[];
+  allowSpectators?: boolean;
+  allowSpectatorChat?: boolean;
+  maxSpectators?: number;
+  spectatorShareToken?: string | null;
   spectatorCount?: number;
-  spectators?: Array<{
-    playerId: string;
-    displayName: string;
-    avatarId: OnlineAvatarId;
-  }>;
+  spectators?: SpectatorSummary[];
   createdAtMs: number;
   expiresAtMs: number;
   tournament?: OnlineRoomTournamentContext | null;
@@ -243,7 +286,8 @@ export type MultiplayerErrorCode =
   | 'NOT_FOUND'
   | 'CONFLICT'
   | 'CLUB_ERROR'
-  | 'SPECTATE_UNAVAILABLE';
+  | 'SPECTATE_UNAVAILABLE'
+  | 'SPECTATOR_CHAT_DISABLED';
 
 export type ClientToServerMessage =
   | {
@@ -427,6 +471,12 @@ export type ClientToServerMessage =
       roomId?: string;
       roomCode?: string;
       targetPlayerId?: string;
+      shareToken?: string;
+    }
+  | {
+      type: 'room:set_spectators';
+      allowSpectators: boolean;
+      allowSpectatorChat?: boolean;
     }
   | {
       type: 'club:sync';
@@ -455,10 +505,20 @@ export type ServerToClientMessage =
       displayName: string;
       avatarId: OnlineAvatarId;
       isSpectator?: boolean;
+      spectatorCount?: number;
       resumedRoom: OnlineRoomInfo | null;
       resumedMatch: OnlineMatchSnapshot | null;
       balls: OnlineBallFrame[] | null;
       serverTimeMs: number;
+    }
+  | {
+      type: 'spectate:joined';
+      room: OnlineRoomInfo;
+      match: OnlineMatchSnapshot | null;
+      balls: OnlineBallFrame[] | null;
+      chatHistory?: RoomChatMessageRecord[];
+      spectatorSessionId: string;
+      spectatorReconnectToken: string;
     }
   | {
       type: 'pong';

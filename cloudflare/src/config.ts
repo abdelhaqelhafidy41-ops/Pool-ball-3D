@@ -17,6 +17,9 @@ export interface Env {
   PRESENCE_TTL_MS?: string;
   INVITE_TTL_MS?: string;
   TOURNAMENT_ADMIN_SECRET?: string;
+  MAX_SPECTATORS_PER_ROOM?: string;
+  SPECTATOR_RECONNECT_LIMIT?: string;
+  SPECTATOR_RECONNECT_GRACE_MS?: string;
 }
 
 export interface WorkerRuntimeConfig {
@@ -30,6 +33,9 @@ export interface WorkerRuntimeConfig {
   maxLatencySpreadMs: number;
   presenceTtlMs: number;
   inviteTtlMs: number;
+  maxSpectatorsPerRoom: number;
+  spectatorReconnectLimit: number;
+  spectatorReconnectGraceMs: number;
 }
 
 const VALID_AVATARS = new Set<OnlineAvatarId>([
@@ -146,6 +152,9 @@ export function loadWorkerConfig(env: Env): WorkerRuntimeConfig {
     maxLatencySpreadMs: readIntVar(env.MAX_LATENCY_SPREAD_MS, 250, 25),
     presenceTtlMs: readIntVar(env.PRESENCE_TTL_MS, 45000, 500),
     inviteTtlMs: readIntVar(env.INVITE_TTL_MS, 90000, 500),
+    maxSpectatorsPerRoom: readIntVar(env.MAX_SPECTATORS_PER_ROOM, 16, 1),
+    spectatorReconnectLimit: readIntVar(env.SPECTATOR_RECONNECT_LIMIT, 6, 1),
+    spectatorReconnectGraceMs: readIntVar(env.SPECTATOR_RECONNECT_GRACE_MS, 20000, 1000),
   };
 }
 

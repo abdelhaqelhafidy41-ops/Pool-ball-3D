@@ -1562,6 +1562,108 @@ export default {
       return jsonResponse({ ok: true, ...result }, 200, cors);
     }
 
+    // ===== Phase 14 Spectator & Live Broadcast API =====
+
+    if (url.pathname === '/api/spectate/matches' && request.method === 'GET') {
+      const rawType = url.searchParams.get('matchType')?.trim();
+      const matchType: OnlineMatchType | 'all' | null =
+        rawType === 'quick' ||
+        rawType === 'ranked' ||
+        rawType === 'tournament' ||
+        rawType === 'private' ||
+        rawType === 'all'
+          ? rawType
+          : null;
+      const status = url.searchParams.get('status')?.trim() || null;
+      const tournamentId = url.searchParams.get('tournamentId')?.trim() || null;
+      const matches = await getMatchmakerStub().listSpectatableMatches({
+        matchType,
+        status,
+        tournamentId,
+      });
+      return jsonResponse({ ok: true, matches }, 200, cors);
+    }
+
+    if (url.pathname === '/api/spectate/resolve' && request.method === 'GET') {
+      const roomId = url.searchParams.get('roomId')?.trim() || undefined;
+      const roomCode = (url.searchParams.get('code') ?? url.searchParams.get('roomCode'))?.trim() || undefined;
+      const targetPlayerId = url.searchParams.get('targetPlayerId')?.trim() || undefined;
+      const shareToken = (url.searchParams.get('token') ?? url.searchParams.get('shareToken'))?.trim() || undefined;
+      if (!roomId && !roomCode && !targetPlayerId) {
+        return jsonResponse(
+          { error: 'INVALID_INPUT', message: 'roomId, code, or targetPlayerId is required.' },
+          400,
+          cors,
+        );
+      }
+      const res = await getMatchmakerStub().resolveSpectateTarget({
+        roomId,
+        roomCode,
+        targetPlayerId,
+        shareToken,
+      });
+      if (!res.ok) {
+        return jsonResponse({ error: res.code, message: res.message }, res.status, cors);
+      }
+      return jsonResponse({ ok: true, match: res.match }, 200, cors);
+    }
+
+    if (url.pathname === '/api/spectate/join' && request.method === 'POST') {
+      const body = await readJsonBody(request);
+      if (!body) {
+        return jsonResponse({ error: 'INVALID_INPUT', message: 'Invalid JSON request body.' }, 400, cors);
+      }
+      const roomId = typeof body.roomId === 'string' ? body.roomId.trim() : undefined;
+      const roomCode = typeof body.roomCode === 'string' ? body.roomCode.trim() : undefined;
+      const targetPlayerId =
+        typeof body.targetPlayerId === 'string' ? body.targetPlayerId.trim() : undefined;
+      if (!roomId && !roomCode && !targetPlayerId) {
+        return jsonResponse(
+          { error: 'INVALID_INPUT', message: 'roomId, roomCode, or targetPlayerId is required.' },
+          400,
+          cors,
+        );
+      }
+      const token = extractBearerToken(request, body);
+      const res = await getMatchmakerStub().spectateJoin({
+        roomId,
+        roomCode,
+        targetPlayerId,
+        shareToken: typeof body.shareToken === 'string' ? body.shareToken.trim() : undefined,
+        sessionId: typeof body.sessionId === 'string' ? body.sessionId.trim() : undefined,
+        playerId: typeof body.playerId === 'string' ? body.playerId.trim() : undefined,
+        playerToken: token || undefined,
+        displayName: typeof body.displayName === 'string' ? body.displayName : undefined,
+        avatarId: typeof body.avatarId === 'string' ? (body.avatarId as never) : undefined,
+      });
+      if (!res.ok) {
+        return jsonResponse({ error: res.code, message: res.message }, res.status, cors);
+      }
+      return jsonResponse(res, 200, cors);
+    }
+
+    if (url.pathname === '/api/spectate/leave' && request.method === 'POST') {
+      const body = await readJsonBody(request);
+      if (!body || typeof body.roomId !== 'string') {
+        return jsonResponse(
+          { error: 'INVALID_INPUT', message: 'roomId is required.' },
+          400,
+          cors,
+        );
+      }
+      const token = extractBearerToken(request, body);
+      const res = await getMatchmakerStub().spectateLeave({
+        roomId: body.roomId,
+        sessionId: typeof body.sessionId === 'string' ? body.sessionId : undefined,
+        playerId: typeof body.playerId === 'string' ? body.playerId : undefined,
+        playerToken: token || undefined,
+      });
+      if (!res.ok) {
+        return jsonResponse({ error: res.code, message: res.message }, res.status, cors);
+      }
+      return jsonResponse(res, 200, cors);
+    }
+
     if (url.pathname === '/') {
       return jsonResponse(
         {

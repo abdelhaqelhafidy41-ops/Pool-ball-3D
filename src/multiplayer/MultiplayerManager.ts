@@ -2,20 +2,23 @@ import type { PlayerId, PocketId, RuleProfileId } from '../game/rules/types';
 import { soundEngine } from '../game/utils/SoundEngine';
 import { useGameStore } from '../store/useGameStore';
 import { NetworkManager, resolveHttpBaseUrl } from './NetworkManager';
-import { progressionClient } from './ProgressionClient';
+import { getStoredPlayerIdentity, progressionClient } from './ProgressionClient';
 import { StateSynchronizer } from './StateSynchronizer';
 import { tournamentClient } from './TournamentClient';
+import type { OnlineMatchType } from './shared/progression';
 import type {
   MatchHistoryRecord,
   OnlineBallFrame,
   OnlineMatchSnapshot,
   OnlineRoomInfo,
   ServerToClientMessage,
+  SpectatableMatchSummary,
 } from './shared/protocol';
 import type {
   FriendRequestAction,
   ManualPresenceStatus,
   MatchInviteAction,
+  RoomChatMessageRecord,
 } from './shared/social';
 
 export interface MultiplayerSceneBridge {
@@ -188,6 +191,10 @@ class MultiplayerManagerImpl {
 
   public leaveMatchOrRoom(): void {
     const store = useGameStore.getState();
+    if (store.onlineSpectating) {
+      this.leaveSpectatorMode();
+      return;
+    }
     this.network.send({ type: 'room:leave' });
     this.network.bindRoomSocket(null);
     this.synchronizer.reset();
@@ -196,6 +203,215 @@ class MultiplayerManagerImpl {
       store.setScreen('menu');
     }
     this.sceneBridge?.onOnlineMatchExited();
+  }
+
+  public setRoomSpectatorSettings(allowSpectators: boolean, allowSpectatorChat?: boolean): void {
+    this.network.send({
+      type: 'room:set_spectators',
+      allowSpectators,
+      allowSpectatorChat,
+    });
+  }
+
+  public async fetchSpectatableMatches(filters?: {
+    matchType?: OnlineMatchType | 'all';
+    status?: string;
+    tournamentId?: string;
+  }): Promise<SpectatableMatchSummary[]> {
+    const store = useGameStore.getState();
+    store.setSpectatableMatchesLoading(true);
+    try {
+      const loc = typeof window !== 'undefined' ? window.location : undefined;
+      const baseUrl = resolveHttpBaseUrl(import.meta.env?.VITE_WS_URL, loc);
+      const url = new URL(`${baseUrl || (loc ? `${loc.protocol}//${loc.host}` : 'http://127.0.0.1:8787')}/api/spectate/matches`);
+      if (filters?.matchType && filters.matchType !== 'all') {
+        url.searchParams.set('matchType', filters.matchType);
+      }
+      if (filters?.status) {
+        url.searchParams.set('status', filters.status);
+      }
+      if (filters?.tournamentId) {
+        url.searchParams.set('tournamentId', filters.tournamentId);
+      }
+      const res = await fetch(url.toString());
+      if (!res.ok) return [];
+      const json = (await res.json()) as { matches?: SpectatableMatchSummary[] };
+      const list = Array.isArray(json.matches) ? json.matches : [];
+      store.setSpectatableMatches(list);
+      return list;
+    } catch {
+      return [];
+    } finally {
+      useGameStore.getState().setSpectatableMatchesLoading(false);
+    }
+  }
+
+  public async joinSpectate(params: {
+    roomId?: string;
+    roomCode?: string;
+    targetPlayerId?: string;
+    shareToken?: string;
+    returnTarget?: 'menu' | 'lobby' | 'tournament';
+    tournamentId?: string | null;
+  }): Promise<{ ok: boolean; error?: string }> {
+    const store = useGameStore.getState();
+    store.setOnlineError(null);
+    const identity = getStoredPlayerIdentity();
+    try {
+      const loc = typeof window !== 'undefined' ? window.location : undefined;
+      const baseUrl = resolveHttpBaseUrl(import.meta.env?.VITE_WS_URL, loc);
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (identity?.playerToken) {
+        headers.Authorization = `Bearer ${identity.playerToken}`;
+      }
+      const res = await fetch(`${baseUrl}/api/spectate/join`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          roomId: params.roomId,
+          roomCode: params.roomCode?.trim().toUpperCase(),
+          targetPlayerId: params.targetPlayerId,
+          shareToken: params.shareToken,
+          sessionId: store.onlineSessionId ?? undefined,
+          playerId: identity?.playerId,
+          playerToken: identity?.playerToken,
+          displayName: store.onlineProfile.displayName,
+          avatarId: store.onlineProfile.avatarId,
+        }),
+      });
+      const json = (await res.json()) as {
+        ok?: boolean;
+        error?: string;
+        message?: string;
+        room?: OnlineRoomInfo;
+        match?: OnlineMatchSnapshot | null;
+        balls?: OnlineBallFrame[] | null;
+        chatHistory?: RoomChatMessageRecord[];
+        spectatorSessionId?: string;
+        spectatorReconnectToken?: string;
+      };
+      if (!res.ok || !json.ok || !json.room || !json.spectatorSessionId || !json.spectatorReconnectToken) {
+        const message = json.message ?? 'Unable to join match as spectator.';
+        store.setOnlineError({
+          code: json.error ?? 'SPECTATE_UNAVAILABLE',
+          message,
+        });
+        return { ok: false, error: message };
+      }
+
+      this.enterSpectatorRoomState(
+        {
+          room: json.room,
+          match: json.match ?? null,
+          balls: json.balls ?? null,
+          chatHistory: json.chatHistory ?? [],
+          spectatorSessionId: json.spectatorSessionId,
+          spectatorReconnectToken: json.spectatorReconnectToken,
+        },
+        params.returnTarget ?? 'lobby',
+        params.tournamentId ?? json.room.tournament?.tournamentId ?? null,
+      );
+      soundEngine.playUiClick();
+      return { ok: true };
+    } catch {
+      const message = 'Network error while joining live broadcast.';
+      store.setOnlineError({ code: 'CONNECTION_FAILED', message });
+      return { ok: false, error: message };
+    }
+  }
+
+  public leaveSpectatorMode(targetOverride?: 'menu' | 'lobby' | 'tournament'): void {
+    const store = useGameStore.getState();
+    const roomId = store.onlineRoom?.roomId ?? this.network.getActiveRoomId();
+    const specSid = store.spectatorSessionId;
+    const returnTarget = targetOverride ?? store.spectateReturnTarget ?? 'lobby';
+    const returnTournamentId =
+      store.spectateReturnTournamentId ?? store.onlineRoom?.tournament?.tournamentId ?? null;
+    const identity = getStoredPlayerIdentity();
+
+    if (roomId) {
+      this.network.send({ type: 'room:leave' });
+      try {
+        const loc = typeof window !== 'undefined' ? window.location : undefined;
+        const baseUrl = resolveHttpBaseUrl(import.meta.env?.VITE_WS_URL, loc);
+        void fetch(`${baseUrl}/api/spectate/leave`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            ...(identity?.playerToken ? { Authorization: `Bearer ${identity.playerToken}` } : {}),
+          },
+          body: JSON.stringify({
+            roomId,
+            sessionId: specSid ?? undefined,
+            playerId: identity?.playerId,
+            playerToken: identity?.playerToken,
+          }),
+        });
+      } catch {
+        // Best-effort cleanup
+      }
+    }
+
+    this.network.bindRoomSocket(null);
+    this.synchronizer.reset();
+    store.clearOnlineMatchSession();
+    store.setScreen('menu');
+    this.sceneBridge?.onOnlineMatchExited();
+
+    if (returnTarget === 'tournament' && returnTournamentId) {
+      store.openTournamentModal('bracket', returnTournamentId);
+      void tournamentClient.fetchTournamentDetail(returnTournamentId);
+    } else if (returnTarget === 'lobby') {
+      store.openOnlineLobby('spectate');
+      void this.fetchSpectatableMatches();
+    }
+  }
+
+  private enterSpectatorRoomState(
+    data: {
+      room: OnlineRoomInfo;
+      match: OnlineMatchSnapshot | null;
+      balls: OnlineBallFrame[] | null;
+      chatHistory?: RoomChatMessageRecord[];
+      spectatorSessionId: string;
+      spectatorReconnectToken: string;
+    },
+    returnTarget: 'menu' | 'lobby' | 'tournament',
+    tournamentId: string | null,
+  ): void {
+    this.ensureConnected();
+    const store = useGameStore.getState();
+    this.network.setRoomSessionOverride({
+      sessionId: data.spectatorSessionId,
+      reconnectToken: data.spectatorReconnectToken,
+    });
+    store.setOnlineError(null);
+    store.setSpectateReturnContext(returnTarget, tournamentId);
+    store.setOnlineSpectating(true, data.spectatorSessionId);
+    store.setOnlineRoom(data.room);
+    store.setRoomChatHistory(data.chatHistory ?? []);
+    store.resetMatchStats();
+    store.updateMatchConfig({
+      gameMode: 'eightBall',
+      opponentType: 'online',
+      player1Name: data.room.players[0]?.displayName ?? 'Player 1',
+      player2Name: data.room.players[1]?.displayName ?? 'Player 2',
+      ruleProfileId: data.room.ruleProfileId,
+      calledShotsEnabled: data.room.calledShotsEnabled,
+    });
+    this.network.bindRoomSocket(data.room.roomId);
+
+    this.synchronizer.reset();
+    if (data.match && data.balls) {
+      this.synchronizer.applySettledState(data.balls);
+      store.syncFromOnlineMatchSnapshot(data.match, null);
+    }
+    store.closeOnlineLobby();
+    store.closeTournamentModal();
+    store.setScreen('playing');
+    if (data.match && data.balls) {
+      this.sceneBridge?.onOnlineMatchEntered(data.match, data.balls);
+    }
   }
 
   public requestRematch(): void {
@@ -398,8 +614,10 @@ class MultiplayerManagerImpl {
   }
 
   private resolveLocalRole(room: OnlineRoomInfo | null): PlayerId | null {
-    const sid = useGameStore.getState().onlineSessionId;
-    if (!room || !sid) return useGameStore.getState().onlineLocalRole;
+    const state = useGameStore.getState();
+    if (state.onlineSpectating) return null;
+    const sid = state.onlineSessionId;
+    if (!room || !sid) return state.onlineLocalRole;
     return room.players.find((p) => p.sessionId === sid)?.role ?? null;
   }
 
@@ -408,13 +626,30 @@ class MultiplayerManagerImpl {
 
     switch (msg.type) {
       case 'session:ready': {
+        if (msg.isSpectator) {
+          store.setOnlineSpectating(true, msg.sessionId);
+          store.setOnlineError(null);
+          if (msg.resumedRoom) {
+            store.setOnlineRoom(msg.resumedRoom);
+            if (msg.resumedMatch && msg.balls) {
+              this.synchronizer.applySettledState(msg.balls);
+              store.syncFromOnlineMatchSnapshot(msg.resumedMatch, null);
+              store.closeOnlineLobby();
+              store.closeTournamentModal();
+              store.setScreen('playing');
+              this.sceneBridge?.onOnlineMatchEntered(msg.resumedMatch, msg.balls);
+            }
+          }
+          break;
+        }
+
         store.setOnlineSessionId(msg.sessionId);
         store.setOnlineError(null);
         void progressionClient.refreshOwnProfile();
         void progressionClient.fetchModerationStatus();
         void progressionClient.fetchRankedSeasons();
 
-        if (msg.resumedRoom) {
+        if (msg.resumedRoom && !store.onlineSpectating) {
           this.network.bindRoomSocket(msg.resumedRoom.roomId);
           const role =
             msg.resumedRoom.players.find((p) => p.sessionId === msg.sessionId)?.role ?? null;
@@ -434,18 +669,44 @@ class MultiplayerManagerImpl {
         break;
       }
 
+      case 'spectate:joined': {
+        this.enterSpectatorRoomState(
+          {
+            room: msg.room,
+            match: msg.match,
+            balls: msg.balls,
+            chatHistory: msg.chatHistory,
+            spectatorSessionId: msg.spectatorSessionId,
+            spectatorReconnectToken: msg.spectatorReconnectToken,
+          },
+          store.spectateReturnTarget ?? 'lobby',
+          store.spectateReturnTournamentId ?? msg.room.tournament?.tournamentId ?? null,
+        );
+        break;
+      }
+
       case 'error': {
         if (
           this.network.getActiveRoomId() &&
-          (msg.code === 'ROOM_EXPIRED' || msg.code === 'INVALID_ROOM' || msg.code === 'UNAUTHORIZED')
+          (msg.code === 'ROOM_EXPIRED' ||
+            msg.code === 'INVALID_ROOM' ||
+            msg.code === 'UNAUTHORIZED' ||
+            msg.code === 'SPECTATE_UNAVAILABLE')
         ) {
+          const wasSpectating = store.onlineSpectating;
+          const returnTarget = store.spectateReturnTarget ?? 'lobby';
+          const returnTournamentId = store.spectateReturnTournamentId;
           const wasPlaying = store.screen === 'playing' && store.matchConfig.opponentType === 'online';
           this.network.bindRoomSocket(null);
           this.synchronizer.reset();
           store.clearOnlineMatchSession();
-          if (wasPlaying) {
+          if (wasPlaying || wasSpectating) {
             store.setScreen('menu');
-            store.openOnlineLobby('create');
+            if (wasSpectating && returnTarget === 'tournament' && returnTournamentId) {
+              store.openTournamentModal('bracket', returnTournamentId);
+            } else {
+              store.openOnlineLobby(wasSpectating ? 'spectate' : 'create');
+            }
           }
           this.sceneBridge?.onOnlineMatchExited();
         }
@@ -466,21 +727,30 @@ class MultiplayerManagerImpl {
 
       case 'room:created':
       case 'room:updated': {
-        this.network.bindRoomSocket(msg.room.roomId);
+        if (!store.onlineSpectating) {
+          this.network.bindRoomSocket(msg.room.roomId);
+        }
         store.setOnlineRoom(msg.room);
         store.setOnlineError(null);
         break;
       }
 
       case 'room:closed': {
+        const wasSpectating = store.onlineSpectating;
+        const returnTarget = store.spectateReturnTarget ?? 'lobby';
+        const returnTournamentId = store.spectateReturnTournamentId;
         const wasPlaying = store.screen === 'playing' && store.matchConfig.opponentType === 'online';
         this.network.bindRoomSocket(null);
         this.synchronizer.reset();
         store.clearOnlineMatchSession();
         store.setOnlineError({ code: 'ROOM_EXPIRED', message: msg.reason });
-        if (wasPlaying) {
+        if (wasPlaying || wasSpectating) {
           store.setScreen('menu');
-          store.openOnlineLobby('create');
+          if (wasSpectating && returnTarget === 'tournament' && returnTournamentId) {
+            store.openTournamentModal('bracket', returnTournamentId);
+          } else {
+            store.openOnlineLobby(wasSpectating ? 'spectate' : 'create');
+          }
         }
         this.sceneBridge?.onOnlineMatchExited();
         break;

@@ -32,6 +32,7 @@ import { MatchNotificationBanner } from './MatchNotificationBanner';
 import { MatchScoreboard } from './MatchScoreboard';
 import { MiniatureCueController } from './MiniatureCueController';
 import { OnlineMatchBanner } from './OnlineMatchBanner';
+import { SpectatorHUD } from './SpectatorHUD';
 
 interface GameHUDProps {
   onShoot: (power: number) => void;
@@ -85,6 +86,7 @@ export function GameHUD({
   const isAiThinking = useGameStore((s) => s.isAiThinking);
   const matchPhase = useGameStore((s) => s.matchPhase);
   const opponentType = useGameStore((s) => s.matchConfig.opponentType);
+  const onlineSpectating = useGameStore((s) => s.onlineSpectating);
   const canAct = useGameStore(canLocalPlayerAct);
 
   const aimDragRef = useRef<{ active: boolean; id: number; lastX: number }>({
@@ -94,6 +96,19 @@ export function GameHUD({
   });
 
   if (screen !== 'playing' || replayActive) return null;
+
+  if (onlineSpectating) {
+    return (
+      <>
+        <SpectatorHUD
+          onToggleFullscreen={onToggleFullscreen}
+          onEnterReplay={onEnterReplay}
+        />
+        <InMatchChatPanel />
+        <MatchNotificationBanner />
+      </>
+    );
+  }
 
   const isOnline = opponentType === 'online';
   const aimLocked =

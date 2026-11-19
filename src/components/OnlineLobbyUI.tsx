@@ -2,17 +2,18 @@ import {
   Check,
   Copy,
   Crown,
+  Eye,
   Globe,
   History,
   KeyRound,
   Loader2,
   Play,
   PlusCircle,
+  RefreshCw,
   Search,
   ShieldAlert,
   Swords,
   Trophy,
-  User,
   UserCheck,
   Users,
   Wifi,
@@ -73,10 +74,15 @@ export function OnlineLobbyUI() {
   const incomingRequests = useGameStore((s) => s.incomingRequests);
   const incomingInvitations = useGameStore((s) => s.incomingInvitations);
   const totalUnreadDmCount = useGameStore((s) => s.totalUnreadDmCount);
+  const spectatableMatches = useGameStore((s) => s.spectatableMatches);
+  const spectatableMatchesLoading = useGameStore((s) => s.spectatableMatchesLoading);
 
   const [activeTab, setActiveTab] = useState<LobbyTab>(onlineModeIntent);
   const [nameInput, setNameInput] = useState(onlineProfile.displayName);
   const [joinCodeInput, setJoinCodeInput] = useState('');
+  const [spectateCodeInput, setSpectateCodeInput] = useState('');
+  const [spectateMatchFilter, setSpectateMatchFilter] = useState<'all' | 'quick' | 'ranked' | 'tournament'>('all');
+  const [copiedWatchLink, setCopiedWatchLink] = useState(false);
   const [ruleProfileId, setRuleProfileId] = useState<RuleProfileId>(
     onlineModeIntent === 'ranked' ? RANKED_MATCHMAKING_CONFIG.defaultRuleProfile : 'casual',
   );
@@ -112,8 +118,10 @@ export function OnlineLobbyUI() {
   useEffect(() => {
     if (onlineLobbyOpen && activeTab === 'history') {
       void multiplayerManager.fetchOnlineHistory();
+    } else if (onlineLobbyOpen && activeTab === 'spectate') {
+      void multiplayerManager.fetchSpectatableMatches({ matchType: spectateMatchFilter });
     }
-  }, [onlineLobbyOpen, activeTab]);
+  }, [onlineLobbyOpen, activeTab, spectateMatchFilter]);
 
   if (!onlineLobbyOpen) return null;
 
@@ -172,10 +180,10 @@ export function OnlineLobbyUI() {
                   <span
                     className={`h-2 w-2 rounded-full ${
                       onlineConnectionStatus === 'connected'
-                        ? 'bg-emerald-400 animate-pulse'
+                        ? 'bg-emerald-400'
                         : onlineConnectionStatus === 'connecting' ||
                             onlineConnectionStatus === 'reconnecting'
-                          ? 'bg-amber-400 animate-pulse'
+                          ? 'bg-amber-400'
                           : 'bg-rose-400'
                     }`}
                   />
@@ -514,6 +522,93 @@ export function OnlineLobbyUI() {
               })}
             </div>
 
+            {/* Host Spectator Privacy & Share Link Controls */}
+            {isHost && !onlineRoom.tournament && (
+              <div className="rounded-xl border border-white/10 bg-black/25 px-3.5 py-2.5 space-y-2">
+                <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                  <div className="flex items-center gap-2 font-bold text-slate-200">
+                    <Eye className="h-3.5 w-3.5 text-amber-400 shrink-0" />
+                    <span>Spectator Access</span>
+                    <span className="font-mono text-[10px] tabular-nums text-slate-400">
+                      ({onlineRoom.spectators?.length ?? onlineRoom.spectatorCount ?? 0}/
+                      {onlineRoom.maxSpectators ?? 16})
+                    </span>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      data-testid="toggle-allow-spectators"
+                      onClick={() => {
+                        soundEngine.playUiClick();
+                        multiplayerManager.setRoomSpectatorSettings(
+                          !onlineRoom.allowSpectators,
+                          onlineRoom.allowSpectatorChat ?? true,
+                        );
+                      }}
+                      className={`rounded-lg border px-2.5 py-1 text-[11px] font-bold transition-colors cursor-pointer whitespace-nowrap ${
+                        onlineRoom.allowSpectators
+                          ? 'border-emerald-400/50 bg-emerald-500/15 text-emerald-200'
+                          : 'border-white/15 bg-white/5 text-slate-400 hover:text-white'
+                      }`}
+                    >
+                      {onlineRoom.allowSpectators ? 'Spectators: Allowed' : 'Spectators: Off'}
+                    </button>
+                    {onlineRoom.allowSpectators && (
+                      <>
+                        <button
+                          type="button"
+                          data-testid="toggle-allow-spectator-chat"
+                          onClick={() => {
+                            soundEngine.playUiClick();
+                            multiplayerManager.setRoomSpectatorSettings(
+                              true,
+                              !(onlineRoom.allowSpectatorChat ?? true),
+                            );
+                          }}
+                          className={`rounded-lg border px-2.5 py-1 text-[11px] font-bold transition-colors cursor-pointer whitespace-nowrap ${
+                            onlineRoom.allowSpectatorChat !== false
+                              ? 'border-amber-400/50 bg-amber-500/15 text-amber-200'
+                              : 'border-white/15 bg-white/5 text-slate-400 hover:text-white'
+                          }`}
+                        >
+                          {onlineRoom.allowSpectatorChat !== false ? 'Spec Chat: On' : 'Spec Chat: Off'}
+                        </button>
+                        {onlineRoom.spectatorShareToken && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              soundEngine.playUiClick();
+                              const url = `${window.location.origin}${window.location.pathname}?spectate=${encodeURIComponent(onlineRoom.roomCode)}&token=${encodeURIComponent(onlineRoom.spectatorShareToken!)}`;
+                              navigator.clipboard
+                                ?.writeText(url)
+                                .then(() => {
+                                  setCopiedWatchLink(true);
+                                  window.setTimeout(() => setCopiedWatchLink(false), 1800);
+                                })
+                                .catch(() => {});
+                            }}
+                            className="inline-flex items-center gap-1 rounded-lg border border-white/15 bg-white/5 px-2.5 py-1 text-[11px] font-bold text-slate-200 hover:bg-white/10 cursor-pointer whitespace-nowrap"
+                          >
+                            {copiedWatchLink ? (
+                              <>
+                                <Check className="h-3 w-3 text-emerald-400" />
+                                Link Copied
+                              </>
+                            ) : (
+                              <>
+                                <Copy className="h-3 w-3 text-amber-400" />
+                                Copy Watch Link
+                              </>
+                            )}
+                          </button>
+                        )}
+                      </>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
+
             {/* Room Controls */}
             <div className="flex flex-wrap items-center gap-2 pt-1">
               {localRoomPlayer && (
@@ -584,13 +679,14 @@ export function OnlineLobbyUI() {
         ) : (
           <>
             {/* Navigation Tabs */}
-            <div className="mt-4 grid grid-cols-5 gap-1 rounded-xl border border-white/10 bg-black/35 p-1">
+            <div className="mt-4 grid grid-cols-3 sm:grid-cols-6 gap-1 rounded-xl border border-white/10 bg-black/35 p-1">
               {(
                 [
                   { id: 'ranked', label: 'Ranked', icon: Swords },
                   { id: 'quick', label: 'Quick', icon: Search },
                   { id: 'create', label: 'Private', icon: PlusCircle },
                   { id: 'join', label: 'Join Code', icon: KeyRound },
+                  { id: 'spectate', label: 'Spectate', icon: Eye },
                   { id: 'history', label: 'History', icon: History },
                 ] as const
               ).map((tab) => {
@@ -943,6 +1039,201 @@ export function OnlineLobbyUI() {
                   )}
                 </button>
               </form>
+            )}
+
+            {activeTab === 'spectate' && (
+              <div className="mt-4 space-y-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex items-center gap-1 rounded-xl border border-white/10 bg-black/35 p-1">
+                    {(
+                      [
+                        { id: 'all', label: 'All' },
+                        { id: 'quick', label: 'Quick' },
+                        { id: 'ranked', label: 'Ranked' },
+                        { id: 'tournament', label: 'Tournament' },
+                      ] as const
+                    ).map((f) => (
+                      <button
+                        key={f.id}
+                        type="button"
+                        onClick={() => {
+                          soundEngine.playUiClick();
+                          setSpectateMatchFilter(f.id);
+                        }}
+                        className={`rounded-lg px-2.5 py-1 text-[11px] font-bold transition-colors cursor-pointer whitespace-nowrap shrink-0 ${
+                          spectateMatchFilter === f.id
+                            ? 'bg-amber-500 text-slate-950'
+                            : 'text-slate-300 hover:text-white'
+                        }`}
+                      >
+                        {f.label}
+                      </button>
+                    ))}
+                  </div>
+
+                  <button
+                    type="button"
+                    data-testid="refresh-spectate-btn"
+                    onClick={() => {
+                      soundEngine.playUiClick();
+                      void multiplayerManager.fetchSpectatableMatches({
+                        matchType: spectateMatchFilter,
+                      });
+                    }}
+                    className="inline-flex items-center gap-1 rounded-lg border border-white/12 bg-white/5 px-2.5 py-1 text-[11px] font-bold text-slate-200 hover:bg-white/10 cursor-pointer whitespace-nowrap"
+                  >
+                    <RefreshCw
+                      className={`h-3.5 w-3.5 ${spectatableMatchesLoading ? 'animate-spin' : ''}`}
+                    />
+                    Refresh
+                  </button>
+                </div>
+
+                {/* Watch by Room Code */}
+                <form
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    if (!spectateCodeInput.trim()) return;
+                    soundEngine.playUiClick();
+                    void multiplayerManager.joinSpectate({
+                      roomCode: spectateCodeInput.trim().toUpperCase(),
+                      returnTarget: 'lobby',
+                    });
+                  }}
+                  className="flex items-center gap-2 rounded-xl border border-white/10 bg-black/25 p-2.5"
+                >
+                  <input
+                    type="text"
+                    maxLength={8}
+                    value={spectateCodeInput}
+                    onChange={(e) => setSpectateCodeInput(e.target.value.toUpperCase())}
+                    placeholder="Watch by room code (e.g. A7K9P2)"
+                    className="min-w-0 flex-1 rounded-lg border border-white/12 bg-[#0b1017] px-2.5 py-1.5 font-mono text-xs uppercase text-white placeholder:normal-case placeholder:font-sans placeholder:text-slate-500 focus:border-amber-400 focus:outline-none"
+                  />
+                  <button
+                    type="submit"
+                    disabled={spectateCodeInput.trim().length < 4}
+                    className="inline-flex items-center gap-1 rounded-lg border border-amber-400/45 bg-amber-500/15 px-3 py-1.5 text-xs font-bold text-amber-200 hover:bg-amber-500/25 disabled:opacity-45 cursor-pointer whitespace-nowrap shrink-0"
+                  >
+                    <Eye className="h-3.5 w-3.5" />
+                    Watch Code
+                  </button>
+                </form>
+
+                {/* Public Live Matches List */}
+                <div className="space-y-2 rounded-xl border border-white/10 bg-black/25 p-3 max-h-[260px] overflow-y-auto">
+                  {spectatableMatchesLoading && spectatableMatches.length === 0 ? (
+                    <div className="py-6 text-center text-xs text-slate-400">
+                      Scanning live match broadcasts...
+                    </div>
+                  ) : spectatableMatches.length === 0 ? (
+                    <div className="py-6 text-center text-xs text-slate-400">
+                      No public live matches are currently active. Check Quick, Ranked, or Tournaments!
+                    </div>
+                  ) : (
+                    spectatableMatches.map((m) => {
+                      const p1 = m.players[0];
+                      const p2 = m.players[1];
+                      const p1Av = p1 ? getAvatarVisualMeta(p1.avatarId) : null;
+                      const p2Av = p2 ? getAvatarVisualMeta(p2.avatarId) : null;
+                      return (
+                        <div
+                          key={m.roomId}
+                          data-testid={`spectatable-match-${m.roomId}`}
+                          className="flex flex-wrap items-center justify-between gap-2.5 rounded-xl border border-white/10 bg-[#101924] px-3 py-2.5 text-xs"
+                        >
+                          <div className="min-w-0 flex-1 space-y-1">
+                            <div className="flex flex-wrap items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider">
+                              <span className="text-emerald-300">
+                                {m.status === 'playing'
+                                  ? 'Live Broadcast'
+                                  : m.status === 'ready'
+                                    ? 'Match Ready'
+                                    : 'Waiting in Lobby'}
+                              </span>
+                              <span className="text-slate-600" aria-hidden="true">·</span>
+                              <span className="text-amber-300">{m.matchType}</span>
+                              <span className="text-slate-600" aria-hidden="true">·</span>
+                              <span className="text-slate-400">
+                                {m.calledShotsEnabled ? 'Strict WPA' : 'Casual'}
+                              </span>
+                              {m.tournament && (
+                                <>
+                                  <span className="text-slate-600" aria-hidden="true">·</span>
+                                  <span className="text-amber-200 truncate max-w-[160px]">
+                                    {m.tournament.tournamentTitle} ({m.tournament.roundLabel})
+                                  </span>
+                                </>
+                              )}
+                            </div>
+
+                            <div className="flex flex-wrap items-center gap-2 text-xs font-bold text-white">
+                              <span className="inline-flex items-center gap-1.5 min-w-0">
+                                {p1Av && (
+                                  <span
+                                    className="inline-flex h-4 w-4 items-center justify-center rounded text-[10px] font-bold"
+                                    style={{ backgroundColor: `${p1Av.accent}22`, color: p1Av.accent }}
+                                  >
+                                    {p1Av.glyph}
+                                  </span>
+                                )}
+                                <span className="truncate max-w-[110px]">
+                                  {p1?.displayName ?? 'Player 1'}
+                                </span>
+                                {p1 && (
+                                  <span className="font-mono text-[10px] tabular-nums text-slate-400">
+                                    {p1.elo}
+                                  </span>
+                                )}
+                              </span>
+                              <span className="text-slate-500 text-[10px]">vs</span>
+                              <span className="inline-flex items-center gap-1.5 min-w-0">
+                                {p2Av && (
+                                  <span
+                                    className="inline-flex h-4 w-4 items-center justify-center rounded text-[10px] font-bold"
+                                    style={{ backgroundColor: `${p2Av.accent}22`, color: p2Av.accent }}
+                                  >
+                                    {p2Av.glyph}
+                                  </span>
+                                )}
+                                <span className="truncate max-w-[110px]">
+                                  {p2?.displayName ?? 'Waiting'}
+                                </span>
+                                {p2 && (
+                                  <span className="font-mono text-[10px] tabular-nums text-slate-400">
+                                    {p2.elo}
+                                  </span>
+                                )}
+                              </span>
+                            </div>
+                          </div>
+
+                          <div className="flex items-center gap-2 shrink-0">
+                            <span className="font-mono text-[10px] tabular-nums text-slate-400">
+                              {m.spectatorCount}/{m.maxSpectators} watching
+                            </span>
+                            <button
+                              type="button"
+                              data-testid={`watch-match-btn-${m.roomId}`}
+                              onClick={() => {
+                                soundEngine.playUiClick();
+                                void multiplayerManager.joinSpectate({
+                                  roomId: m.roomId,
+                                  returnTarget: 'lobby',
+                                });
+                              }}
+                              className="inline-flex items-center gap-1.5 rounded-lg bg-amber-500 px-3 py-1.5 text-[11px] font-extrabold uppercase tracking-wider text-slate-950 hover:bg-amber-400 cursor-pointer whitespace-nowrap"
+                            >
+                              <Eye className="h-3.5 w-3.5" />
+                              Watch Live
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+              </div>
             )}
 
             {activeTab === 'history' && (

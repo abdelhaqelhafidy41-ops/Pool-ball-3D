@@ -154,6 +154,7 @@ export interface RoomChatMessageRecord {
   senderName: string;
   senderAvatar: OnlineAvatarId;
   senderRole: PlayerId | 'spectator';
+  channel?: 'match' | 'spectator';
   body: string;
   createdAtMs: number;
 }

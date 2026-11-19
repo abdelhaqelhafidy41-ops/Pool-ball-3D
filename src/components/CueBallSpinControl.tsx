@@ -65,6 +65,9 @@ export function CueBallSpinControl() {
   const matchPhase = useGameStore((s) => s.matchPhase);
   const isAiThinking = useGameStore((s) => s.isAiThinking);
   const canAct = useGameStore(canLocalPlayerAct);
+  const onlineSpectating = useGameStore((s) => s.onlineSpectating);
+
+  if (onlineSpectating) return null;
 
   const disabled =
     ballsMoving ||
