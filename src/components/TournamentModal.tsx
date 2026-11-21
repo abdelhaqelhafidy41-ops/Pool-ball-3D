@@ -285,6 +285,12 @@ export function TournamentModal() {
   const [nowMs, setNowMs] = useState(() => Date.now());
   const [loadingList, setLoadingList] = useState(false);
   const [loadingDetail, setLoadingDetail] = useState(false);
+  const [loadingLeaderboard, setLoadingLeaderboard] = useState(false);
+  const [loadingCareer, setLoadingCareer] = useState(false);
+  const [listError, setListError] = useState<string | null>(null);
+  const [detailError, setDetailError] = useState<string | null>(null);
+  const [leaderboardError, setLeaderboardError] = useState<string | null>(null);
+  const [careerError, setCareerError] = useState<string | null>(null);
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [busyMatchId, setBusyMatchId] = useState<string | null>(null);
   const [copiedCode, setCopiedCode] = useState(false);
@@ -322,13 +328,51 @@ export function TournamentModal() {
 
   const refreshDiscover = useCallback(async () => {
     setLoadingList(true);
-    await tournamentClient.fetchTournaments({
+    setListError(null);
+    const res = await tournamentClient.fetchTournaments({
       type: typeFilter,
       status: statusFilter,
       adminKey: adminSecretInput || undefined,
     });
+    setListError(res.error ?? null);
     setLoadingList(false);
   }, [typeFilter, statusFilter, adminSecretInput]);
+
+  const refreshLeaderboard = useCallback(async () => {
+    setLoadingLeaderboard(true);
+    setLeaderboardError(null);
+    const res = await tournamentClient.fetchLeaderboardSafe(lbSeasonFilter);
+    if (!res.ok) {
+      setLeaderboardError(res.error ?? 'Unable to load tournament leaderboard.');
+    }
+    setLoadingLeaderboard(false);
+  }, [lbSeasonFilter]);
+
+  const refreshCareer = useCallback(async () => {
+    setLoadingCareer(true);
+    setCareerError(null);
+    const res = await tournamentClient.fetchPlayerStatsSafe();
+    if (!res.ok) {
+      setCareerError(res.error ?? 'Unable to load tournament career stats.');
+    }
+    setLoadingCareer(false);
+  }, []);
+
+  const refreshSelectedDetail = useCallback(
+    async (tournamentId: string) => {
+      setLoadingDetail(true);
+      setDetailError(null);
+      const res = await tournamentClient.fetchTournamentDetail(
+        tournamentId,
+        adminSecretInput || undefined,
+      );
+      if (!res.ok) {
+        setDetailError(res.error ?? 'Failed to load tournament bracket details.');
+      }
+      setLoadingDetail(false);
+    },
+    [adminSecretInput],
+  );
 
   useEffect(() => {
     if (!tournamentModalOpen) return;
@@ -343,20 +387,33 @@ export function TournamentModal() {
   useEffect(() => {
     if (!tournamentModalOpen) return;
     if (tournamentTab === 'leaderboard') {
-      void tournamentClient.fetchLeaderboard(lbSeasonFilter);
+      void refreshLeaderboard();
     } else if (tournamentTab === 'career') {
-      void tournamentClient.fetchPlayerStats();
+      void refreshCareer();
     }
-  }, [tournamentModalOpen, tournamentTab, lbSeasonFilter]);
+  }, [tournamentModalOpen, tournamentTab, refreshLeaderboard, refreshCareer]);
 
   useEffect(() => {
     if (!tournamentModalOpen || !selectedTournamentId) return;
+    let cancelled = false;
     setLoadingDetail(true);
+    setDetailError(null);
     void tournamentClient
       .fetchTournamentDetail(selectedTournamentId, adminSecretInput || undefined)
-      .finally(() => setLoadingDetail(false));
+      .then((res) => {
+        if (cancelled) return;
+        if (!res.ok) {
+          setDetailError(res.error ?? 'Failed to load tournament bracket details.');
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setLoadingDetail(false);
+        }
+      });
     multiplayerManager.subscribeTournamentWs(selectedTournamentId);
     return () => {
+      cancelled = true;
       multiplayerManager.unsubscribeTournamentWs(selectedTournamentId);
     };
   }, [tournamentModalOpen, selectedTournamentId, adminSecretInput]);
@@ -372,15 +429,60 @@ export function TournamentModal() {
     }
   }, [tournamentModalOpen, tournamentTab, selectedTournamentId, tournamentsList]);
 
+  const detail = activeTournamentDetail;
+
+  // Bracket round grouping (unconditional hook call — must stay before any early return)
+  const roundColumns = useMemo(() => {
+    const emptyCols: Array<{ roundNumber: number; roundLabel: string; matches: TournamentMatch[] }> =
+      [];
+    if (!detail || !Array.isArray(detail.matches)) {
+      return { cols: emptyCols, thirdPlace: null as TournamentMatch | null };
+    }
+    const grouped = new Map<number, TournamentMatch[]>();
+    let thirdPlace: TournamentMatch | null = null;
+    for (const m of detail.matches) {
+      if (!m) continue;
+      if (m.isThirdPlaceMatch) {
+        thirdPlace = m;
+        continue;
+      }
+      const arr = grouped.get(m.roundNumber) ?? [];
+      arr.push(m);
+      grouped.set(m.roundNumber, arr);
+    }
+    const cols = [...grouped.entries()]
+      .sort((a, b) => a[0] - b[0])
+      .map(([roundNumber, matches]) => ({
+        roundNumber,
+        roundLabel: matches[0]?.roundLabel ?? `Round ${roundNumber}`,
+        matches: matches.slice().sort((a, b) => a.slotIndex - b.slotIndex),
+      }));
+    return { cols, thirdPlace };
+  }, [detail]);
+
+  const unresolvedMatches = useMemo(() => {
+    if (!detail || !Array.isArray(detail.matches)) return [];
+    return detail.matches.filter(
+      (m) =>
+        Boolean(m) &&
+        (m.status === 'ready' || m.status === 'in_progress') &&
+        m.player1Id &&
+        m.player2Id,
+    );
+  }, [detail]);
+
   if (!tournamentModalOpen) return null;
 
   const selfPlayerId = ownProfile?.playerId ?? null;
-  const detail = activeTournamentDetail;
   const detailTournament = detail?.tournament ?? null;
 
   const handleSelectTournament = (tournamentId: string) => {
     soundEngine.playUiClick();
-    useGameStore.getState().setSelectedTournamentId(tournamentId);
+    if (tournamentId === selectedTournamentId) {
+      void refreshSelectedDetail(tournamentId);
+    } else {
+      useGameStore.getState().setSelectedTournamentId(tournamentId);
+    }
     setTournamentTab('bracket');
   };
 
@@ -492,40 +594,6 @@ export function TournamentModal() {
     }
   };
 
-  // Bracket round grouping
-  const roundColumns = useMemo(() => {
-    if (!detail) return [];
-    const grouped = new Map<number, TournamentMatch[]>();
-    let thirdPlace: TournamentMatch | null = null;
-    for (const m of detail.matches) {
-      if (m.isThirdPlaceMatch) {
-        thirdPlace = m;
-        continue;
-      }
-      const arr = grouped.get(m.roundNumber) ?? [];
-      arr.push(m);
-      grouped.set(m.roundNumber, arr);
-    }
-    const cols = [...grouped.entries()]
-      .sort((a, b) => a[0] - b[0])
-      .map(([roundNumber, matches]) => ({
-        roundNumber,
-        roundLabel: matches[0]?.roundLabel ?? `Round ${roundNumber}`,
-        matches: matches.sort((a, b) => a.slotIndex - b.slotIndex),
-      }));
-    return { cols, thirdPlace };
-  }, [detail]);
-
-  const unresolvedMatches = useMemo(() => {
-    if (!detail) return [];
-    return detail.matches.filter(
-      (m) =>
-        (m.status === 'ready' || m.status === 'in_progress') &&
-        m.player1Id &&
-        m.player2Id,
-    );
-  }, [detail]);
-
   return (
     <div
       role="dialog"
@@ -561,12 +629,17 @@ export function TournamentModal() {
               type="button"
               onClick={() => {
                 soundEngine.playUiClick();
-                void refreshDiscover();
-                if (selectedTournamentId) {
-                  void tournamentClient.fetchTournamentDetail(
-                    selectedTournamentId,
-                    adminSecretInput || undefined,
-                  );
+                if (tournamentTab === 'discover') {
+                  void refreshDiscover();
+                } else if (tournamentTab === 'leaderboard') {
+                  void refreshLeaderboard();
+                } else if (tournamentTab === 'career') {
+                  void refreshCareer();
+                } else {
+                  void refreshDiscover();
+                  if (selectedTournamentId) {
+                    void refreshSelectedDetail(selectedTournamentId);
+                  }
                 }
               }}
               aria-label="Refresh tournaments"
@@ -827,13 +900,45 @@ export function TournamentModal() {
               </div>
 
               {/* Tournament Grid */}
+              {listError && (
+                <div
+                  data-testid="tournament-list-error"
+                  className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-rose-500/35 bg-rose-500/10 px-3 py-2 text-xs text-rose-200"
+                >
+                  <span>{listError}</span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      soundEngine.playUiClick();
+                      void refreshDiscover();
+                    }}
+                    className="rounded-lg border border-rose-400/40 bg-rose-500/15 px-2.5 py-1 text-[11px] font-bold text-rose-100 hover:bg-rose-500/25 cursor-pointer"
+                  >
+                    Retry
+                  </button>
+                </div>
+              )}
+
               {loadingList && tournamentsList.length === 0 ? (
                 <div className="py-12 text-center text-xs text-slate-400">
                   Loading global tournaments...
                 </div>
               ) : tournamentsList.length === 0 ? (
-                <div className="rounded-xl border border-white/10 bg-black/25 py-12 text-center text-xs text-slate-400">
-                  No tournaments match the selected filters.
+                <div className="rounded-xl border border-white/10 bg-black/25 py-12 text-center text-xs text-slate-400 space-y-2">
+                  <div>
+                    {listError
+                      ? 'Could not load tournaments right now.'
+                      : 'No tournaments match the selected filters.'}
+                  </div>
+                  {listError && (
+                    <button
+                      type="button"
+                      onClick={() => void refreshDiscover()}
+                      className="inline-flex items-center rounded-lg bg-amber-500 px-3 py-1.5 text-xs font-extrabold text-slate-950 hover:bg-amber-400 cursor-pointer"
+                    >
+                      Try Again
+                    </button>
+                  )}
                 </div>
               ) : (
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
@@ -969,13 +1074,44 @@ export function TournamentModal() {
 
           {tournamentTab === 'bracket' && (
             <div className="space-y-4">
+              {detailError && (
+                <div
+                  data-testid="tournament-detail-error"
+                  className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-rose-500/35 bg-rose-500/10 px-3 py-2 text-xs text-rose-200"
+                >
+                  <span>{detailError}</span>
+                  <div className="flex items-center gap-2">
+                    {selectedTournamentId && (
+                      <button
+                        type="button"
+                        onClick={() => void refreshSelectedDetail(selectedTournamentId)}
+                        className="rounded-lg border border-rose-400/40 bg-rose-500/15 px-2.5 py-1 text-[11px] font-bold text-rose-100 hover:bg-rose-500/25 cursor-pointer"
+                      >
+                        Retry
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => setTournamentTab('discover')}
+                      className="rounded-lg border border-white/15 bg-white/5 px-2.5 py-1 text-[11px] font-bold text-slate-200 hover:bg-white/10 cursor-pointer"
+                    >
+                      Discover
+                    </button>
+                  </div>
+                </div>
+              )}
+
               {loadingDetail && !detail ? (
                 <div className="py-12 text-center text-xs text-slate-400">
                   Loading tournament bracket...
                 </div>
               ) : !detail || !detailTournament ? (
                 <div className="rounded-xl border border-white/10 bg-black/25 py-12 text-center text-xs text-slate-400 space-y-3">
-                  <div>Select a tournament from the Discover feed to inspect its live bracket.</div>
+                  <div>
+                    {detailError
+                      ? 'Tournament bracket details are currently unavailable.'
+                      : 'Select a tournament from the Discover feed to inspect its live bracket.'}
+                  </div>
                   <button
                     type="button"
                     onClick={() => setTournamentTab('discover')}
@@ -1279,41 +1415,40 @@ export function TournamentModal() {
                       </div>
 
                       <div className="flex gap-3 overflow-x-auto pb-2">
-                        {!Array.isArray(roundColumns) &&
-                          roundColumns.cols.map((col) => (
-                            <div
-                              key={col.roundNumber}
-                              className="min-w-[235px] flex-1 space-y-2.5"
-                            >
-                              <div className="rounded-lg border border-white/10 bg-[#0b1017] px-2.5 py-1.5 text-center text-[11px] font-extrabold uppercase tracking-wider text-amber-300">
-                                {col.roundLabel}
-                              </div>
-                              <div className="space-y-2.5">
-                                {col.matches.map((m) => (
-                                  <BracketMatchCard
-                                    key={m.bracketMatchId}
-                                    match={m}
-                                    viewerPlayerId={selfPlayerId}
-                                    nowMs={nowMs}
-                                    busyMatchId={busyMatchId}
-                                    isPrivateTournament={detailTournament.isPrivate}
-                                    onEnterMatch={(mid) =>
-                                      void handleEnterMatch(detailTournament.tournamentId, mid)
-                                    }
-                                    onSpectateMatch={(rid) =>
-                                      void multiplayerManager.joinSpectate({
-                                        roomId: rid,
-                                        returnTarget: 'tournament',
-                                        tournamentId: detailTournament.tournamentId,
-                                      })
-                                    }
-                                  />
-                                ))}
-                              </div>
+                        {roundColumns.cols.map((col) => (
+                          <div
+                            key={col.roundNumber}
+                            className="min-w-[235px] flex-1 space-y-2.5"
+                          >
+                            <div className="rounded-lg border border-white/10 bg-[#0b1017] px-2.5 py-1.5 text-center text-[11px] font-extrabold uppercase tracking-wider text-amber-300">
+                              {col.roundLabel}
                             </div>
-                          ))}
+                            <div className="space-y-2.5">
+                              {col.matches.map((m) => (
+                                <BracketMatchCard
+                                  key={m.bracketMatchId}
+                                  match={m}
+                                  viewerPlayerId={selfPlayerId}
+                                  nowMs={nowMs}
+                                  busyMatchId={busyMatchId}
+                                  isPrivateTournament={detailTournament.isPrivate}
+                                  onEnterMatch={(mid) =>
+                                    void handleEnterMatch(detailTournament.tournamentId, mid)
+                                  }
+                                  onSpectateMatch={(rid) =>
+                                    void multiplayerManager.joinSpectate({
+                                      roomId: rid,
+                                      returnTarget: 'tournament',
+                                      tournamentId: detailTournament.tournamentId,
+                                    })
+                                  }
+                                />
+                              ))}
+                            </div>
+                          </div>
+                        ))}
 
-                        {!Array.isArray(roundColumns) && roundColumns.thirdPlace && (
+                        {roundColumns.thirdPlace && (
                           <div className="min-w-[235px] flex-1 space-y-2.5">
                             <div className="rounded-lg border border-white/10 bg-[#0b1017] px-2.5 py-1.5 text-center text-[11px] font-extrabold uppercase tracking-wider text-slate-300">
                               Third Place Match
@@ -1483,13 +1618,26 @@ export function TournamentModal() {
                   type="button"
                   onClick={() => {
                     soundEngine.playUiClick();
-                    void tournamentClient.fetchLeaderboard(lbSeasonFilter);
+                    void refreshLeaderboard();
                   }}
                   className="rounded-lg border border-white/12 bg-white/5 px-3 py-1.5 text-xs font-semibold text-slate-200 hover:bg-white/10 cursor-pointer whitespace-nowrap"
                 >
                   Refresh
                 </button>
               </div>
+
+              {leaderboardError && (
+                <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-rose-500/35 bg-rose-500/10 px-3 py-2 text-xs text-rose-200">
+                  <span>{leaderboardError}</span>
+                  <button
+                    type="button"
+                    onClick={() => void refreshLeaderboard()}
+                    className="rounded-lg border border-rose-400/40 bg-rose-500/15 px-2.5 py-1 text-[11px] font-bold text-rose-100 hover:bg-rose-500/25 cursor-pointer"
+                  >
+                    Retry
+                  </button>
+                </div>
+              )}
 
               <div className="overflow-x-auto rounded-xl border border-white/10 bg-black/25">
                 <table className="w-full text-left text-xs">
@@ -1505,10 +1653,18 @@ export function TournamentModal() {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-white/5">
-                    {tournamentLeaderboard.length === 0 ? (
+                    {loadingLeaderboard && tournamentLeaderboard.length === 0 ? (
                       <tr>
                         <td colSpan={7} className="py-8 text-center text-slate-400">
-                          No tournament champions or bracket results recorded yet for this season.
+                          Loading tournament leaderboard...
+                        </td>
+                      </tr>
+                    ) : tournamentLeaderboard.length === 0 ? (
+                      <tr>
+                        <td colSpan={7} className="py-8 text-center text-slate-400">
+                          {leaderboardError
+                            ? 'Tournament leaderboard is temporarily unavailable.'
+                            : 'No tournament champions or bracket results recorded yet for this season.'}
                         </td>
                       </tr>
                     ) : (
@@ -1571,9 +1727,20 @@ export function TournamentModal() {
 
           {tournamentTab === 'career' && (
             <div className="space-y-4">
-              {!playerTournamentStats ? (
+              {loadingCareer && !playerTournamentStats ? (
                 <div className="py-10 text-center text-xs text-slate-400">
                   Loading tournament career telemetry...
+                </div>
+              ) : !playerTournamentStats ? (
+                <div className="rounded-xl border border-white/10 bg-black/25 py-10 text-center text-xs text-slate-400 space-y-3">
+                  <div>{careerError ?? 'Tournament career telemetry unavailable.'}</div>
+                  <button
+                    type="button"
+                    onClick={() => void refreshCareer()}
+                    className="inline-flex items-center rounded-lg bg-amber-500 px-3.5 py-1.5 text-xs font-extrabold text-slate-950 hover:bg-amber-400 cursor-pointer"
+                  >
+                    Retry
+                  </button>
                 </div>
               ) : (
                 <>

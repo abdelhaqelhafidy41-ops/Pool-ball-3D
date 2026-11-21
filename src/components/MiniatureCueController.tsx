@@ -28,17 +28,6 @@ export function MiniatureCueController({ onShoot }: MiniatureCueControllerProps)
   const canAct = useGameStore(canLocalPlayerAct);
   const onlineSpectating = useGameStore((s) => s.onlineSpectating);
 
-  if (onlineSpectating) return null;
-
-  const disabled =
-    ballsMoving ||
-    isShotAnimating ||
-    isAiThinking ||
-    !canAct ||
-    matchPhase === 'BALL_IN_HAND' ||
-    matchPhase === 'BALLS_MOVING' ||
-    matchPhase === 'GAME_OVER';
-
   const [displayPower, setDisplayPower] = useState(0);
   const [isDragging, setIsDragging] = useState(false);
 
@@ -60,6 +49,7 @@ export function MiniatureCueController({ onShoot }: MiniatureCueControllerProps)
 
   // Mount isolated frameless miniature 3D cue stick WebGL scene
   useEffect(() => {
+    if (onlineSpectating) return;
     const container = canvasWrapRef.current;
     if (!container) return;
 
@@ -278,7 +268,18 @@ export function MiniatureCueController({ onShoot }: MiniatureCueControllerProps)
         cancelAnimationFrame(frameId);
       };
     }
-  }, []);
+  }, [onlineSpectating]);
+
+  if (onlineSpectating) return null;
+
+  const disabled =
+    ballsMoving ||
+    isShotAnimating ||
+    isAiThinking ||
+    !canAct ||
+    matchPhase === 'BALL_IN_HAND' ||
+    matchPhase === 'BALLS_MOVING' ||
+    matchPhase === 'GAME_OVER';
 
   const handlePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
     if (disabled || (e.button !== 0 && e.pointerType === 'mouse')) return;

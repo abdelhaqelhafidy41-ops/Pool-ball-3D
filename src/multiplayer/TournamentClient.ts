@@ -29,6 +29,34 @@ export interface JoinTournamentMatchResult {
   roomSession: { sessionId: string; reconnectToken: string };
 }
 
+function isValidTournamentRecord(raw: unknown): raw is TournamentRecord {
+  if (!raw || typeof raw !== 'object') return false;
+  const r = raw as Record<string, unknown>;
+  return typeof r.tournamentId === 'string' && r.tournamentId.length > 0 && typeof r.title === 'string';
+}
+
+function normalizeTournamentRecord(raw: TournamentRecord): TournamentRecord {
+  const prizesObj = raw.prizes && typeof raw.prizes === 'object' ? raw.prizes : ({} as TournamentRecord['prizes']);
+  return {
+    ...raw,
+    description: typeof raw.description === 'string' ? raw.description : '',
+    participantCount: Number.isFinite(raw.participantCount) ? raw.participantCount : 0,
+    maxPlayers: Number.isFinite(raw.maxPlayers) && raw.maxPlayers > 0 ? raw.maxPlayers : 8,
+    minPlayers: Number.isFinite(raw.minPlayers) && raw.minPlayers > 0 ? raw.minPlayers : 2,
+    entryFeeCoins: Number.isFinite(raw.entryFeeCoins) ? raw.entryFeeCoins : 0,
+    minElo: Number.isFinite(raw.minElo) ? raw.minElo : 0,
+    prizes: {
+      championCoins: Number.isFinite(prizesObj.championCoins) ? prizesObj.championCoins : 0,
+      runnerUpCoins: Number.isFinite(prizesObj.runnerUpCoins) ? prizesObj.runnerUpCoins : 0,
+      thirdPlaceCoins: Number.isFinite(prizesObj.thirdPlaceCoins) ? prizesObj.thirdPlaceCoins : 0,
+      participantCoins: Number.isFinite(prizesObj.participantCoins) ? prizesObj.participantCoins : 0,
+      championBadgeId: typeof prizesObj.championBadgeId === 'string' ? prizesObj.championBadgeId : null,
+      finalistBadgeId: typeof prizesObj.finalistBadgeId === 'string' ? prizesObj.finalistBadgeId : null,
+      trophyId: typeof prizesObj.trophyId === 'string' ? prizesObj.trophyId : '',
+    },
+  };
+}
+
 class TournamentClientImpl {
   private async ensureIdentity() {
     let stored = getStoredPlayerIdentity();
@@ -62,7 +90,7 @@ class TournamentClientImpl {
     type?: TournamentType | 'all';
     status?: TournamentStatus | 'all';
     adminKey?: string;
-  }): Promise<{ tournaments: TournamentRecord[]; trophyCatalog: TournamentTrophyDef[] }> {
+  }): Promise<{ tournaments: TournamentRecord[]; trophyCatalog: TournamentTrophyDef[]; error?: string | null }> {
     try {
       const identity = getStoredPlayerIdentity();
       const qs = new URLSearchParams();
@@ -81,21 +109,39 @@ class TournamentClientImpl {
         trophyCatalog?: TournamentTrophyDef[];
       }>(`/api/tournaments${query ? `?${query}` : ''}`, { headers });
 
-      const tournaments = ok && Array.isArray(json.tournaments) ? json.tournaments : [];
-      if (ok) {
-        useGameStore.getState().setTournamentsList(tournaments);
+      if (!ok) {
+        return {
+          tournaments: useGameStore.getState().tournamentsList,
+          trophyCatalog: TOURNAMENT_TROPHY_CATALOG,
+          error: json.message ?? 'Unable to load tournaments right now.',
+        };
       }
+
+      if (!Array.isArray(json.tournaments)) {
+        return {
+          tournaments: [],
+          trophyCatalog: TOURNAMENT_TROPHY_CATALOG,
+          error: 'Received invalid tournament directory payload.',
+        };
+      }
+
+      const tournaments = json.tournaments
+        .filter(isValidTournamentRecord)
+        .map(normalizeTournamentRecord);
+
+      useGameStore.getState().setTournamentsList(tournaments);
       return {
         tournaments,
-        trophyCatalog:
-          ok && Array.isArray(json.trophyCatalog)
-            ? json.trophyCatalog
-            : TOURNAMENT_TROPHY_CATALOG,
+        trophyCatalog: Array.isArray(json.trophyCatalog)
+          ? json.trophyCatalog
+          : TOURNAMENT_TROPHY_CATALOG,
+        error: null,
       };
     } catch {
       return {
         tournaments: useGameStore.getState().tournamentsList,
         trophyCatalog: TOURNAMENT_TROPHY_CATALOG,
+        error: 'Network error loading global tournaments.',
       };
     }
   }
@@ -117,23 +163,27 @@ class TournamentClientImpl {
         `/api/tournaments/${encodeURIComponent(tournamentId)}${qs}`,
         { headers },
       );
-      if (!ok || !json.tournament) {
+      if (!ok || !isValidTournamentRecord(json.tournament)) {
         return {
           ok: false,
           code: json.error,
-          error: json.message ?? 'Tournament not found.',
+          error: json.message ?? 'Tournament not found or returned invalid data.',
         };
       }
+      const rawViewerStatus =
+        json.viewerStatus && typeof json.viewerStatus === 'object'
+          ? json.viewerStatus
+          : { isRegistered: false, participant: null, activeMatch: null };
       const detail: TournamentDetailPayload = {
-        tournament: json.tournament,
-        participants: json.participants ?? [],
-        matches: json.matches ?? [],
-        payouts: json.payouts ?? [],
-        events: json.events ?? [],
-        viewerStatus: json.viewerStatus ?? {
-          isRegistered: false,
-          participant: null,
-          activeMatch: null,
+        tournament: normalizeTournamentRecord(json.tournament),
+        participants: Array.isArray(json.participants) ? json.participants : [],
+        matches: Array.isArray(json.matches) ? json.matches : [],
+        payouts: Array.isArray(json.payouts) ? json.payouts : [],
+        events: Array.isArray(json.events) ? json.events : [],
+        viewerStatus: {
+          isRegistered: Boolean(rawViewerStatus.isRegistered),
+          participant: rawViewerStatus.participant ?? null,
+          activeMatch: rawViewerStatus.activeMatch ?? null,
         },
       };
       useGameStore.getState().setActiveTournamentDetail(detail);
@@ -143,10 +193,10 @@ class TournamentClientImpl {
     }
   }
 
-  public async fetchLeaderboard(
+  public async fetchLeaderboardSafe(
     seasonKey?: string | null,
     limit = 30,
-  ): Promise<TournamentLeaderboardEntry[]> {
+  ): Promise<{ ok: boolean; entries: TournamentLeaderboardEntry[]; error?: string | null }> {
     try {
       const qs = new URLSearchParams({ limit: String(limit) });
       if (seasonKey && seasonKey !== 'ALL') {
@@ -155,31 +205,75 @@ class TournamentClientImpl {
       const { ok, json } = await this.requestJson<{
         entries?: TournamentLeaderboardEntry[];
       }>(`/api/tournaments/leaderboard?${qs.toString()}`);
-      if (!ok || !Array.isArray(json.entries)) return [];
+      if (!ok || !Array.isArray(json.entries)) {
+        return {
+          ok: false,
+          entries: [],
+          error: json.message ?? 'Unable to load tournament leaderboard.',
+        };
+      }
       useGameStore.getState().setTournamentLeaderboard(json.entries);
-      return json.entries;
+      return { ok: true, entries: json.entries, error: null };
     } catch {
-      return [];
+      return {
+        ok: false,
+        entries: [],
+        error: 'Network error loading tournament leaderboard.',
+      };
+    }
+  }
+
+  public async fetchLeaderboard(
+    seasonKey?: string | null,
+    limit = 30,
+  ): Promise<TournamentLeaderboardEntry[]> {
+    const res = await this.fetchLeaderboardSafe(seasonKey, limit);
+    return res.entries;
+  }
+
+  public async fetchPlayerStatsSafe(
+    playerId?: string | null,
+  ): Promise<{ ok: boolean; stats: PlayerTournamentStats | null; error?: string | null }> {
+    try {
+      const targetId = playerId?.trim() || getStoredPlayerIdentity()?.playerId;
+      if (!targetId) {
+        return { ok: false, stats: null, error: 'Player session not initialized yet.' };
+      }
+      const { ok, json } = await this.requestJson<{ stats?: PlayerTournamentStats }>(
+        `/api/tournaments/stats/${encodeURIComponent(targetId)}`,
+      );
+      if (!ok || !json.stats || typeof json.stats !== 'object') {
+        return {
+          ok: false,
+          stats: null,
+          error: json.message ?? 'Unable to load tournament career stats.',
+        };
+      }
+      const normalizedStats: PlayerTournamentStats = {
+        ...json.stats,
+        trophies: Array.isArray(json.stats.trophies) ? json.stats.trophies : [],
+        recentTournaments: Array.isArray(json.stats.recentTournaments)
+          ? json.stats.recentTournaments
+          : [],
+      };
+      if (targetId === getStoredPlayerIdentity()?.playerId) {
+        useGameStore.getState().setPlayerTournamentStats(normalizedStats);
+      }
+      return { ok: true, stats: normalizedStats, error: null };
+    } catch {
+      return {
+        ok: false,
+        stats: null,
+        error: 'Network error loading tournament career stats.',
+      };
     }
   }
 
   public async fetchPlayerStats(
     playerId?: string | null,
   ): Promise<PlayerTournamentStats | null> {
-    try {
-      const targetId = playerId?.trim() || getStoredPlayerIdentity()?.playerId;
-      if (!targetId) return null;
-      const { ok, json } = await this.requestJson<{ stats?: PlayerTournamentStats }>(
-        `/api/tournaments/stats/${encodeURIComponent(targetId)}`,
-      );
-      if (!ok || !json.stats) return null;
-      if (targetId === getStoredPlayerIdentity()?.playerId) {
-        useGameStore.getState().setPlayerTournamentStats(json.stats);
-      }
-      return json.stats;
-    } catch {
-      return null;
-    }
+    const res = await this.fetchPlayerStatsSafe(playerId);
+    return res.stats;
   }
 
   public async createPrivateTournament(

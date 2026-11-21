@@ -247,7 +247,12 @@ export default function App() {
         <ProgressionModal />
         <SocialModal />
         <StoreModal />
-        <TournamentModal />
+        <ErrorBoundary
+          sectionName="Global Tournaments"
+          onReset={() => useGameStore.getState().closeTournamentModal()}
+        >
+          <TournamentModal />
+        </ErrorBoundary>
         <BattlePassModal />
         <InviteNotificationBanner />
         <ProgressionToastBanner />

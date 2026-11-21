@@ -67,6 +67,10 @@ export function CueBallSpinControl() {
   const canAct = useGameStore(canLocalPlayerAct);
   const onlineSpectating = useGameStore((s) => s.onlineSpectating);
 
+  const [isDragging, setIsDragging] = useState(false);
+  const ballRef = useRef<HTMLDivElement | null>(null);
+  const activePointerIdRef = useRef<number | null>(null);
+
   if (onlineSpectating) return null;
 
   const disabled =
@@ -77,10 +81,6 @@ export function CueBallSpinControl() {
     matchPhase === 'BALL_IN_HAND' ||
     matchPhase === 'BALLS_MOVING' ||
     matchPhase === 'GAME_OVER';
-
-  const [isDragging, setIsDragging] = useState(false);
-  const ballRef = useRef<HTMLDivElement | null>(null);
-  const activePointerIdRef = useRef<number | null>(null);
 
   const updateSpinFromPointer = (clientX: number, clientY: number) => {
     const el = ballRef.current;
