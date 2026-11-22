@@ -3,12 +3,24 @@ import { useGameStore } from '../store/useGameStore';
 import { getStoredPlayerIdentity, progressionClient, resolveProgressionApiBase, type ApiResult } from './ProgressionClient';
 import type { OnlineRoomInfo } from './shared/protocol';
 import type {
+  ClubChallengeRecord,
+  ClubDetailPayload,
+  ClubEmblemIcon,
+  ClubJoinMode,
+  ClubLeaderboardEntry,
+  ClubLeaderboardScope,
+  ClubRecord,
+  ClubRole,
   DirectMessageRecord,
+  FriendRecord,
   FriendRequestAction,
   ManualPresenceStatus,
   MatchInvitationRecord,
   MatchInviteAction,
+  MatchInviteKind,
   PresenceStatus,
+  PrivacySettings,
+  SocialNotificationRecord,
   SocialOverviewPayload,
   SocialReportContext,
   SocialReportReason,
@@ -224,6 +236,8 @@ class SocialClientImpl {
     targetPlayerId: string;
     ruleProfileId: RuleProfileId;
     calledShotsEnabled: boolean;
+    inviteKind?: MatchInviteKind;
+    roomId?: string;
   }): Promise<ApiResult<MatchInvitationRecord>> {
     const creds = await this.ensureCredentials();
     if (!creds) return { ok: false, error: 'Player session not initialized.' };
@@ -238,6 +252,8 @@ class SocialClientImpl {
             targetPlayerId: params.targetPlayerId,
             ruleProfileId: params.ruleProfileId,
             calledShotsEnabled: params.calledShotsEnabled,
+            inviteKind: params.inviteKind,
+            roomId: params.roomId,
           }),
         },
       );
@@ -254,13 +270,20 @@ class SocialClientImpl {
   public async respondInvite(
     inviteId: string,
     action: MatchInviteAction,
-  ): Promise<ApiResult<{ invitation: MatchInvitationRecord; room?: OnlineRoomInfo }>> {
+  ): Promise<
+    ApiResult<{
+      invitation: MatchInvitationRecord;
+      room?: OnlineRoomInfo;
+      spectateTarget?: { roomId: string; roomCode: string | null };
+    }>
+  > {
     const creds = await this.ensureCredentials();
     if (!creds) return { ok: false, error: 'Player session not initialized.' };
     try {
       const { ok, json } = await this.requestJson<{
         invitation: MatchInvitationRecord;
         room?: OnlineRoomInfo;
+        spectateTarget?: { roomId: string; roomCode: string | null };
       }>('/api/social/invites/respond', {
         method: 'POST',
         headers: { Authorization: `Bearer ${creds.playerToken}` },
@@ -279,7 +302,14 @@ class SocialClientImpl {
         };
       }
       useGameStore.getState().upsertInvitation(json.invitation);
-      return { ok: true, data: { invitation: json.invitation, room: json.room } };
+      return {
+        ok: true,
+        data: {
+          invitation: json.invitation,
+          room: json.room,
+          spectateTarget: json.spectateTarget,
+        },
+      };
     } catch {
       return { ok: false, error: 'Network error responding to match invitation.' };
     }
@@ -364,6 +394,631 @@ class SocialClientImpl {
       return { ok: true, data: { reportId: json.reportId } };
     } catch {
       return { ok: false, error: 'Network error submitting report.' };
+    }
+  }
+
+  public async joinFriendRoom(
+    friendPlayerId: string,
+    sessionId?: string | null,
+  ): Promise<ApiResult<{ room: OnlineRoomInfo }>> {
+    const creds = await this.ensureCredentials();
+    if (!creds) return { ok: false, error: 'Player session not initialized.' };
+    try {
+      const { ok, json } = await this.requestJson<{ room: OnlineRoomInfo }>(
+        '/api/social/rooms/join-friend',
+        {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${creds.playerToken}` },
+          body: JSON.stringify({
+            playerId: creds.playerId,
+            friendPlayerId,
+            sessionId: sessionId ?? useGameStore.getState().onlineSessionId ?? undefined,
+          }),
+        },
+      );
+      if (!ok || !json.room) {
+        return {
+          ok: false,
+          code: json.error,
+          error: json.message ?? 'Unable to join friend room.',
+        };
+      }
+      return { ok: true, data: { room: json.room } };
+    } catch {
+      return { ok: false, error: 'Network error joining friend room.' };
+    }
+  }
+
+  public async fetchFriendsPaginated(opts?: {
+    limit?: number;
+    offset?: number;
+    query?: string;
+  }): Promise<ApiResult<{ friends: FriendRecord[]; total: number; hasMore: boolean }>> {
+    const creds = await this.ensureCredentials();
+    if (!creds) return { ok: false, error: 'Player session not initialized.' };
+    try {
+      const qs = new URLSearchParams({
+        playerId: creds.playerId,
+        limit: String(opts?.limit ?? 25),
+        offset: String(opts?.offset ?? 0),
+      });
+      if (opts?.query) qs.set('q', opts.query);
+      const { ok, json } = await this.requestJson<{
+        friends: FriendRecord[];
+        total: number;
+        hasMore: boolean;
+      }>(`/api/social/friends?${qs.toString()}`, {
+        headers: { Authorization: `Bearer ${creds.playerToken}` },
+      });
+      if (!ok || !Array.isArray(json.friends)) {
+        return { ok: false, code: json.error, error: json.message ?? 'Unable to load friends.' };
+      }
+      useGameStore
+        .getState()
+        .setFriendsPage(json.friends, json.total, (opts?.offset ?? 0) > 0);
+      return {
+        ok: true,
+        data: { friends: json.friends, total: json.total, hasMore: Boolean(json.hasMore) },
+      };
+    } catch {
+      return { ok: false, error: 'Network error loading friends.' };
+    }
+  }
+
+  public async fetchPrivacySettings(): Promise<ApiResult<PrivacySettings>> {
+    const creds = await this.ensureCredentials();
+    if (!creds) return { ok: false, error: 'Player session not initialized.' };
+    try {
+      const { ok, json } = await this.requestJson<{ privacy: PrivacySettings }>(
+        `/api/social/privacy?playerId=${encodeURIComponent(creds.playerId)}`,
+        {
+          headers: { Authorization: `Bearer ${creds.playerToken}` },
+        },
+      );
+      if (!ok || !json.privacy) {
+        return {
+          ok: false,
+          code: json.error,
+          error: json.message ?? 'Unable to load privacy settings.',
+        };
+      }
+      useGameStore.getState().setPrivacySettings(json.privacy);
+      return { ok: true, data: json.privacy };
+    } catch {
+      return { ok: false, error: 'Network error loading privacy settings.' };
+    }
+  }
+
+  public async updatePrivacySettings(
+    partial: Partial<PrivacySettings>,
+  ): Promise<ApiResult<PrivacySettings>> {
+    const creds = await this.ensureCredentials();
+    if (!creds) return { ok: false, error: 'Player session not initialized.' };
+    try {
+      const { ok, json } = await this.requestJson<{ privacy: PrivacySettings }>(
+        '/api/social/privacy',
+        {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${creds.playerToken}` },
+          body: JSON.stringify({
+            playerId: creds.playerId,
+            ...partial,
+          }),
+        },
+      );
+      if (!ok || !json.privacy) {
+        return {
+          ok: false,
+          code: json.error,
+          error: json.message ?? 'Unable to update privacy settings.',
+        };
+      }
+      useGameStore.getState().setPrivacySettings(json.privacy);
+      return { ok: true, data: json.privacy };
+    } catch {
+      return { ok: false, error: 'Network error saving privacy settings.' };
+    }
+  }
+
+  public async fetchNotifications(opts?: {
+    limit?: number;
+    unreadOnly?: boolean;
+  }): Promise<ApiResult<{ notifications: SocialNotificationRecord[]; unreadCount: number }>> {
+    const creds = await this.ensureCredentials();
+    if (!creds) return { ok: false, error: 'Player session not initialized.' };
+    try {
+      const qs = new URLSearchParams({
+        playerId: creds.playerId,
+        limit: String(opts?.limit ?? 40),
+      });
+      if (opts?.unreadOnly) qs.set('unreadOnly', '1');
+      const { ok, json } = await this.requestJson<{
+        notifications: SocialNotificationRecord[];
+        unreadCount: number;
+      }>(`/api/social/notifications?${qs.toString()}`, {
+        headers: { Authorization: `Bearer ${creds.playerToken}` },
+      });
+      if (!ok || !Array.isArray(json.notifications)) {
+        return {
+          ok: false,
+          code: json.error,
+          error: json.message ?? 'Unable to load notifications.',
+        };
+      }
+      useGameStore
+        .getState()
+        .applyNotificationsUpdated(json.notifications, json.unreadCount ?? 0);
+      return {
+        ok: true,
+        data: { notifications: json.notifications, unreadCount: json.unreadCount ?? 0 },
+      };
+    } catch {
+      return { ok: false, error: 'Network error loading notifications.' };
+    }
+  }
+
+  public async markNotificationsRead(
+    notificationId?: string,
+  ): Promise<ApiResult<{ notifications: SocialNotificationRecord[]; unreadCount: number }>> {
+    const creds = await this.ensureCredentials();
+    if (!creds) return { ok: false, error: 'Player session not initialized.' };
+    try {
+      const { ok, json } = await this.requestJson<{
+        notifications: SocialNotificationRecord[];
+        unreadCount: number;
+      }>('/api/social/notifications/read', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${creds.playerToken}` },
+        body: JSON.stringify({
+          playerId: creds.playerId,
+          notificationId,
+        }),
+      });
+      if (!ok || !Array.isArray(json.notifications)) {
+        return {
+          ok: false,
+          code: json.error,
+          error: json.message ?? 'Unable to mark notifications read.',
+        };
+      }
+      useGameStore
+        .getState()
+        .applyNotificationsUpdated(json.notifications, json.unreadCount ?? 0);
+      return {
+        ok: true,
+        data: { notifications: json.notifications, unreadCount: json.unreadCount ?? 0 },
+      };
+    } catch {
+      return { ok: false, error: 'Network error updating notifications.' };
+    }
+  }
+
+  public async clearNotifications(
+    notificationId?: string,
+  ): Promise<ApiResult<{ notifications: SocialNotificationRecord[]; unreadCount: number }>> {
+    const creds = await this.ensureCredentials();
+    if (!creds) return { ok: false, error: 'Player session not initialized.' };
+    try {
+      const { ok, json } = await this.requestJson<{
+        notifications: SocialNotificationRecord[];
+        unreadCount: number;
+      }>('/api/social/notifications/clear', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${creds.playerToken}` },
+        body: JSON.stringify({
+          playerId: creds.playerId,
+          notificationId,
+        }),
+      });
+      if (!ok || !Array.isArray(json.notifications)) {
+        return {
+          ok: false,
+          code: json.error,
+          error: json.message ?? 'Unable to clear notifications.',
+        };
+      }
+      useGameStore
+        .getState()
+        .applyNotificationsUpdated(json.notifications, json.unreadCount ?? 0);
+      return {
+        ok: true,
+        data: { notifications: json.notifications, unreadCount: json.unreadCount ?? 0 },
+      };
+    } catch {
+      return { ok: false, error: 'Network error clearing notifications.' };
+    }
+  }
+
+  public async listClubs(query = '', limit = 30): Promise<ClubRecord[]> {
+    try {
+      const qs = new URLSearchParams({ limit: String(limit) });
+      if (query.trim()) qs.set('q', query.trim());
+      const { ok, json } = await this.requestJson<{ clubs: ClubRecord[] }>(
+        `/api/clubs?${qs.toString()}`,
+      );
+      const list = ok && Array.isArray(json.clubs) ? json.clubs : [];
+      useGameStore.getState().setClubsList(list);
+      return list;
+    } catch {
+      return [];
+    }
+  }
+
+  public async getClubDetail(clubId: string): Promise<ApiResult<ClubDetailPayload>> {
+    const creds = getStoredPlayerIdentity();
+    try {
+      const qs = creds?.playerId ? `?playerId=${encodeURIComponent(creds.playerId)}` : '';
+      const { ok, json } = await this.requestJson<{ detail: ClubDetailPayload }>(
+        `/api/clubs/${encodeURIComponent(clubId)}${qs}`,
+        creds ? { headers: { Authorization: `Bearer ${creds.playerToken}` } } : undefined,
+      );
+      if (!ok || !json.detail) {
+        return { ok: false, code: json.error, error: json.message ?? 'Club not found.' };
+      }
+      const store = useGameStore.getState();
+      store.setClubDetail(json.detail);
+      if (json.detail.viewerRole) {
+        store.setMyClub({
+          clubId: json.detail.club.clubId,
+          name: json.detail.club.name,
+          tag: json.detail.club.tag,
+          emblemColor: json.detail.club.emblemColor,
+          emblemIcon: json.detail.club.emblemIcon,
+          role: json.detail.viewerRole,
+        });
+      }
+      return { ok: true, data: json.detail };
+    } catch {
+      return { ok: false, error: 'Network error loading club details.' };
+    }
+  }
+
+  public async createClub(input: {
+    name: string;
+    tag: string;
+    description?: string;
+    emblemColor?: string;
+    emblemIcon?: ClubEmblemIcon;
+    joinMode?: ClubJoinMode;
+  }): Promise<ApiResult<ClubDetailPayload>> {
+    const creds = await this.ensureCredentials();
+    if (!creds) return { ok: false, error: 'Player session not initialized.' };
+    try {
+      const { ok, json } = await this.requestJson<{ detail: ClubDetailPayload }>('/api/clubs', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${creds.playerToken}` },
+        body: JSON.stringify({ playerId: creds.playerId, ...input }),
+      });
+      if (!ok || !json.detail) {
+        return { ok: false, code: json.error, error: json.message ?? 'Unable to create club.' };
+      }
+      const store = useGameStore.getState();
+      store.setClubDetail(json.detail);
+      store.setMyClub({
+        clubId: json.detail.club.clubId,
+        name: json.detail.club.name,
+        tag: json.detail.club.tag,
+        emblemColor: json.detail.club.emblemColor,
+        emblemIcon: json.detail.club.emblemIcon,
+        role: 'owner',
+      });
+      void this.listClubs();
+      return { ok: true, data: json.detail };
+    } catch {
+      return { ok: false, error: 'Network error creating club.' };
+    }
+  }
+
+  public async updateClub(
+    clubId: string,
+    input: {
+      description?: string;
+      emblemColor?: string;
+      emblemIcon?: ClubEmblemIcon;
+      joinMode?: ClubJoinMode;
+    },
+  ): Promise<ApiResult<ClubDetailPayload>> {
+    const creds = await this.ensureCredentials();
+    if (!creds) return { ok: false, error: 'Player session not initialized.' };
+    try {
+      const { ok, json } = await this.requestJson<{ detail: ClubDetailPayload }>(
+        `/api/clubs/${encodeURIComponent(clubId)}/update`,
+        {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${creds.playerToken}` },
+          body: JSON.stringify({ playerId: creds.playerId, ...input }),
+        },
+      );
+      if (!ok || !json.detail) {
+        return { ok: false, code: json.error, error: json.message ?? 'Unable to update club.' };
+      }
+      const store = useGameStore.getState();
+      store.setClubDetail(json.detail);
+      if (json.detail.viewerRole) {
+        store.setMyClub({
+          clubId: json.detail.club.clubId,
+          name: json.detail.club.name,
+          tag: json.detail.club.tag,
+          emblemColor: json.detail.club.emblemColor,
+          emblemIcon: json.detail.club.emblemIcon,
+          role: json.detail.viewerRole,
+        });
+      }
+      return { ok: true, data: json.detail };
+    } catch {
+      return { ok: false, error: 'Network error updating club.' };
+    }
+  }
+
+  public async joinClub(
+    clubId: string,
+    message?: string,
+  ): Promise<ApiResult<{ outcome: 'joined' | 'requested'; detail?: ClubDetailPayload }>> {
+    const creds = await this.ensureCredentials();
+    if (!creds) return { ok: false, error: 'Player session not initialized.' };
+    try {
+      const { ok, json } = await this.requestJson<{
+        outcome: 'joined' | 'requested';
+        detail?: ClubDetailPayload;
+      }>(`/api/clubs/${encodeURIComponent(clubId)}/join`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${creds.playerToken}` },
+        body: JSON.stringify({ playerId: creds.playerId, message }),
+      });
+      if (!ok) {
+        return { ok: false, code: json.error, error: json.message ?? 'Unable to join club.' };
+      }
+      if (json.outcome === 'joined' && json.detail) {
+        const store = useGameStore.getState();
+        store.setClubDetail(json.detail);
+        store.setMyClub({
+          clubId: json.detail.club.clubId,
+          name: json.detail.club.name,
+          tag: json.detail.club.tag,
+          emblemColor: json.detail.club.emblemColor,
+          emblemIcon: json.detail.club.emblemIcon,
+          role: json.detail.viewerRole ?? 'member',
+        });
+      }
+      void this.listClubs();
+      return { ok: true, data: { outcome: json.outcome, detail: json.detail } };
+    } catch {
+      return { ok: false, error: 'Network error joining club.' };
+    }
+  }
+
+  public async respondClubJoinRequest(
+    clubId: string,
+    requestId: string,
+    action: 'accept' | 'reject',
+  ): Promise<ApiResult<ClubDetailPayload | undefined>> {
+    const creds = await this.ensureCredentials();
+    if (!creds) return { ok: false, error: 'Player session not initialized.' };
+    try {
+      const { ok, json } = await this.requestJson<{ detail?: ClubDetailPayload }>(
+        `/api/clubs/${encodeURIComponent(clubId)}/requests/respond`,
+        {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${creds.playerToken}` },
+          body: JSON.stringify({ playerId: creds.playerId, requestId, action }),
+        },
+      );
+      if (!ok) {
+        return { ok: false, code: json.error, error: json.message ?? 'Action failed.' };
+      }
+      if (json.detail) {
+        useGameStore.getState().setClubDetail(json.detail);
+      } else {
+        void this.getClubDetail(clubId);
+      }
+      return { ok: true, data: json.detail };
+    } catch {
+      return { ok: false, error: 'Network error updating join request.' };
+    }
+  }
+
+  public async inviteToClub(clubId: string, targetPlayerId: string): Promise<ApiResult<void>> {
+    const creds = await this.ensureCredentials();
+    if (!creds) return { ok: false, error: 'Player session not initialized.' };
+    try {
+      const { ok, json } = await this.requestJson<Record<string, unknown>>(
+        `/api/clubs/${encodeURIComponent(clubId)}/invite`,
+        {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${creds.playerToken}` },
+          body: JSON.stringify({ playerId: creds.playerId, targetPlayerId }),
+        },
+      );
+      if (!ok) {
+        return { ok: false, code: json.error, error: json.message ?? 'Unable to invite player.' };
+      }
+      return { ok: true };
+    } catch {
+      return { ok: false, error: 'Network error sending club invite.' };
+    }
+  }
+
+  public async respondClubInvite(
+    inviteId: string,
+    action: 'accept' | 'reject',
+  ): Promise<ApiResult<void>> {
+    const creds = await this.ensureCredentials();
+    if (!creds) return { ok: false, error: 'Player session not initialized.' };
+    try {
+      const { ok, json } = await this.requestJson<{ clubId?: string; detail?: ClubDetailPayload }>(
+        '/api/clubs/invites/respond',
+        {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${creds.playerToken}` },
+          body: JSON.stringify({ playerId: creds.playerId, inviteId, action }),
+        },
+      );
+      if (!ok) {
+        return {
+          ok: false,
+          code: json.error,
+          error: json.message ?? 'Unable to respond to club invite.',
+        };
+      }
+      await this.fetchOverview();
+      if (action === 'accept' && json.clubId) {
+        await this.getClubDetail(json.clubId);
+      }
+      return { ok: true };
+    } catch {
+      return { ok: false, error: 'Network error responding to club invite.' };
+    }
+  }
+
+  public async leaveClub(clubId: string): Promise<ApiResult<void>> {
+    const creds = await this.ensureCredentials();
+    if (!creds) return { ok: false, error: 'Player session not initialized.' };
+    try {
+      const { ok, json } = await this.requestJson<Record<string, unknown>>(
+        `/api/clubs/${encodeURIComponent(clubId)}/leave`,
+        {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${creds.playerToken}` },
+          body: JSON.stringify({ playerId: creds.playerId }),
+        },
+      );
+      if (!ok) {
+        return { ok: false, code: json.error, error: json.message ?? 'Unable to leave club.' };
+      }
+      const store = useGameStore.getState();
+      store.setMyClub(null);
+      store.setClubDetail(null);
+      void this.listClubs();
+      return { ok: true };
+    } catch {
+      return { ok: false, error: 'Network error leaving club.' };
+    }
+  }
+
+  public async updateClubMemberRole(
+    clubId: string,
+    targetPlayerId: string,
+    role: ClubRole,
+  ): Promise<ApiResult<void>> {
+    const creds = await this.ensureCredentials();
+    if (!creds) return { ok: false, error: 'Player session not initialized.' };
+    try {
+      const { ok, json } = await this.requestJson<{ detail?: ClubDetailPayload }>(
+        `/api/clubs/${encodeURIComponent(clubId)}/members/role`,
+        {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${creds.playerToken}` },
+          body: JSON.stringify({ playerId: creds.playerId, targetPlayerId, role }),
+        },
+      );
+      if (!ok) {
+        return { ok: false, code: json.error, error: json.message ?? 'Unable to update role.' };
+      }
+      await this.getClubDetail(clubId);
+      return { ok: true };
+    } catch {
+      return { ok: false, error: 'Network error updating club role.' };
+    }
+  }
+
+  public async kickClubMember(clubId: string, targetPlayerId: string): Promise<ApiResult<void>> {
+    const creds = await this.ensureCredentials();
+    if (!creds) return { ok: false, error: 'Player session not initialized.' };
+    try {
+      const { ok, json } = await this.requestJson<Record<string, unknown>>(
+        `/api/clubs/${encodeURIComponent(clubId)}/members/kick`,
+        {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${creds.playerToken}` },
+          body: JSON.stringify({ playerId: creds.playerId, targetPlayerId }),
+        },
+      );
+      if (!ok) {
+        return { ok: false, code: json.error, error: json.message ?? 'Unable to remove member.' };
+      }
+      await this.getClubDetail(clubId);
+      return { ok: true };
+    } catch {
+      return { ok: false, error: 'Network error kicking club member.' };
+    }
+  }
+
+  public async fetchClubLeaderboard(
+    scope: ClubLeaderboardScope = 'global',
+    limit = 30,
+  ): Promise<ClubLeaderboardEntry[]> {
+    try {
+      const qs = new URLSearchParams({ scope, limit: String(limit) });
+      const { ok, json } = await this.requestJson<{ entries: ClubLeaderboardEntry[] }>(
+        `/api/clubs/leaderboard?${qs.toString()}`,
+      );
+      const entries = ok && Array.isArray(json.entries) ? json.entries : [];
+      useGameStore.getState().setClubLeaderboard(scope, entries);
+      return entries;
+    } catch {
+      return [];
+    }
+  }
+
+  public async createClubChallenge(input: {
+    challengerClubId: string;
+    targetClubId: string;
+    ruleProfileId?: RuleProfileId;
+    calledShotsEnabled?: boolean;
+    targetWins?: number;
+    notes?: string;
+  }): Promise<ApiResult<ClubChallengeRecord>> {
+    const creds = await this.ensureCredentials();
+    if (!creds) return { ok: false, error: 'Player session not initialized.' };
+    try {
+      const { ok, json } = await this.requestJson<{ challenge: ClubChallengeRecord }>(
+        '/api/clubs/challenges',
+        {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${creds.playerToken}` },
+          body: JSON.stringify({ playerId: creds.playerId, ...input }),
+        },
+      );
+      if (!ok || !json.challenge) {
+        return {
+          ok: false,
+          code: json.error,
+          error: json.message ?? 'Unable to create club challenge.',
+        };
+      }
+      useGameStore.getState().applyClubChallengeUpdated(json.challenge);
+      return { ok: true, data: json.challenge };
+    } catch {
+      return { ok: false, error: 'Network error creating club challenge.' };
+    }
+  }
+
+  public async respondClubChallenge(
+    challengeId: string,
+    action: 'accept' | 'decline' | 'cancel',
+  ): Promise<ApiResult<ClubChallengeRecord>> {
+    const creds = await this.ensureCredentials();
+    if (!creds) return { ok: false, error: 'Player session not initialized.' };
+    try {
+      const { ok, json } = await this.requestJson<{ challenge: ClubChallengeRecord }>(
+        `/api/clubs/challenges/${encodeURIComponent(challengeId)}/respond`,
+        {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${creds.playerToken}` },
+          body: JSON.stringify({ playerId: creds.playerId, action }),
+        },
+      );
+      if (!ok || !json.challenge) {
+        return {
+          ok: false,
+          code: json.error,
+          error: json.message ?? 'Unable to respond to club challenge.',
+        };
+      }
+      useGameStore.getState().applyClubChallengeUpdated(json.challenge);
+      return { ok: true, data: json.challenge };
+    } catch {
+      return { ok: false, error: 'Network error responding to club challenge.' };
     }
   }
 }

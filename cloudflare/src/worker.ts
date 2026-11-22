@@ -30,7 +30,14 @@ import {
   type OnlineMatchType,
 } from '../../src/multiplayer/shared/progression';
 import type { PenaltyType } from '../../src/multiplayer/shared/ranked';
-import type { FriendRequestAction, MatchInviteAction } from '../../src/multiplayer/shared/social';
+import type {
+  ClubLeaderboardScope,
+  ClubRole,
+  FriendRequestAction,
+  MatchInviteAction,
+  MatchInviteKind,
+  PrivacySettings,
+} from '../../src/multiplayer/shared/social';
 import {
   TOURNAMENT_TROPHY_CATALOG,
   type CreateTournamentInput,
@@ -288,9 +295,29 @@ export default {
       const targetPlayerId = decodeURIComponent(
         url.pathname.slice('/api/players/profile/'.length),
       ).trim();
-      const profile = env.DB
-        ? await new D1ProgressionService(env.DB).getPublicProfile(targetPlayerId)
-        : await getMatchmakerStub().progressionGetProfile(targetPlayerId);
+      const rawViewerId = url.searchParams.get('viewerId')?.trim() || null;
+      const viewerToken = extractBearerToken(request) || null;
+      let profile = null;
+      if (env.DB) {
+        let verifiedViewer: string | null = null;
+        if (rawViewerId && viewerToken) {
+          const valid = await new D1ProgressionService(env.DB).verifyPlayerToken(
+            rawViewerId,
+            viewerToken,
+          );
+          if (valid) verifiedViewer = rawViewerId;
+        }
+        profile = await new D1ProgressionService(env.DB).getPublicProfile(
+          targetPlayerId,
+          verifiedViewer,
+        );
+      } else {
+        profile = await getMatchmakerStub().progressionGetProfile(
+          targetPlayerId,
+          rawViewerId,
+          viewerToken,
+        );
+      }
       if (!profile) {
         return jsonResponse({ error: 'NOT_FOUND', message: 'Player profile not found.' }, 404, cors);
       }
@@ -529,8 +556,11 @@ export default {
         );
       }
       const token = extractBearerToken(request, body);
+      const inviteKind: MatchInviteKind = body.inviteKind === 'spectate' ? 'spectate' : 'match';
       const res = await getMatchmakerStub().socialCreateInvite(body.playerId, token, {
         targetPlayerId: body.targetPlayerId,
+        inviteKind,
+        roomId: typeof body.roomId === 'string' ? body.roomId.trim() : undefined,
         ruleProfileId: body.ruleProfileId === 'wpa' ? 'wpa' : 'casual',
         calledShotsEnabled: Boolean(body.calledShotsEnabled),
         ttlMs: typeof body.ttlMs === 'number' ? body.ttlMs : undefined,
@@ -628,6 +658,404 @@ export default {
         return jsonResponse({ error: res.code, message: res.message }, res.status, cors);
       }
       return jsonResponse(res, 200, cors);
+    }
+
+    // ===== Phase 15 Social Community, Privacy, Notifications & Clubs API =====
+
+    if (url.pathname === '/api/social/friends' && request.method === 'GET') {
+      const playerId = (url.searchParams.get('playerId') ?? '').trim();
+      const limit = Number.parseInt(url.searchParams.get('limit') ?? '25', 10) || 25;
+      const offset = Number.parseInt(url.searchParams.get('offset') ?? '0', 10) || 0;
+      const query = url.searchParams.get('q') ?? '';
+      const token = extractBearerToken(request);
+      const res = await getMatchmakerStub().socialGetFriendsPaginated(playerId, token, {
+        limit,
+        offset,
+        query,
+      });
+      if (!res.ok) {
+        return jsonResponse({ error: res.code, message: res.message }, res.status, cors);
+      }
+      return jsonResponse(res, 200, cors);
+    }
+
+    if (url.pathname === '/api/social/privacy' && request.method === 'GET') {
+      const playerId = (url.searchParams.get('playerId') ?? '').trim();
+      const token = extractBearerToken(request);
+      const res = await getMatchmakerStub().socialGetPrivacy(playerId, token);
+      if (!res.ok) {
+        return jsonResponse({ error: res.code, message: res.message }, res.status, cors);
+      }
+      return jsonResponse(res, 200, cors);
+    }
+
+    if (url.pathname === '/api/social/privacy' && request.method === 'POST') {
+      const body = await readJsonBody(request);
+      if (!body || typeof body.playerId !== 'string') {
+        return jsonResponse({ error: 'INVALID_INPUT', message: 'playerId is required.' }, 400, cors);
+      }
+      const token = extractBearerToken(request, body);
+      const updates: Partial<PrivacySettings> = {
+        ...(body.allowFriendRequests !== undefined
+          ? { allowFriendRequests: body.allowFriendRequests as PrivacySettings['allowFriendRequests'] }
+          : {}),
+        ...(body.allowMatchInvites !== undefined
+          ? { allowMatchInvites: body.allowMatchInvites as PrivacySettings['allowMatchInvites'] }
+          : {}),
+        ...(body.allowDirectMessages !== undefined
+          ? { allowDirectMessages: body.allowDirectMessages as PrivacySettings['allowDirectMessages'] }
+          : {}),
+        ...(typeof body.showOnlineStatus === 'boolean'
+          ? { showOnlineStatus: body.showOnlineStatus }
+          : {}),
+        ...(typeof body.showPublicStats === 'boolean'
+          ? { showPublicStats: body.showPublicStats }
+          : {}),
+      };
+      const res = await getMatchmakerStub().socialUpdatePrivacy(body.playerId, token, updates);
+      if (!res.ok) {
+        return jsonResponse({ error: res.code, message: res.message }, res.status, cors);
+      }
+      return jsonResponse(res, 200, cors);
+    }
+
+    if (url.pathname === '/api/social/notifications' && request.method === 'GET') {
+      const playerId = (url.searchParams.get('playerId') ?? '').trim();
+      const limit = Number.parseInt(url.searchParams.get('limit') ?? '40', 10) || 40;
+      const unreadOnly = url.searchParams.get('unreadOnly') === '1';
+      const token = extractBearerToken(request);
+      const res = await getMatchmakerStub().socialGetNotifications(playerId, token, {
+        limit,
+        unreadOnly,
+      });
+      if (!res.ok) {
+        return jsonResponse({ error: res.code, message: res.message }, res.status, cors);
+      }
+      return jsonResponse(res, 200, cors);
+    }
+
+    if (url.pathname === '/api/social/notifications/read' && request.method === 'POST') {
+      const body = await readJsonBody(request);
+      if (!body || typeof body.playerId !== 'string') {
+        return jsonResponse({ error: 'INVALID_INPUT', message: 'playerId is required.' }, 400, cors);
+      }
+      const token = extractBearerToken(request, body);
+      const res = await getMatchmakerStub().socialMarkNotificationRead(
+        body.playerId,
+        token,
+        typeof body.notificationId === 'string' ? body.notificationId : undefined,
+      );
+      if (!res.ok) {
+        return jsonResponse({ error: res.code, message: res.message }, res.status, cors);
+      }
+      return jsonResponse(res, 200, cors);
+    }
+
+    if (url.pathname === '/api/social/notifications/clear' && request.method === 'POST') {
+      const body = await readJsonBody(request);
+      if (!body || typeof body.playerId !== 'string') {
+        return jsonResponse({ error: 'INVALID_INPUT', message: 'playerId is required.' }, 400, cors);
+      }
+      const token = extractBearerToken(request, body);
+      const res = await getMatchmakerStub().socialClearNotifications(
+        body.playerId,
+        token,
+        typeof body.notificationId === 'string' ? body.notificationId : undefined,
+      );
+      if (!res.ok) {
+        return jsonResponse({ error: res.code, message: res.message }, res.status, cors);
+      }
+      return jsonResponse(res, 200, cors);
+    }
+
+    if (url.pathname === '/api/social/rooms/join-friend' && request.method === 'POST') {
+      const body = await readJsonBody(request);
+      if (!body || typeof body.playerId !== 'string' || typeof body.friendPlayerId !== 'string') {
+        return jsonResponse(
+          { error: 'INVALID_INPUT', message: 'playerId and friendPlayerId are required.' },
+          400,
+          cors,
+        );
+      }
+      const token = extractBearerToken(request, body);
+      const res = await getMatchmakerStub().socialJoinFriendRoom(
+        body.playerId,
+        token,
+        body.friendPlayerId,
+        typeof body.sessionId === 'string' ? body.sessionId : undefined,
+      );
+      if (!res.ok) {
+        return jsonResponse({ error: res.code, message: res.message }, res.status, cors);
+      }
+      return jsonResponse(res, 200, cors);
+    }
+
+    if (url.pathname === '/api/clubs' && request.method === 'GET') {
+      const query = url.searchParams.get('q') ?? '';
+      const limit = Number.parseInt(url.searchParams.get('limit') ?? '30', 10) || 30;
+      const clubs = await getMatchmakerStub().clubList({ query, limit });
+      return jsonResponse({ ok: true, clubs }, 200, cors);
+    }
+
+    if (url.pathname === '/api/clubs' && request.method === 'POST') {
+      const body = await readJsonBody(request);
+      if (!body || typeof body.playerId !== 'string') {
+        return jsonResponse({ error: 'INVALID_INPUT', message: 'playerId is required.' }, 400, cors);
+      }
+      const token = extractBearerToken(request, body);
+      const res = await getMatchmakerStub().clubCreate(body.playerId, token, {
+        name: body.name,
+        tag: body.tag,
+        description: body.description,
+        emblemColor: body.emblemColor,
+        emblemIcon: body.emblemIcon,
+        joinMode: body.joinMode,
+      });
+      if (!res.ok) {
+        return jsonResponse({ error: res.code, message: res.message }, res.status, cors);
+      }
+      return jsonResponse(res, 200, cors);
+    }
+
+    if (url.pathname === '/api/clubs/leaderboard' && request.method === 'GET') {
+      const rawScope = url.searchParams.get('scope');
+      const scope: ClubLeaderboardScope =
+        rawScope === 'weekly' || rawScope === 'seasonal' ? rawScope : 'global';
+      const limit = Number.parseInt(url.searchParams.get('limit') ?? '30', 10) || 30;
+      const entries = await getMatchmakerStub().clubLeaderboard({ scope, limit });
+      return jsonResponse({ ok: true, scope, entries }, 200, cors);
+    }
+
+    if (url.pathname === '/api/clubs/invites/respond' && request.method === 'POST') {
+      const body = await readJsonBody(request);
+      const action = body?.action;
+      if (
+        !body ||
+        typeof body.playerId !== 'string' ||
+        typeof body.inviteId !== 'string' ||
+        (action !== 'accept' && action !== 'reject')
+      ) {
+        return jsonResponse(
+          { error: 'INVALID_INPUT', message: 'playerId, inviteId, and action (accept|reject) are required.' },
+          400,
+          cors,
+        );
+      }
+      const token = extractBearerToken(request, body);
+      const res = await getMatchmakerStub().clubRespondInvite(
+        body.playerId,
+        token,
+        body.inviteId,
+        action,
+      );
+      if (!res.ok) {
+        return jsonResponse({ error: res.code, message: res.message }, res.status, cors);
+      }
+      return jsonResponse(res, 200, cors);
+    }
+
+    if (url.pathname === '/api/clubs/challenges' && request.method === 'POST') {
+      const body = await readJsonBody(request);
+      if (
+        !body ||
+        typeof body.playerId !== 'string' ||
+        typeof body.challengerClubId !== 'string' ||
+        typeof body.targetClubId !== 'string'
+      ) {
+        return jsonResponse(
+          {
+            error: 'INVALID_INPUT',
+            message: 'playerId, challengerClubId, and targetClubId are required.',
+          },
+          400,
+          cors,
+        );
+      }
+      const token = extractBearerToken(request, body);
+      const res = await getMatchmakerStub().clubCreateChallenge(body.playerId, token, {
+        challengerClubId: body.challengerClubId,
+        targetClubId: body.targetClubId,
+        ruleProfileId: body.ruleProfileId === 'wpa' ? 'wpa' : 'casual',
+        calledShotsEnabled: Boolean(body.calledShotsEnabled),
+        targetWins: typeof body.targetWins === 'number' ? body.targetWins : undefined,
+        notes: typeof body.notes === 'string' ? body.notes : undefined,
+      });
+      if (!res.ok) {
+        return jsonResponse({ error: res.code, message: res.message }, res.status, cors);
+      }
+      return jsonResponse(res, 200, cors);
+    }
+
+    if (
+      url.pathname.startsWith('/api/clubs/challenges/') &&
+      url.pathname.endsWith('/respond') &&
+      request.method === 'POST'
+    ) {
+      const challengeId = decodeURIComponent(
+        url.pathname.slice('/api/clubs/challenges/'.length, url.pathname.length - '/respond'.length),
+      ).trim();
+      const body = await readJsonBody(request);
+      const action = body?.action;
+      if (
+        !body ||
+        typeof body.playerId !== 'string' ||
+        (action !== 'accept' && action !== 'decline' && action !== 'cancel')
+      ) {
+        return jsonResponse(
+          { error: 'INVALID_INPUT', message: 'playerId and valid action are required.' },
+          400,
+          cors,
+        );
+      }
+      const token = extractBearerToken(request, body);
+      const res = await getMatchmakerStub().clubRespondChallenge(
+        body.playerId,
+        token,
+        challengeId,
+        action,
+      );
+      if (!res.ok) {
+        return jsonResponse({ error: res.code, message: res.message }, res.status, cors);
+      }
+      return jsonResponse(res, 200, cors);
+    }
+
+    if (url.pathname.startsWith('/api/clubs/') && request.method === 'GET') {
+      const clubId = decodeURIComponent(url.pathname.slice('/api/clubs/'.length)).trim();
+      if (!clubId || clubId.includes('/')) {
+        return jsonResponse({ error: 'INVALID_INPUT', message: 'Invalid clubId.' }, 400, cors);
+      }
+      const viewerId = url.searchParams.get('playerId')?.trim() || null;
+      const viewerToken = extractBearerToken(request) || null;
+      const detail = await getMatchmakerStub().clubGetDetail(clubId, viewerId, viewerToken);
+      if (!detail) {
+        return jsonResponse({ error: 'NOT_FOUND', message: 'Club not found.' }, 404, cors);
+      }
+      return jsonResponse({ ok: true, detail }, 200, cors);
+    }
+
+    if (url.pathname.startsWith('/api/clubs/') && request.method === 'POST') {
+      const restPath = url.pathname.slice('/api/clubs/'.length);
+      const slashIdx = restPath.indexOf('/');
+      if (slashIdx <= 0) {
+        return jsonResponse({ error: 'NOT_FOUND', message: 'Club action not found.' }, 404, cors);
+      }
+      const clubId = decodeURIComponent(restPath.slice(0, slashIdx)).trim();
+      const subAction = restPath.slice(slashIdx + 1);
+      const body = await readJsonBody(request);
+      if (!body || typeof body.playerId !== 'string') {
+        return jsonResponse({ error: 'INVALID_INPUT', message: 'playerId is required.' }, 400, cors);
+      }
+      const token = extractBearerToken(request, body);
+
+      if (subAction === 'update') {
+        const res = await getMatchmakerStub().clubUpdate(body.playerId, token, clubId, {
+          description: body.description,
+          emblemColor: body.emblemColor,
+          emblemIcon: body.emblemIcon,
+          joinMode: body.joinMode,
+        });
+        if (!res.ok) return jsonResponse({ error: res.code, message: res.message }, res.status, cors);
+        return jsonResponse(res, 200, cors);
+      }
+
+      if (subAction === 'join') {
+        const res = await getMatchmakerStub().clubJoinOrRequest(
+          body.playerId,
+          token,
+          clubId,
+          body.message,
+        );
+        if (!res.ok) return jsonResponse({ error: res.code, message: res.message }, res.status, cors);
+        return jsonResponse(res, 200, cors);
+      }
+
+      if (subAction === 'requests/respond') {
+        const action = body.action;
+        if (typeof body.requestId !== 'string' || (action !== 'accept' && action !== 'reject')) {
+          return jsonResponse(
+            { error: 'INVALID_INPUT', message: 'requestId and action (accept|reject) are required.' },
+            400,
+            cors,
+          );
+        }
+        const res = await getMatchmakerStub().clubRespondJoinRequest(
+          body.playerId,
+          token,
+          clubId,
+          body.requestId,
+          action,
+        );
+        if (!res.ok) return jsonResponse({ error: res.code, message: res.message }, res.status, cors);
+        return jsonResponse(res, 200, cors);
+      }
+
+      if (subAction === 'invite') {
+        if (typeof body.targetPlayerId !== 'string') {
+          return jsonResponse(
+            { error: 'INVALID_INPUT', message: 'targetPlayerId is required.' },
+            400,
+            cors,
+          );
+        }
+        const res = await getMatchmakerStub().clubInvitePlayer(
+          body.playerId,
+          token,
+          clubId,
+          body.targetPlayerId,
+        );
+        if (!res.ok) return jsonResponse({ error: res.code, message: res.message }, res.status, cors);
+        return jsonResponse(res, 200, cors);
+      }
+
+      if (subAction === 'leave') {
+        const res = await getMatchmakerStub().clubLeave(body.playerId, token, clubId);
+        if (!res.ok) return jsonResponse({ error: res.code, message: res.message }, res.status, cors);
+        return jsonResponse(res, 200, cors);
+      }
+
+      if (subAction === 'members/role') {
+        const role = body.role;
+        if (
+          typeof body.targetPlayerId !== 'string' ||
+          (role !== 'owner' && role !== 'admin' && role !== 'member')
+        ) {
+          return jsonResponse(
+            { error: 'INVALID_INPUT', message: 'targetPlayerId and valid role are required.' },
+            400,
+            cors,
+          );
+        }
+        const res = await getMatchmakerStub().clubUpdateMemberRole(
+          body.playerId,
+          token,
+          clubId,
+          body.targetPlayerId,
+          role as ClubRole,
+        );
+        if (!res.ok) return jsonResponse({ error: res.code, message: res.message }, res.status, cors);
+        return jsonResponse(res, 200, cors);
+      }
+
+      if (subAction === 'members/kick') {
+        if (typeof body.targetPlayerId !== 'string') {
+          return jsonResponse(
+            { error: 'INVALID_INPUT', message: 'targetPlayerId is required.' },
+            400,
+            cors,
+          );
+        }
+        const res = await getMatchmakerStub().clubKickMember(
+          body.playerId,
+          token,
+          clubId,
+          body.targetPlayerId,
+        );
+        if (!res.ok) return jsonResponse({ error: res.code, message: res.message }, res.status, cors);
+        return jsonResponse(res, 200, cors);
+      }
+
+      return jsonResponse({ error: 'NOT_FOUND', message: 'Unknown club endpoint.' }, 404, cors);
     }
 
     // ===== Phase 8 In-Game Store, Currency & Cosmetic Inventory API =====

@@ -283,6 +283,7 @@ export type MultiplayerErrorCode =
   | 'SUSPENDED'
   | 'CHEAT_REJECTED'
   | 'PRIVACY_RESTRICTED'
+  | 'NOT_FRIENDS'
   | 'NOT_FOUND'
   | 'CONFLICT'
   | 'CLUB_ERROR'

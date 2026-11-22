@@ -179,7 +179,10 @@ class ProgressionClientImpl {
     }
     try {
       const { ok, json } = await this.requestJson<{ profile: PublicPlayerProfile }>(
-        `/api/players/profile/${encodeURIComponent(stored.playerId)}`,
+        `/api/players/profile/${encodeURIComponent(stored.playerId)}?viewerId=${encodeURIComponent(stored.playerId)}`,
+        {
+          headers: { Authorization: `Bearer ${stored.playerToken}` },
+        },
       );
       if (!ok || !json.profile) {
         return this.ensurePlayerSession();
@@ -342,8 +345,13 @@ class ProgressionClientImpl {
 
   public async fetchPublicProfile(playerId: string): Promise<PublicPlayerProfile | null> {
     try {
+      const stored = getStoredPlayerIdentity();
+      const qs = stored?.playerId ? `?viewerId=${encodeURIComponent(stored.playerId)}` : '';
       const { ok, json } = await this.requestJson<{ profile: PublicPlayerProfile }>(
-        `/api/players/profile/${encodeURIComponent(playerId)}`,
+        `/api/players/profile/${encodeURIComponent(playerId)}${qs}`,
+        stored?.playerToken
+          ? { headers: { Authorization: `Bearer ${stored.playerToken}` } }
+          : undefined,
       );
       return ok && json.profile ? json.profile : null;
     } catch {

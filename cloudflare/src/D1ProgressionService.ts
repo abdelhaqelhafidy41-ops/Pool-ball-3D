@@ -37,6 +37,15 @@ import {
   type CompetitiveSeasonRecord,
 } from '../../src/multiplayer/shared/ranked';
 import type { MatchHistoryRecord, OnlineAvatarId } from '../../src/multiplayer/shared/protocol';
+import {
+  DEFAULT_PRIVACY_SETTINGS,
+  normalizePrivacySettings,
+  type ClubEmblemIcon,
+  type ClubRole,
+  type PlayerClubBadgeSummary,
+  type PresenceStatus,
+  type PrivacySettings,
+} from '../../src/multiplayer/shared/social';
 import { ANTICHEAT_SCHEMA_STATEMENTS } from './AntiCheatService';
 import { EconomyService } from './EconomyService';
 import { BattlePassService } from './BattlePassService';
@@ -628,7 +637,10 @@ export class D1ProgressionService {
     };
   }
 
-  public async getPublicProfile(playerId: string): Promise<PublicPlayerProfile | null> {
+  public async getPublicProfile(
+    playerId: string,
+    viewerId?: string | null,
+  ): Promise<PublicPlayerProfile | null> {
     if (!isValidPlayerIdFormat(playerId)) return null;
     const db = await this.ensureSchema();
     const row = await db
@@ -637,57 +649,206 @@ export class D1ProgressionService {
       .first<PlayerDbRow>();
     if (!row) return null;
 
-    const rankRow = await db
-      .prepare(
-        `SELECT COUNT(*) AS higher_count FROM players
-         WHERE elo > ?
-            OR (elo = ? AND wins > ?)
-            OR (elo = ? AND wins = ? AND total_matches < ?)
-            OR (elo = ? AND wins = ? AND total_matches = ? AND created_at_ms < ?)`,
-      )
-      .bind(
-        row.elo,
-        row.elo,
-        row.wins,
-        row.elo,
-        row.wins,
-        row.total_matches,
-        row.elo,
-        row.wins,
-        row.total_matches,
-        row.created_at_ms,
-      )
-      .first<{ higher_count: number }>();
+    const isSelfViewer = Boolean(viewerId && viewerId.trim() === row.player_id);
 
-    const achRows = await db
-      .prepare(
-        'SELECT achievement_id, unlocked_at_ms FROM player_achievements WHERE player_id = ? ORDER BY unlocked_at_ms DESC',
-      )
-      .bind(row.player_id)
-      .all<UnlockedAchievementRow>();
-
-    const achievements: UnlockedAchievement[] = [];
-    for (const a of achRows.results ?? []) {
-      const def = ACHIEVEMENT_MAP.get(a.achievement_id);
-      if (def) {
-        achievements.push({
-          ...def,
-          unlockedAtMs: Number(a.unlocked_at_ms),
+    let privacy = { ...DEFAULT_PRIVACY_SETTINGS };
+    try {
+      const privRow = await db
+        .prepare('SELECT * FROM player_privacy_settings WHERE player_id = ? LIMIT 1')
+        .bind(row.player_id)
+        .first<Record<string, unknown>>();
+      if (privRow) {
+        privacy = normalizePrivacySettings({
+          allowFriendRequests:
+            privRow.allow_friend_requests as PrivacySettings['allowFriendRequests'],
+          allowMatchInvites: privRow.allow_match_invites as PrivacySettings['allowMatchInvites'],
+          allowDirectMessages:
+            privRow.allow_direct_messages as PrivacySettings['allowDirectMessages'],
+          showOnlineStatus: Number(privRow.show_online_status ?? 1) === 1,
+          showPublicStats: Number(privRow.show_public_stats ?? 1) === 1,
         });
+      }
+    } catch {
+      // Privacy table may not exist yet on fresh DB before social usage
+    }
+
+    const hideStats = !isSelfViewer && !privacy.showPublicStats;
+    const hidePresence = !isSelfViewer && !privacy.showOnlineStatus;
+
+    let rankNumber: number | null = null;
+    let achievements: UnlockedAchievement[] = [];
+    if (!hideStats) {
+      const rankRow = await db
+        .prepare(
+          `SELECT COUNT(*) AS higher_count FROM players
+           WHERE elo > ?
+              OR (elo = ? AND wins > ?)
+              OR (elo = ? AND wins = ? AND total_matches < ?)
+              OR (elo = ? AND wins = ? AND total_matches = ? AND created_at_ms < ?)`,
+        )
+        .bind(
+          row.elo,
+          row.elo,
+          row.wins,
+          row.elo,
+          row.wins,
+          row.total_matches,
+          row.elo,
+          row.wins,
+          row.total_matches,
+          row.created_at_ms,
+        )
+        .first<{ higher_count: number }>();
+      rankNumber = Number(rankRow?.higher_count ?? 0) + 1;
+
+      const achRows = await db
+        .prepare(
+          'SELECT achievement_id, unlocked_at_ms FROM player_achievements WHERE player_id = ? ORDER BY unlocked_at_ms DESC',
+        )
+        .bind(row.player_id)
+        .all<UnlockedAchievementRow>();
+
+      for (const a of achRows.results ?? []) {
+        const def = ACHIEVEMENT_MAP.get(a.achievement_id);
+        if (def) {
+          achievements.push({
+            ...def,
+            unlockedAtMs: Number(a.unlocked_at_ms),
+          });
+        }
       }
     }
 
-    const baseProfile = this.mapRowToPublicProfile(
-      row,
-      Number(rankRow?.higher_count ?? 0) + 1,
-      achievements,
-    );
-    try {
-      const seasonSvc = new RankedSeasonService(this.db);
-      baseProfile.seasonStanding = await seasonSvc.getPlayerSeasonStanding(row.player_id);
-    } catch {
+    const baseProfile = this.mapRowToPublicProfile(row, rankNumber, achievements);
+
+    if (!hideStats) {
+      try {
+        const seasonSvc = new RankedSeasonService(this.db);
+        baseProfile.seasonStanding = await seasonSvc.getPlayerSeasonStanding(row.player_id);
+      } catch {
+        baseProfile.seasonStanding = null;
+      }
+      try {
+        baseProfile.recentMatches = await this.getMatchHistory({
+          playerId: row.player_id,
+          limit: 8,
+        });
+      } catch {
+        baseProfile.recentMatches = [];
+      }
+    } else {
+      baseProfile.privacyFiltered = true;
       baseProfile.seasonStanding = null;
+      baseProfile.recentMatches = [];
+      baseProfile.stats = {
+        totalMatches: 0,
+        wins: 0,
+        losses: 0,
+        winRate: 0,
+        currentStreak: 0,
+        bestStreak: 0,
+        totalShots: 0,
+        successfulShots: 0,
+        ballsPocketed: 0,
+        fouls: 0,
+        breaksAttempted: 0,
+        breaksSuccessful: 0,
+        breakSuccessRate: 0,
+        eightBallWins: 0,
+        avgMatchDurationSec: 0,
+        byMatchType: {
+          casual: { matches: 0, wins: 0 },
+          wpa: { matches: 0, wins: 0 },
+          quick: { matches: 0, wins: 0 },
+          private: { matches: 0, wins: 0 },
+          ranked: { matches: 0, wins: 0 },
+        },
+      };
     }
+
+    try {
+      baseProfile.equippedCosmetics = await new EconomyService(this.db).getEquippedCosmetics(
+        row.player_id,
+      );
+    } catch {
+      // Cosmetics optional if economy not initialized yet
+    }
+
+    try {
+      const clubRow = await db
+        .prepare(
+          `SELECT c.club_id, c.name, c.tag, c.emblem_color, c.emblem_icon, cm.role
+           FROM club_members cm
+           JOIN clubs c ON c.club_id = cm.club_id
+           WHERE cm.player_id = ?
+           LIMIT 1`,
+        )
+        .bind(row.player_id)
+        .first<Record<string, unknown>>();
+      if (clubRow) {
+        const iconRaw = String(clubRow.emblem_icon ?? 'shield');
+        const emblemIcon: ClubEmblemIcon =
+          iconRaw === 'crown' ||
+          iconRaw === 'flame' ||
+          iconRaw === 'star' ||
+          iconRaw === 'swords' ||
+          iconRaw === 'target'
+            ? iconRaw
+            : 'shield';
+        const roleRaw = String(clubRow.role ?? 'member');
+        const role: ClubRole = roleRaw === 'owner' || roleRaw === 'admin' ? roleRaw : 'member';
+        const clubSummary: PlayerClubBadgeSummary = {
+          clubId: String(clubRow.club_id),
+          name: String(clubRow.name),
+          tag: String(clubRow.tag),
+          emblemColor: String(clubRow.emblem_color ?? '#f59e0b'),
+          emblemIcon,
+          role,
+        };
+        baseProfile.club = clubSummary;
+      } else {
+        baseProfile.club = null;
+      }
+    } catch {
+      baseProfile.club = null;
+    }
+
+    if (hidePresence) {
+      baseProfile.presence = 'offline';
+      baseProfile.lastSeenAtMs = null;
+    } else {
+      try {
+        const now = Date.now();
+        const presRow = await db
+          .prepare('SELECT status, last_heartbeat_ms, expires_at_ms FROM player_presence WHERE player_id = ? LIMIT 1')
+          .bind(row.player_id)
+          .first<{ status: string; last_heartbeat_ms: number | null; expires_at_ms: number | null }>();
+        if (presRow) {
+          const validLive = Number(presRow.expires_at_ms ?? 0) > now && presRow.status !== 'offline';
+          const normalized: PresenceStatus =
+            validLive &&
+            (presRow.status === 'online' ||
+              presRow.status === 'in_match' ||
+              presRow.status === 'in_tournament' ||
+              presRow.status === 'spectating' ||
+              presRow.status === 'busy')
+              ? presRow.status
+              : 'offline';
+          baseProfile.presence = normalized;
+          baseProfile.lastSeenAtMs =
+            presRow.last_heartbeat_ms !== null && presRow.last_heartbeat_ms !== undefined
+              ? Number(presRow.last_heartbeat_ms)
+              : null;
+        } else {
+          baseProfile.presence = 'offline';
+          baseProfile.lastSeenAtMs = null;
+        }
+      } catch {
+        baseProfile.presence = 'offline';
+        baseProfile.lastSeenAtMs = null;
+      }
+    }
+
     return baseProfile;
   }
 

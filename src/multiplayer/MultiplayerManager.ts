@@ -18,8 +18,10 @@ import type {
   FriendRequestAction,
   ManualPresenceStatus,
   MatchInviteAction,
+  PrivacySettings,
   RoomChatMessageRecord,
 } from './shared/social';
+import { socialClient } from './SocialClient';
 
 export interface MultiplayerSceneBridge {
   onApplyAuthoritativeBalls: (balls: OnlineBallFrame[]) => void;
@@ -530,9 +532,66 @@ class MultiplayerManagerImpl {
     });
   }
 
+  public sendSpectateInviteWs(
+    targetPlayerId: string,
+    roomId: string,
+    ruleProfileId: RuleProfileId,
+    calledShotsEnabled: boolean,
+  ): void {
+    this.ensureConnected();
+    this.network.send({
+      type: 'invite:send',
+      targetPlayerId,
+      inviteKind: 'spectate',
+      roomId,
+      ruleProfileId,
+      calledShotsEnabled,
+    });
+  }
+
   public respondMatchInviteWs(inviteId: string, action: MatchInviteAction): void {
     this.ensureConnected();
     this.network.send({ type: 'invite:respond', inviteId, action });
+  }
+
+  public async joinFriendRoom(friendPlayerId: string): Promise<{ ok: boolean; error?: string }> {
+    this.ensureConnected();
+    const store = useGameStore.getState();
+    const res = await socialClient.joinFriendRoom(friendPlayerId, store.onlineSessionId);
+    if (!res.ok || !res.data?.room) {
+      const msg = res.error ?? 'Unable to join friend room.';
+      store.setSocialNotice({ type: 'err', text: msg });
+      return { ok: false, error: msg };
+    }
+    this.network.bindRoomSocket(res.data.room.roomId);
+    store.setOnlineRoom(res.data.room);
+    store.setOnlineError(null);
+    store.closeSocialModal();
+    if (store.screen !== 'playing') {
+      store.openOnlineLobby('friend');
+    }
+    soundEngine.playUiClick();
+    return { ok: true };
+  }
+
+  public markNotificationReadWs(notificationId?: string): void {
+    this.ensureConnected();
+    this.network.send({ type: 'social:mark_notification_read', notificationId });
+  }
+
+  public clearNotificationsWs(notificationId?: string): void {
+    this.ensureConnected();
+    this.network.send({ type: 'social:clear_notifications', notificationId });
+  }
+
+  public updatePrivacyWs(privacy: Partial<PrivacySettings>): void {
+    this.ensureConnected();
+    this.network.send({ type: 'social:privacy_update', privacy });
+  }
+
+  public syncClubWs(): void {
+    this.ensureConnected();
+    this.network.send({ type: 'club:sync' });
   }
 
   public sendDirectMessageWs(recipientId: string, body: string): void {
@@ -950,7 +1009,11 @@ class MultiplayerManagerImpl {
 
       case 'invite:updated': {
         store.upsertInvitation(msg.invitation);
-        if (msg.invitation.status === 'accepted' && msg.room) {
+        if (
+          msg.invitation.inviteKind !== 'spectate' &&
+          msg.invitation.status === 'accepted' &&
+          msg.room
+        ) {
           this.network.bindRoomSocket(msg.room.roomId);
           store.setOnlineRoom(msg.room);
           store.setOnlineError(null);
@@ -960,6 +1023,49 @@ class MultiplayerManagerImpl {
           }
           soundEngine.playUiClick();
         }
+        break;
+      }
+
+      case 'notification:new': {
+        store.applyNotificationNew(msg.notification, msg.unreadCount);
+        soundEngine.playUiClick();
+        break;
+      }
+
+      case 'notifications:updated': {
+        store.applyNotificationsUpdated(msg.notifications, msg.unreadCount);
+        break;
+      }
+
+      case 'privacy:updated': {
+        store.setPrivacySettings(msg.privacy);
+        break;
+      }
+
+      case 'club:updated': {
+        if (msg.clubDetail !== undefined) {
+          store.setClubDetail(msg.clubDetail ?? null);
+          if (msg.clubDetail?.viewerRole) {
+            store.setMyClub({
+              clubId: msg.clubDetail.club.clubId,
+              name: msg.clubDetail.club.name,
+              tag: msg.clubDetail.club.tag,
+              emblemColor: msg.clubDetail.club.emblemColor,
+              emblemIcon: msg.clubDetail.club.emblemIcon,
+              role: msg.clubDetail.viewerRole,
+            });
+          } else {
+            store.setMyClub(null);
+          }
+        }
+        if (msg.incomingInvitations !== undefined) {
+          store.setIncomingClubInvitations(msg.incomingInvitations);
+        }
+        break;
+      }
+
+      case 'club:challenge_updated': {
+        store.applyClubChallengeUpdated(msg.challenge);
         break;
       }
 

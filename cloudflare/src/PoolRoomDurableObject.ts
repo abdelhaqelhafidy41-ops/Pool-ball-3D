@@ -492,6 +492,7 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
     ruleProfileId: RuleProfileId;
     calledShotsEnabled: boolean;
     host: InitRoomPlayerInput;
+    isPrivate?: boolean;
     allowSpectators?: boolean;
     allowSpectatorChat?: boolean;
     createdAtMs: number;
@@ -505,16 +506,17 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
     this.ctx.storage.sql.exec('DELETE FROM room_chat_messages');
     this.ctx.storage.sql.exec('DELETE FROM room_spectators');
 
+    const isPrivate = params.isPrivate !== false;
     this.room = {
       roomId: params.roomId,
       roomCode: params.roomCode,
       hostSessionId: params.host.sessionId,
-      isPrivate: true,
+      isPrivate,
       matchType: 'private',
       ruleProfileId: params.ruleProfileId,
       calledShotsEnabled: params.calledShotsEnabled,
       status: 'waiting',
-      allowSpectators: Boolean(params.allowSpectators ?? false),
+      allowSpectators: Boolean(params.allowSpectators ?? !isPrivate),
       allowSpectatorChat: params.allowSpectatorChat !== false,
       maxSpectators: this.config.maxSpectatorsPerRoom,
       spectatorShareToken: randomHexToken(12),

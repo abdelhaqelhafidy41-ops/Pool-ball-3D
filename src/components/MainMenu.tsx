@@ -67,6 +67,9 @@ export function MainMenu({ onStartMatch, onToggleFullscreen }: MainMenuProps) {
   const friends = useGameStore((s) => s.friends);
   const incomingRequests = useGameStore((s) => s.incomingRequests);
   const incomingInvitations = useGameStore((s) => s.incomingInvitations);
+  const incomingClubInvitations = useGameStore((s) => s.incomingClubInvitations);
+  const unreadNotificationCount = useGameStore((s) => s.unreadNotificationCount);
+  const myClub = useGameStore((s) => s.myClub);
   const totalUnreadDmCount = useGameStore((s) => s.totalUnreadDmCount);
   const wallet = useGameStore((s) => s.wallet);
   const equippedCosmetics = useGameStore((s) => s.equippedCosmetics);
@@ -467,6 +470,18 @@ export function MainMenu({ onStartMatch, onToggleFullscreen }: MainMenuProps) {
                           <span className="truncate text-xs font-extrabold text-white">
                             {displayName}
                           </span>
+                          {myClub && (
+                            <span
+                              className="rounded border px-1 py-0.2 font-mono text-[9px] font-black shrink-0"
+                              style={{
+                                borderColor: `${myClub.emblemColor}66`,
+                                backgroundColor: `${myClub.emblemColor}20`,
+                                color: myClub.emblemColor,
+                              }}
+                            >
+                              [{myClub.tag}]
+                            </span>
+                          )}
                           {badgeMeta && (
                             <span
                               className={`inline-flex items-center gap-0.5 rounded border px-1 py-0.2 text-[9px] font-extrabold shrink-0 ${badgeMeta.className}`}
@@ -529,7 +544,11 @@ export function MainMenu({ onStartMatch, onToggleFullscreen }: MainMenuProps) {
 
                   {(() => {
                     const socialBadge =
-                      incomingRequests.length + incomingInvitations.length + totalUnreadDmCount;
+                      incomingRequests.length +
+                      incomingInvitations.length +
+                      incomingClubInvitations.length +
+                      totalUnreadDmCount +
+                      unreadNotificationCount;
                     return (
                       <button
                         type="button"
@@ -544,7 +563,7 @@ export function MainMenu({ onStartMatch, onToggleFullscreen }: MainMenuProps) {
                       >
                         <span className="inline-flex items-center gap-1.5">
                           <Users className="h-3.5 w-3.5 text-amber-400" />
-                          <span>Friends & Social</span>
+                          <span>Friends, Clubs & Social</span>
                           <span className="inline-flex items-center gap-1 rounded border border-white/10 bg-black/40 px-1.5 py-0.2 text-[9px] font-semibold text-slate-300">
                             <span
                               className={`h-1.5 w-1.5 rounded-full ${presenceDotClass(selfPresence)}`}
@@ -552,7 +571,18 @@ export function MainMenu({ onStartMatch, onToggleFullscreen }: MainMenuProps) {
                             {presenceLabel(selfPresence)}
                           </span>
                         </span>
-                        <span className="inline-flex items-center gap-1.5 font-mono text-[10px] text-slate-400">
+                        <span className="inline-flex items-center gap-1.5 font-mono text-[10px] text-slate-400 tabular-nums">
+                          {myClub && (
+                            <span
+                              className="rounded border px-1 py-0.2 text-[9px] font-bold"
+                              style={{
+                                borderColor: `${myClub.emblemColor}55`,
+                                color: myClub.emblemColor,
+                              }}
+                            >
+                              [{myClub.tag}]
+                            </span>
+                          )}
                           <span>{friends.length} friends</span>
                           {socialBadge > 0 && (
                             <span className="rounded bg-amber-500 px-1.5 py-0.2 font-black text-slate-950">

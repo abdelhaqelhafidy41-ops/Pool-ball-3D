@@ -22,15 +22,29 @@ import type {
 } from '../../src/multiplayer/shared/protocol';
 import type { RoomChatMessageRecord } from '../../src/multiplayer/shared/social';
 import {
+  DEFAULT_PRIVACY_SETTINGS,
   isValidManualPresence,
   sanitizeChatText,
   SOCIAL_LIMITS,
+  type ClubChallengeRecord,
+  type ClubDetailPayload,
+  type ClubInvitationRecord,
+  type ClubLeaderboardEntry,
+  type ClubLeaderboardScope,
+  type ClubRecord,
   type DirectMessageRecord,
+  type FriendRecord,
   type FriendRequestAction,
+  type FriendRoomAvailability,
   type ManualPresenceStatus,
   type MatchInvitationRecord,
   type MatchInviteAction,
+  type MatchInviteKind,
+  type NotificationType,
+  type PlayerClubBadgeSummary,
   type PresenceStatus,
+  type PrivacySettings,
+  type SocialNotificationRecord,
   type SocialOverviewPayload,
   type SocialSearchPlayerItem,
 } from '../../src/multiplayer/shared/social';
@@ -49,6 +63,7 @@ import {
   type WorkerRuntimeConfig,
 } from './config';
 import { createDurableObjectSqlDb, D1ProgressionService } from './D1ProgressionService';
+import { ClubService, type ClubServiceError } from './ClubService';
 import { EconomyService } from './EconomyService';
 import { AntiCheatService, type AntiCheatMatchInspectionInput } from './AntiCheatService';
 import { RankedSeasonService } from './RankedSeasonService';
@@ -323,7 +338,7 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
       if (pres.changed) {
         await this.broadcastPresenceChanged(identity.playerId, pres.status, pres.lastSeenAtMs);
       }
-      const overview = await this.getSocialService().getOverview(identity.playerId);
+      const overview = await this.buildSocialOverview(identity.playerId);
       this.sendSocket(ws, { type: 'social:state', overview });
       await this.scheduleNextAlarm();
       return;
@@ -368,7 +383,7 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
         if (pres.changed) {
           await this.broadcastPresenceChanged(identity.playerId, pres.status, pres.lastSeenAtMs);
         }
-        const overview = await this.getSocialService().getOverview(identity.playerId);
+        const overview = await this.buildSocialOverview(identity.playerId);
         this.sendSocket(ws, { type: 'social:state', overview });
         await this.scheduleNextAlarm();
         return;
@@ -443,7 +458,7 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
       if (pres.changed) {
         await this.broadcastPresenceChanged(effectivePlayerId, pres.status, pres.lastSeenAtMs);
       }
-      const overview = await this.getSocialService().getOverview(effectivePlayerId);
+      const overview = await this.buildSocialOverview(effectivePlayerId);
       this.sendSocket(ws, { type: 'social:state', overview });
       await this.scheduleNextAlarm();
       return;
@@ -515,7 +530,7 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
           manualStatus: msg.status,
           status: session.active_room_id ? undefined : msg.status,
         });
-        const overview = await this.getSocialService().getOverview(playerId);
+        const overview = await this.buildSocialOverview(playerId);
         this.sendSocket(ws, { type: 'social:state', overview });
         if (res.changed) {
           await this.scheduleNextAlarm();
@@ -538,7 +553,7 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
       }
 
       case 'social:sync': {
-        const overview = await this.getSocialService().getOverview(playerId);
+        const overview = await this.buildSocialOverview(playerId);
         this.sendSocket(ws, { type: 'social:state', overview });
         break;
       }
@@ -583,9 +598,52 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
         break;
       }
 
+      case 'social:mark_notification_read': {
+        const res = await this.getSocialService().markNotificationRead(playerId, msg.notificationId);
+        this.sendSocket(ws, {
+          type: 'notifications:updated',
+          notifications: res.notifications,
+          unreadCount: res.unreadCount,
+        });
+        break;
+      }
+
+      case 'social:clear_notifications': {
+        const res = await this.getSocialService().clearNotifications(playerId, msg.notificationId);
+        this.sendSocket(ws, {
+          type: 'notifications:updated',
+          notifications: res.notifications,
+          unreadCount: res.unreadCount,
+        });
+        break;
+      }
+
+      case 'social:privacy_update': {
+        const updated = await this.handleUpdatePrivacySettings(playerId, msg.privacy);
+        this.sendSocket(ws, { type: 'privacy:updated', privacy: updated });
+        break;
+      }
+
+      case 'club:sync': {
+        const clubSvc = this.getClubService();
+        const summary = await clubSvc.getPlayerClubSummary(playerId);
+        const [clubDetail, incomingInvitations] = await Promise.all([
+          summary ? clubSvc.getClubDetail(summary.clubId, playerId) : Promise.resolve(null),
+          clubSvc.getIncomingClubInvitations(playerId),
+        ]);
+        this.sendSocket(ws, {
+          type: 'club:updated',
+          clubDetail,
+          incomingInvitations,
+        });
+        break;
+      }
+
       case 'invite:send': {
         const res = await this.handleSendInvite(playerId, session.session_id, {
           targetPlayerId: msg.targetPlayerId,
+          inviteKind: msg.inviteKind,
+          roomId: msg.roomId,
           ruleProfileId: msg.ruleProfileId,
           calledShotsEnabled: msg.calledShotsEnabled,
           ttlMs: msg.ttlMs,
@@ -606,6 +664,20 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
         if (!res.ok) {
           this.sendError(ws, res.code, res.message);
         }
+        break;
+      }
+
+      case 'room:join_friend': {
+        const res = await this.handleJoinFriendRoom(
+          playerId,
+          session.session_id,
+          msg.friendPlayerId,
+        );
+        if (!res.ok) {
+          this.sendError(ws, res.code, res.message);
+          return;
+        }
+        this.sendSocket(ws, { type: 'room:updated', room: res.room });
         break;
       }
 
@@ -632,7 +704,7 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
             readAtMs: res.readAtMs,
           });
         }
-        const overview = await this.getSocialService().getOverview(playerId);
+        const overview = await this.buildSocialOverview(playerId);
         this.sendToPlayer(playerId, { type: 'social:state', overview });
         break;
       }
@@ -683,18 +755,20 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
           tournament: null,
         });
 
+        const allowSpectatorsDefault = !isPrivateRoom;
         this.ctx.storage.sql.exec(
           `INSERT INTO rooms (
             room_id, room_code, host_session_id, is_private, match_type, rule_profile_id,
             called_shots_enabled, status, allow_spectators, allow_spectator_chat,
             spectator_count, max_spectators, meta_json, created_at_ms, expires_at_ms
-          ) VALUES (?, ?, ?, ?, 'private', ?, ?, 'waiting', 0, 1, 0, ?, ?, ?, ?)`,
+          ) VALUES (?, ?, ?, ?, 'private', ?, ?, 'waiting', ?, 1, 0, ?, ?, ?, ?)`,
           roomId,
           roomCode,
           session.session_id,
           isPrivateRoom ? 1 : 0,
           ruleProfileId,
           calledShotsEnabled ? 1 : 0,
+          allowSpectatorsDefault ? 1 : 0,
           this.config.maxSpectatorsPerRoom,
           initialMeta,
           now,
@@ -712,6 +786,8 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
           roomCode,
           ruleProfileId,
           calledShotsEnabled,
+          isPrivate: isPrivateRoom,
+          allowSpectators: allowSpectatorsDefault,
           createdAtMs: now,
           expiresAtMs,
           host: {
@@ -729,6 +805,8 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
 
         await this.scheduleNextAlarm();
         this.sendSocket(ws, { type: 'room:created', room: roomInfo });
+        const creatorFriendIds = await this.getSocialService().getFriendIds(hostPlayerId);
+        await this.pushOverviewToPlayers(creatorFriendIds);
         break;
       }
 
@@ -1284,6 +1362,31 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
         SELECT match_id FROM match_history ORDER BY ended_at_ms DESC LIMIT 100
       )
     `);
+
+    if (record.player1Id && record.player2Id) {
+      try {
+        const clubSvc = this.getClubService();
+        const linkedChallenge = await clubSvc.autoLinkMatchToActiveChallenge({
+          matchId: record.matchId,
+          player1Id: record.player1Id,
+          player2Id: record.player2Id,
+        });
+        if (linkedChallenge) {
+          await this.broadcastClubChallengeUpdate(linkedChallenge, {
+            notifyTitle:
+              linkedChallenge.status === 'completed'
+                ? 'Club Challenge Completed'
+                : 'Club Challenge Score Updated',
+            notifyBody:
+              linkedChallenge.status === 'completed'
+                ? `${linkedChallenge.winnerClubId === linkedChallenge.challengerClubId ? linkedChallenge.challengerClubName : linkedChallenge.targetClubName} won ${linkedChallenge.challengerClubTag} vs ${linkedChallenge.targetClubTag} (${linkedChallenge.challengerScore}-${linkedChallenge.targetScore}).`
+                : `${linkedChallenge.challengerClubTag} ${linkedChallenge.challengerScore} - ${linkedChallenge.targetScore} ${linkedChallenge.targetClubTag} after verified match.`,
+          });
+        }
+      } catch {
+        // Non-blocking club challenge linking
+      }
+    }
   }
 
   public async getHealthAndStats(): Promise<{
@@ -1444,6 +1547,13 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
     return new BattlePassService(createDurableObjectSqlDb(this.ctx.storage.sql));
   }
 
+  private getClubService(): ClubService {
+    if (this.env.DB) {
+      return new ClubService(this.env.DB);
+    }
+    return new ClubService(createDurableObjectSqlDb(this.ctx.storage.sql));
+  }
+
   private async authenticateRestPlayer(
     playerId: unknown,
     playerToken: unknown,
@@ -1499,9 +1609,18 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
     return this.getProgressionService().loginAccount(input);
   }
 
-  public async progressionGetProfile(playerId: string) {
+  public async progressionGetProfile(
+    playerId: string,
+    viewerId?: string | null,
+    viewerToken?: string | null,
+  ) {
     this.ensureSchema();
-    return this.getProgressionService().getPublicProfile(playerId);
+    let authenticatedViewer: string | null = null;
+    if (viewerId && viewerToken) {
+      const ok = await this.getProgressionService().verifyPlayerToken(viewerId, viewerToken);
+      if (ok) authenticatedViewer = viewerId.trim();
+    }
+    return this.getProgressionService().getPublicProfile(playerId, authenticatedViewer);
   }
 
   public async progressionSearch(query: string, limit = 15) {
@@ -1654,7 +1773,7 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
     this.ensureSchema();
     const auth = await this.authenticateRestPlayer(playerId, playerToken);
     if (!auth.ok) return auth;
-    const overview = await this.getSocialService().getOverview(auth.playerId);
+    const overview = await this.buildSocialOverview(auth.playerId);
     return { ok: true, overview };
   }
 
@@ -1670,7 +1789,130 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
       const ok = await this.getProgressionService().verifyPlayerToken(viewerId, viewerToken);
       if (ok) authenticatedViewer = viewerId.trim();
     }
-    return this.getSocialService().searchPlayersForSocial(authenticatedViewer, query, limit);
+    const items = await this.getSocialService().searchPlayersForSocial(
+      authenticatedViewer,
+      query,
+      limit,
+    );
+    try {
+      const badges = await this.getClubService().getClubBadgesForPlayers(
+        items.map((p) => p.playerId),
+      );
+      return items.map((p) => ({
+        ...p,
+        club: badges.get(p.playerId) ?? null,
+      }));
+    } catch {
+      return items;
+    }
+  }
+
+  public async socialGetFriendsPaginated(
+    playerId: string,
+    playerToken: string,
+    opts?: { limit?: number; offset?: number; query?: string },
+  ) {
+    this.ensureSchema();
+    const auth = await this.authenticateRestPlayer(playerId, playerToken);
+    if (!auth.ok) return auth;
+    const overview = await this.buildSocialOverview(auth.playerId);
+    const cleaned = (opts?.query ?? '').trim().toLowerCase();
+    const filtered = cleaned
+      ? overview.friends.filter(
+          (f) =>
+            f.displayName.toLowerCase().includes(cleaned) ||
+            (f.username && f.username.toLowerCase().includes(cleaned)) ||
+            f.playerId.toLowerCase().includes(cleaned),
+        )
+      : overview.friends;
+    const total = filtered.length;
+    const offset = Math.max(0, Math.floor(opts?.offset ?? 0));
+    const limit = Math.max(1, Math.min(100, Math.floor(opts?.limit ?? 25)));
+    const items = filtered.slice(offset, offset + limit);
+    return {
+      ok: true as const,
+      friends: items,
+      total,
+      hasMore: offset + items.length < total,
+    };
+  }
+
+  public async socialGetPrivacy(playerId: string, playerToken: string) {
+    this.ensureSchema();
+    const auth = await this.authenticateRestPlayer(playerId, playerToken);
+    if (!auth.ok) return auth;
+    const privacy = await this.getSocialService().getPrivacySettings(auth.playerId);
+    return { ok: true as const, privacy };
+  }
+
+  public async socialUpdatePrivacy(
+    playerId: string,
+    playerToken: string,
+    updates: Partial<PrivacySettings>,
+  ) {
+    this.ensureSchema();
+    const auth = await this.authenticateRestPlayer(playerId, playerToken);
+    if (!auth.ok) return auth;
+    const privacy = await this.handleUpdatePrivacySettings(auth.playerId, updates);
+    return { ok: true as const, privacy };
+  }
+
+  public async socialGetNotifications(
+    playerId: string,
+    playerToken: string,
+    opts?: { limit?: number; unreadOnly?: boolean },
+  ) {
+    this.ensureSchema();
+    const auth = await this.authenticateRestPlayer(playerId, playerToken);
+    if (!auth.ok) return auth;
+    const res = await this.getSocialService().getNotifications(auth.playerId, opts);
+    return { ok: true as const, ...res };
+  }
+
+  public async socialMarkNotificationRead(
+    playerId: string,
+    playerToken: string,
+    notificationId?: string,
+  ) {
+    this.ensureSchema();
+    const auth = await this.authenticateRestPlayer(playerId, playerToken);
+    if (!auth.ok) return auth;
+    const res = await this.getSocialService().markNotificationRead(auth.playerId, notificationId);
+    this.sendToPlayer(auth.playerId, {
+      type: 'notifications:updated',
+      notifications: res.notifications,
+      unreadCount: res.unreadCount,
+    });
+    return { ok: true as const, ...res };
+  }
+
+  public async socialClearNotifications(
+    playerId: string,
+    playerToken: string,
+    notificationId?: string,
+  ) {
+    this.ensureSchema();
+    const auth = await this.authenticateRestPlayer(playerId, playerToken);
+    if (!auth.ok) return auth;
+    const res = await this.getSocialService().clearNotifications(auth.playerId, notificationId);
+    this.sendToPlayer(auth.playerId, {
+      type: 'notifications:updated',
+      notifications: res.notifications,
+      unreadCount: res.unreadCount,
+    });
+    return { ok: true as const, ...res };
+  }
+
+  public async socialJoinFriendRoom(
+    playerId: string,
+    playerToken: string,
+    friendPlayerId: string,
+    sessionId?: string | null,
+  ) {
+    this.ensureSchema();
+    const auth = await this.authenticateRestPlayer(playerId, playerToken);
+    if (!auth.ok) return auth;
+    return this.handleJoinFriendRoom(auth.playerId, sessionId ?? null, friendPlayerId);
   }
 
   public async socialSendFriendRequest(
@@ -1776,6 +2018,8 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
     playerToken: string,
     input: {
       targetPlayerId: string;
+      inviteKind?: MatchInviteKind;
+      roomId?: string;
       ruleProfileId?: RuleProfileId;
       calledShotsEnabled?: boolean;
       ttlMs?: number;
@@ -1787,6 +2031,8 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
     const sess = this.findLatestSessionByPlayerId(auth.playerId);
     return this.handleSendInvite(auth.playerId, sess?.session_id ?? null, {
       targetPlayerId: input.targetPlayerId,
+      inviteKind: input.inviteKind === 'spectate' ? 'spectate' : 'match',
+      roomId: input.roomId,
       ruleProfileId: input.ruleProfileId === 'wpa' ? 'wpa' : 'casual',
       calledShotsEnabled: Boolean(input.calledShotsEnabled),
       ttlMs: input.ttlMs,
@@ -1828,7 +2074,7 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
         peerPlayerId,
         readAtMs: res.markedReadAtMs,
       });
-      const overview = await this.getSocialService().getOverview(auth.playerId);
+      const overview = await this.buildSocialOverview(auth.playerId);
       this.sendToPlayer(auth.playerId, { type: 'social:state', overview });
     }
     return { ok: true, messages: res.messages };
@@ -1866,6 +2112,319 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
       reporterId: auth.playerId,
       ...input,
     });
+  }
+
+  // ===== Phase 15 Clubs, Club Competitions & Leaderboards RPC Methods =====
+
+  public async clubList(opts?: { query?: string; limit?: number }): Promise<ClubRecord[]> {
+    this.ensureSchema();
+    return this.getClubService().listClubs(opts);
+  }
+
+  public async clubGetDetail(
+    clubId: string,
+    viewerId?: string | null,
+    viewerToken?: string | null,
+  ): Promise<ClubDetailPayload | null> {
+    this.ensureSchema();
+    let authViewer: string | null = null;
+    if (viewerId && viewerToken) {
+      const ok = await this.getProgressionService().verifyPlayerToken(viewerId, viewerToken);
+      if (ok) authViewer = viewerId.trim();
+    }
+    return this.getClubService().getClubDetail(clubId, authViewer);
+  }
+
+  public async clubCreate(
+    playerId: string,
+    playerToken: string,
+    input: {
+      name: unknown;
+      tag: unknown;
+      description?: unknown;
+      emblemColor?: unknown;
+      emblemIcon?: unknown;
+      joinMode?: unknown;
+    },
+  ): Promise<{ ok: true; detail: ClubDetailPayload } | ClubServiceError> {
+    this.ensureSchema();
+    const auth = await this.authenticateRestPlayer(playerId, playerToken);
+    if (!auth.ok) return auth;
+    const res = await this.getClubService().createClub(auth.playerId, input);
+    if (!res.ok) return res;
+    await this.broadcastClubUpdated([auth.playerId], res.detail.club.clubId);
+    return res;
+  }
+
+  public async clubUpdate(
+    playerId: string,
+    playerToken: string,
+    clubId: string,
+    input: {
+      description?: unknown;
+      emblemColor?: unknown;
+      emblemIcon?: unknown;
+      joinMode?: unknown;
+    },
+  ): Promise<{ ok: true; detail: ClubDetailPayload } | ClubServiceError> {
+    this.ensureSchema();
+    const auth = await this.authenticateRestPlayer(playerId, playerToken);
+    if (!auth.ok) return auth;
+    const res = await this.getClubService().updateClub(auth.playerId, clubId, input);
+    if (!res.ok) return res;
+    const memberIds = await this.getClubService().getClubMemberPlayerIds(clubId);
+    await this.broadcastClubUpdated(memberIds, clubId);
+    return res;
+  }
+
+  public async clubJoinOrRequest(
+    playerId: string,
+    playerToken: string,
+    clubId: string,
+    message?: unknown,
+  ) {
+    this.ensureSchema();
+    const auth = await this.authenticateRestPlayer(playerId, playerToken);
+    if (!auth.ok) return auth;
+    const clubSvc = this.getClubService();
+    const res = await clubSvc.joinOrRequestClub(auth.playerId, clubId, message);
+    if (!res.ok) return res;
+
+    if (res.outcome === 'requested') {
+      const [officers, applicantProfile, detail] = await Promise.all([
+        clubSvc.getOfficerPlayerIds(clubId),
+        this.getProgressionService().getPublicProfile(auth.playerId),
+        clubSvc.getClubDetail(clubId, auth.playerId),
+      ]);
+      const clubName = detail?.club.name ?? 'your club';
+      const actorName = applicantProfile?.displayName ?? 'A player';
+      for (const oid of officers) {
+        await this.emitNotification({
+          recipientId: oid,
+          type: 'club_join_request',
+          title: 'Club Join Request',
+          body: `${actorName} requested to join ${clubName}.`,
+          actorId: auth.playerId,
+          actorName,
+          referenceId: clubId,
+          dedupeKey: `club_req:${clubId}:${auth.playerId}`,
+        });
+      }
+      await this.broadcastClubUpdated(officers, clubId);
+    } else {
+      const memberIds = await clubSvc.getClubMemberPlayerIds(clubId);
+      await this.broadcastClubUpdated(memberIds, clubId);
+    }
+    return res;
+  }
+
+  public async clubRespondJoinRequest(
+    playerId: string,
+    playerToken: string,
+    clubId: string,
+    requestId: string,
+    action: 'accept' | 'reject',
+  ) {
+    this.ensureSchema();
+    const auth = await this.authenticateRestPlayer(playerId, playerToken);
+    if (!auth.ok) return auth;
+    const clubSvc = this.getClubService();
+    const res = await clubSvc.respondJoinRequest(auth.playerId, clubId, requestId, action);
+    if (!res.ok) return res;
+
+    const memberIds = await clubSvc.getClubMemberPlayerIds(clubId);
+    await this.broadcastClubUpdated([...memberIds, res.targetPlayerId], clubId);
+    if (res.targetPlayerId) {
+      const detail = await clubSvc.getClubDetail(clubId, auth.playerId);
+      const clubLabel = detail ? `[${detail.club.tag}] ${detail.club.name}` : 'Club';
+      await this.emitNotification({
+        recipientId: res.targetPlayerId,
+        type: 'club_join_request',
+        title: action === 'accept' ? 'Club Application Accepted' : 'Club Application Declined',
+        body:
+          action === 'accept'
+            ? `Your request to join ${clubLabel} was accepted.`
+            : `Your request to join ${clubLabel} was declined.`,
+        actorId: auth.playerId,
+        referenceId: clubId,
+        dedupeKey: `club_req_res:${clubId}:${res.targetPlayerId}`,
+      });
+    }
+    return res;
+  }
+
+  public async clubInvitePlayer(
+    playerId: string,
+    playerToken: string,
+    clubId: string,
+    targetPlayerId: string,
+  ) {
+    this.ensureSchema();
+    const auth = await this.authenticateRestPlayer(playerId, playerToken);
+    if (!auth.ok) return auth;
+    const clubSvc = this.getClubService();
+    const res = await clubSvc.invitePlayerToClub(auth.playerId, clubId, targetPlayerId);
+    if (!res.ok) return res;
+
+    await this.emitNotification({
+      recipientId: res.invitation.recipientId,
+      type: 'club_invite',
+      title: 'Club Invitation',
+      body: `${res.invitation.inviterName} invited you to join [${res.invitation.clubTag}] ${res.invitation.clubName}.`,
+      actorId: auth.playerId,
+      actorName: res.invitation.inviterName,
+      referenceId: res.invitation.inviteId,
+      dedupeKey: `club_inv:${clubId}:${res.invitation.recipientId}`,
+    });
+    const memberIds = await clubSvc.getClubMemberPlayerIds(clubId);
+    await this.broadcastClubUpdated([...memberIds, res.invitation.recipientId], clubId);
+    return res;
+  }
+
+  public async clubRespondInvite(
+    playerId: string,
+    playerToken: string,
+    inviteId: string,
+    action: 'accept' | 'reject',
+  ) {
+    this.ensureSchema();
+    const auth = await this.authenticateRestPlayer(playerId, playerToken);
+    if (!auth.ok) return auth;
+    const clubSvc = this.getClubService();
+    const res = await clubSvc.respondClubInvite(auth.playerId, inviteId, action);
+    if (!res.ok) return res;
+
+    const memberIds = await clubSvc.getClubMemberPlayerIds(res.clubId);
+    await this.broadcastClubUpdated([...memberIds, auth.playerId], res.clubId);
+    return res;
+  }
+
+  public async clubLeave(playerId: string, playerToken: string, clubId: string) {
+    this.ensureSchema();
+    const auth = await this.authenticateRestPlayer(playerId, playerToken);
+    if (!auth.ok) return auth;
+    const clubSvc = this.getClubService();
+    const res = await clubSvc.leaveClub(auth.playerId, clubId);
+    if (!res.ok) return res;
+
+    const remainingMembers = res.disbanded ? [] : await clubSvc.getClubMemberPlayerIds(clubId);
+    await this.broadcastClubUpdated([...remainingMembers, auth.playerId], clubId);
+    return res;
+  }
+
+  public async clubUpdateMemberRole(
+    playerId: string,
+    playerToken: string,
+    clubId: string,
+    targetPlayerId: string,
+    role: 'owner' | 'admin' | 'member',
+  ) {
+    this.ensureSchema();
+    const auth = await this.authenticateRestPlayer(playerId, playerToken);
+    if (!auth.ok) return auth;
+    const clubSvc = this.getClubService();
+    const res = await clubSvc.updateMemberRole(auth.playerId, clubId, targetPlayerId, role);
+    if (!res.ok) return res;
+
+    const memberIds = await clubSvc.getClubMemberPlayerIds(clubId);
+    await this.broadcastClubUpdated(memberIds, clubId);
+    return res;
+  }
+
+  public async clubKickMember(
+    playerId: string,
+    playerToken: string,
+    clubId: string,
+    targetPlayerId: string,
+  ) {
+    this.ensureSchema();
+    const auth = await this.authenticateRestPlayer(playerId, playerToken);
+    if (!auth.ok) return auth;
+    const clubSvc = this.getClubService();
+    const res = await clubSvc.kickMember(auth.playerId, clubId, targetPlayerId);
+    if (!res.ok) return res;
+
+    const memberIds = await clubSvc.getClubMemberPlayerIds(clubId);
+    await this.broadcastClubUpdated([...memberIds, targetPlayerId], clubId);
+    return res;
+  }
+
+  public async clubLeaderboard(opts?: {
+    scope?: ClubLeaderboardScope;
+    limit?: number;
+    page?: number;
+    query?: string;
+  }): Promise<ClubLeaderboardEntry[]> {
+    this.ensureSchema();
+    const board = await this.getClubService().getClubLeaderboard({
+      scope: opts?.scope ?? 'global',
+      limit: opts?.limit,
+      page: opts?.page,
+      query: opts?.query,
+    });
+    return board.items;
+  }
+
+  public async clubCreateChallenge(
+    playerId: string,
+    playerToken: string,
+    input: {
+      challengerClubId: string;
+      targetClubId: string;
+      ruleProfileId?: RuleProfileId;
+      calledShotsEnabled?: boolean;
+      targetWins?: number;
+      notes?: string;
+    },
+  ) {
+    this.ensureSchema();
+    const auth = await this.authenticateRestPlayer(playerId, playerToken);
+    if (!auth.ok) return auth;
+    const clubSvc = this.getClubService();
+    const res = await clubSvc.createChallenge(auth.playerId, input.challengerClubId, input);
+    if (!res.ok) return res;
+
+    await this.broadcastClubChallengeUpdate(res.challenge, {
+      notifyRecipients: await clubSvc.getOfficerPlayerIds(res.challenge.targetClubId),
+      notifyTitle: 'New Club Challenge',
+      notifyBody: `[${res.challenge.challengerClubTag}] ${res.challenge.challengerClubName} challenged your club (First to ${res.challenge.targetWins} wins).`,
+      actorId: auth.playerId,
+    });
+    return res;
+  }
+
+  public async clubRespondChallenge(
+    playerId: string,
+    playerToken: string,
+    challengeId: string,
+    action: 'accept' | 'decline' | 'cancel',
+  ) {
+    this.ensureSchema();
+    const auth = await this.authenticateRestPlayer(playerId, playerToken);
+    if (!auth.ok) return auth;
+    const clubSvc = this.getClubService();
+    const res = await clubSvc.respondChallenge(auth.playerId, challengeId, action);
+    if (!res.ok) return res;
+
+    const notifyIds =
+      action === 'cancel'
+        ? await clubSvc.getOfficerPlayerIds(res.challenge.targetClubId)
+        : await clubSvc.getOfficerPlayerIds(res.challenge.challengerClubId);
+    await this.broadcastClubChallengeUpdate(res.challenge, {
+      notifyRecipients: notifyIds,
+      notifyTitle:
+        action === 'accept'
+          ? 'Club Challenge Accepted'
+          : action === 'decline'
+            ? 'Club Challenge Declined'
+            : 'Club Challenge Cancelled',
+      notifyBody:
+        action === 'accept'
+          ? `[${res.challenge.targetClubTag}] accepted your club challenge! Verified matches between members now count toward the score.`
+          : `[${res.challenge.targetClubTag}] challenge status updated (${action}).`,
+      actorId: auth.playerId,
+    });
+    return res;
   }
 
   // ===== Phase 14 Spectator & Live Broadcast RPC Methods =====
@@ -3040,6 +3599,22 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
         };
         this.sendToPlayer(m.player1Id, msg);
         this.sendToPlayer(m.player2Id, msg);
+        await this.emitNotification({
+          recipientId: m.player1Id,
+          type: 'tournament_event',
+          title: 'Tournament Match Ready',
+          body: `${tournament.title}: ${m.roundLabel} vs ${m.player2Name ?? 'Opponent'} is ready.`,
+          referenceId: tournament.tournamentId,
+          dedupeKey: `tmatch:${m.bracketMatchId}`,
+        });
+        await this.emitNotification({
+          recipientId: m.player2Id,
+          type: 'tournament_event',
+          title: 'Tournament Match Ready',
+          body: `${tournament.title}: ${m.roundLabel} vs ${m.player1Name ?? 'Opponent'} is ready.`,
+          referenceId: tournament.tournamentId,
+          dedupeKey: `tmatch:${m.bracketMatchId}`,
+        });
       } catch {
         out.push(m);
       }
@@ -3087,6 +3662,19 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
             tournament: detail.tournament,
           } satisfies ServerToClientMessage)
         : null;
+
+    if (detail.tournament.status === 'completed' && detail.tournament.championPlayerId) {
+      for (const pid of participantIds) {
+        await this.emitNotification({
+          recipientId: pid,
+          type: 'tournament_event',
+          title: 'Tournament Completed',
+          body: `${detail.tournament.title} concluded — Champion: ${detail.tournament.championDisplayName ?? 'Champion'}.`,
+          referenceId: tournamentId,
+          dedupeKey: `tdone:${tournamentId}`,
+        });
+      }
+    }
 
     for (const ws of this.ctx.getWebSockets()) {
       const att = this.getAttachment(ws);
@@ -3175,6 +3763,18 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
     if (!res.ok) return res;
 
     if (res.outcome === 'accepted') {
+      const targetProfile = await this.getProgressionService().getPublicProfile(playerId);
+      const actorName = targetProfile?.displayName ?? 'Player';
+      await this.emitNotification({
+        recipientId: targetPlayerId,
+        type: 'friend_response',
+        title: 'Friend Request Accepted',
+        body: `${actorName} is now your friend.`,
+        actorId: playerId,
+        actorName,
+        referenceId: playerId,
+        dedupeKey: `f_acc:${playerId}`,
+      });
       this.sendToPlayer(targetPlayerId, {
         type: 'social:friend_updated',
         actorId: playerId,
@@ -3192,6 +3792,16 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
           type: 'social:friend_request_received',
           request: res.request,
         });
+        await this.emitNotification({
+          recipientId: targetPlayerId,
+          type: 'friend_request',
+          title: 'New Friend Request',
+          body: `${res.request.displayName} sent you a friend request.`,
+          actorId: playerId,
+          actorName: res.request.displayName,
+          referenceId: res.request.requestId,
+          dedupeKey: `f_req:${playerId}`,
+        });
       }
       await this.pushOverviewToPlayers([playerId, targetPlayerId]);
     }
@@ -3206,6 +3816,21 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
     const social = this.getSocialService();
     const res = await social.respondFriendRequest(actorId, targetPlayerId, action);
     if (!res.ok) return res;
+
+    if (action === 'accept') {
+      const actorProfile = await this.getProgressionService().getPublicProfile(actorId);
+      const actorName = actorProfile?.displayName ?? 'Player';
+      await this.emitNotification({
+        recipientId: targetPlayerId,
+        type: 'friend_response',
+        title: 'Friend Request Accepted',
+        body: `${actorName} accepted your friend request.`,
+        actorId,
+        actorName,
+        referenceId: actorId,
+        dedupeKey: `f_acc:${actorId}`,
+      });
+    }
 
     const mapped =
       action === 'accept' ? 'accepted' : action === 'reject' ? 'rejected' : 'cancelled';
@@ -3284,17 +3909,20 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
     senderSessionId: string | null,
     input: {
       targetPlayerId: string;
+      inviteKind?: MatchInviteKind;
+      roomId?: string;
       ruleProfileId?: RuleProfileId;
       calledShotsEnabled?: boolean;
       ttlMs?: number;
     },
   ): Promise<{ ok: true; invitation: MatchInvitationRecord } | SocialError> {
     await this.pruneExpiredWaitingRooms();
+    const inviteKind: MatchInviteKind = input.inviteKind === 'spectate' ? 'spectate' : 'match';
     const senderSess =
       (senderSessionId ? this.getSession(senderSessionId) : null) ??
       this.findLatestSessionByPlayerId(senderPlayerId);
 
-    if (senderSess?.in_matchmaking === 1) {
+    if (inviteKind === 'match' && senderSess?.in_matchmaking === 1) {
       return {
         ok: false,
         status: 409,
@@ -3305,8 +3933,75 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
 
     let attachedRoomId: string | null = null;
     let attachedRoomCode: string | null = null;
+    let effectiveRuleProfile: RuleProfileId = input.ruleProfileId === 'wpa' ? 'wpa' : 'casual';
+    let effectiveCalledShots = Boolean(input.calledShotsEnabled);
 
-    if (senderSess?.active_room_id) {
+    if (inviteKind === 'spectate') {
+      const targetRoomId = (typeof input.roomId === 'string' && input.roomId.trim()) || senderSess?.active_room_id || null;
+      if (!targetRoomId) {
+        return {
+          ok: false,
+          status: 400,
+          code: 'INVALID_ROOM',
+          message: 'Join or specify an active match room before sending a spectator invite.',
+        };
+      }
+      const roomRows = this.ctx.storage.sql
+        .exec<{
+          room_id: string;
+          room_code: string;
+          host_session_id: string;
+          status: string;
+          is_private: number;
+          allow_spectators: number;
+          expires_at_ms: number;
+          rule_profile_id: string;
+          called_shots_enabled: number;
+          meta_json: string | null;
+        }>('SELECT * FROM rooms WHERE room_id = ? LIMIT 1', targetRoomId)
+        .toArray();
+      const row = roomRows[0];
+      if (
+        !row ||
+        row.status === 'expired' ||
+        row.status === 'cancelled' ||
+        row.status === 'finished' ||
+        (row.status === 'waiting' && Date.now() >= row.expires_at_ms)
+      ) {
+        return {
+          ok: false,
+          status: 410,
+          code: 'ROOM_EXPIRED',
+          message: 'That match room is no longer active for spectating.',
+        };
+      }
+      if (Number(row.allow_spectators) !== 1) {
+        return {
+          ok: false,
+          status: 403,
+          code: 'SPECTATE_UNAVAILABLE',
+          message: 'Spectators are disabled for this room.',
+        };
+      }
+      if (Number(row.is_private) === 1) {
+        const meta = this.parseRoomMetaJson(row.meta_json);
+        const isParticipant =
+          meta.players.some((p) => p.playerId === senderPlayerId) ||
+          (senderSess ? row.host_session_id === senderSess.session_id : false);
+        if (!isParticipant) {
+          return {
+            ok: false,
+            status: 403,
+            code: 'SPECTATE_UNAVAILABLE',
+            message: 'Only room participants can send spectate invitations for a private match.',
+          };
+        }
+      }
+      attachedRoomId = row.room_id;
+      attachedRoomCode = row.room_code;
+      effectiveRuleProfile = row.rule_profile_id === 'wpa' ? 'wpa' : 'casual';
+      effectiveCalledShots = Number(row.called_shots_enabled) === 1;
+    } else if (senderSess?.active_room_id) {
       const roomRows = this.ctx.storage.sql
         .exec<{
           room_id: string;
@@ -3348,13 +4043,29 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
     const res = await social.createInvitation({
       senderId: senderPlayerId,
       targetPlayerId: input.targetPlayerId,
+      inviteKind,
       roomId: attachedRoomId,
       roomCode: attachedRoomCode,
-      ruleProfileId: input.ruleProfileId === 'wpa' ? 'wpa' : 'casual',
-      calledShotsEnabled: Boolean(input.calledShotsEnabled),
+      ruleProfileId: effectiveRuleProfile,
+      calledShotsEnabled: effectiveCalledShots,
       ttlMs: requestedTtl,
     });
     if (!res.ok) return res;
+
+    await this.emitNotification({
+      recipientId: res.invitation.recipientId,
+      type: 'match_invite',
+      title: inviteKind === 'spectate' ? 'Spectate Match Invite' : 'Match Invitation',
+      body:
+        inviteKind === 'spectate'
+          ? `${res.invitation.senderName} invited you to watch a live match.`
+          : `${res.invitation.senderName} challenged you (${res.invitation.ruleProfileId.toUpperCase()}).`,
+      actorId: res.invitation.senderId,
+      actorName: res.invitation.senderName,
+      referenceId: res.invitation.inviteId,
+      dedupeKey: `inv:${inviteKind}:${res.invitation.senderId}`,
+      ttlMs: requestedTtl,
+    });
 
     this.sendToPlayer(res.invitation.recipientId, {
       type: 'invite:received',
@@ -3375,7 +4086,12 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
     inviteId: string,
     action: MatchInviteAction,
   ): Promise<
-    | { ok: true; invitation: MatchInvitationRecord; room?: OnlineRoomInfo }
+    | {
+        ok: true;
+        invitation: MatchInvitationRecord;
+        room?: OnlineRoomInfo;
+        spectateTarget?: { roomId: string; roomCode: string | null };
+      }
     | SocialError
   > {
     await this.pruneExpiredWaitingRooms();
@@ -3406,6 +4122,87 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
     const recipientSess =
       (actorSessionId ? this.getSession(actorSessionId) : null) ??
       this.findLatestSessionByPlayerId(actorPlayerId);
+
+    if (inv.inviteKind === 'spectate') {
+      if (recipientSess && (recipientSess.active_room_id || recipientSess.in_matchmaking === 1)) {
+        return {
+          ok: false,
+          status: 409,
+          code: 'ALREADY_IN_MATCH',
+          message: 'Leave your current room or matchmaking queue before spectating.',
+        };
+      }
+      const targetRoomId = inv.roomId;
+      if (!targetRoomId) {
+        await social.updateInvitationStatus(inv.inviteId, 'expired');
+        return {
+          ok: false,
+          status: 410,
+          code: 'ROOM_EXPIRED',
+          message: 'Spectate match room is no longer available.',
+        };
+      }
+      const roomRows = this.ctx.storage.sql
+        .exec<{
+          room_id: string;
+          room_code: string;
+          status: string;
+          allow_spectators: number;
+          expires_at_ms: number;
+        }>('SELECT room_id, room_code, status, allow_spectators, expires_at_ms FROM rooms WHERE room_id = ? LIMIT 1', targetRoomId)
+        .toArray();
+      const row = roomRows[0];
+      if (
+        !row ||
+        row.status === 'expired' ||
+        row.status === 'cancelled' ||
+        row.status === 'finished' ||
+        (row.status === 'waiting' && Date.now() >= row.expires_at_ms)
+      ) {
+        const expiredInv = (await social.updateInvitationStatus(inv.inviteId, 'expired')) ?? {
+          ...inv,
+          status: 'expired' as const,
+          respondedAtMs: Date.now(),
+        };
+        this.sendToPlayer(inv.senderId, { type: 'invite:updated', invitation: expiredInv });
+        this.sendToPlayer(inv.recipientId, { type: 'invite:updated', invitation: expiredInv });
+        await this.pushOverviewToPlayers([inv.senderId, inv.recipientId]);
+        return {
+          ok: false,
+          status: 410,
+          code: 'ROOM_EXPIRED',
+          message: 'The invited match has already finished or closed.',
+        };
+      }
+      if (Number(row.allow_spectators) !== 1) {
+        return {
+          ok: false,
+          status: 403,
+          code: 'SPECTATE_UNAVAILABLE',
+          message: 'Spectators are disabled for this match.',
+        };
+      }
+
+      const acceptedInv = (await social.updateInvitationStatus(inv.inviteId, 'accepted', {
+        roomId: row.room_id,
+        roomCode: row.room_code,
+      })) ?? {
+        ...inv,
+        roomId: row.room_id,
+        roomCode: row.room_code,
+        status: 'accepted' as const,
+        respondedAtMs: Date.now(),
+      };
+
+      this.sendToPlayer(inv.senderId, { type: 'invite:updated', invitation: acceptedInv });
+      this.sendToPlayer(inv.recipientId, { type: 'invite:updated', invitation: acceptedInv });
+      await this.pushOverviewToPlayers([inv.senderId, inv.recipientId]);
+      return {
+        ok: true,
+        invitation: acceptedInv,
+        spectateTarget: { roomId: row.room_id, roomCode: row.room_code },
+      };
+    }
 
     if (!recipientSess) {
       return {
@@ -3450,7 +4247,10 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
         };
       }
 
-      const joinCosmetics = await this.getEconomyService().getEquippedCosmetics(actorPlayerId);
+      const [joinCosmetics, guestProfile] = await Promise.all([
+        this.getEconomyService().getEquippedCosmetics(actorPlayerId),
+        this.getProgressionService().getPublicProfile(actorPlayerId),
+      ]);
       const roomStub = this.env.POOL_ROOM.get(this.env.POOL_ROOM.idFromName(row.room_id));
       const joinRes = await roomStub.joinRoom({
         sessionId: recipientSess.session_id,
@@ -3458,6 +4258,8 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
         reconnectToken: recipientSess.reconnect_token,
         displayName: recipientSess.display_name,
         avatarId: sanitizeAvatarId(recipientSess.avatar_id),
+        elo: guestProfile?.elo,
+        rankTier: guestProfile?.rankTier,
         equippedCosmetics: joinCosmetics,
         latencyMs: recipientSess.latency_ms,
       });
@@ -3662,6 +4464,142 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
     return { ok: true, invitation: acceptedInv, room: joinRes.room };
   }
 
+  private async handleJoinFriendRoom(
+    playerId: string,
+    preferredSessionId: string | null,
+    friendPlayerIdRaw: string,
+  ): Promise<{ ok: true; room: OnlineRoomInfo } | SocialError> {
+    await this.pruneExpiredWaitingRooms();
+    const friendPlayerId = typeof friendPlayerIdRaw === 'string' ? friendPlayerIdRaw.trim() : '';
+    if (!friendPlayerId || friendPlayerId === playerId) {
+      return { ok: false, status: 400, code: 'INVALID_INPUT', message: 'Invalid friend player ID.' };
+    }
+
+    const restriction = await this.getAntiCheatService().getPlayerRestriction(playerId);
+    if (restriction.blockedFromOnline) {
+      return {
+        ok: false,
+        status: 403,
+        code: 'SUSPENDED',
+        message: 'Your account is currently suspended from online multiplayer.',
+      };
+    }
+
+    const social = this.getSocialService();
+    if (await social.isBlockedBetween(playerId, friendPlayerId)) {
+      return {
+        ok: false,
+        status: 403,
+        code: 'BLOCKED_PLAYER',
+        message: 'Cannot join a room involving a blocked player.',
+      };
+    }
+    if (!(await social.areFriends(playerId, friendPlayerId))) {
+      return {
+        ok: false,
+        status: 403,
+        code: 'NOT_FRIENDS',
+        message: 'You can only quick-join rooms of players on your friends list.',
+      };
+    }
+
+    const friendPrivacy = await social.getPrivacySettings(friendPlayerId);
+    if (!friendPrivacy.showOnlineStatus) {
+      return {
+        ok: false,
+        status: 403,
+        code: 'PRIVACY_RESTRICTED',
+        message: 'This friend has hidden their online room activity.',
+      };
+    }
+
+    const sess =
+      (preferredSessionId ? this.getSession(preferredSessionId) : null) ??
+      this.findLatestConnectedSessionByPlayerId(playerId) ??
+      this.findLatestSessionByPlayerId(playerId);
+
+    if (!sess) {
+      return {
+        ok: false,
+        status: 409,
+        code: 'PLAYER_OFFLINE',
+        message: 'Connect to online multiplayer before joining a friend room.',
+      };
+    }
+    if (sess.active_room_id || sess.in_matchmaking === 1) {
+      return {
+        ok: false,
+        status: 409,
+        code: 'ALREADY_IN_MATCH',
+        message: 'Leave your current room or matchmaking queue before joining a friend.',
+      };
+    }
+
+    const friendSess =
+      this.findLatestConnectedSessionByPlayerId(friendPlayerId) ??
+      this.findLatestSessionByPlayerId(friendPlayerId);
+    const friendRoomId = friendSess?.active_room_id;
+    if (!friendRoomId) {
+      return {
+        ok: false,
+        status: 404,
+        code: 'INVALID_ROOM',
+        message: 'Your friend is not currently in an open room.',
+      };
+    }
+
+    const row = this.ctx.storage.sql
+      .exec<{ room_id: string; status: string; expires_at_ms: number }>(
+        'SELECT room_id, status, expires_at_ms FROM rooms WHERE room_id = ? LIMIT 1',
+        friendRoomId,
+      )
+      .toArray()[0];
+    if (!row || row.status !== 'waiting' || Date.now() >= row.expires_at_ms) {
+      return {
+        ok: false,
+        status: 409,
+        code: 'ROOM_FULL',
+        message: 'Your friend’s room is no longer waiting for a challenger.',
+      };
+    }
+
+    const [joinCosmetics, joinProfile] = await Promise.all([
+      this.getEconomyService().getEquippedCosmetics(playerId),
+      this.getProgressionService().getPublicProfile(playerId),
+    ]);
+    const roomStub = this.env.POOL_ROOM.get(this.env.POOL_ROOM.idFromName(row.room_id));
+    const joinRes = await roomStub.joinRoom({
+      sessionId: sess.session_id,
+      playerId,
+      reconnectToken: sess.reconnect_token,
+      displayName: sess.display_name,
+      avatarId: sanitizeAvatarId(sess.avatar_id),
+      elo: joinProfile?.elo,
+      rankTier: joinProfile?.rankTier,
+      equippedCosmetics: joinCosmetics,
+      latencyMs: sess.latency_ms,
+    });
+
+    if (!joinRes.ok) {
+      return { ok: false, status: 409, code: joinRes.code, message: joinRes.message };
+    }
+
+    this.ctx.storage.sql.exec(
+      'UPDATE sessions SET active_room_id = ?, in_matchmaking = 0 WHERE session_id = ?',
+      row.room_id,
+      sess.session_id,
+    );
+    this.ctx.storage.sql.exec(
+      'UPDATE rooms SET expires_at_ms = ?, status = ? WHERE room_id = ?',
+      joinRes.room.expiresAtMs,
+      joinRes.room.status,
+      row.room_id,
+    );
+    await this.pushOverviewToPlayers([playerId, friendPlayerId]);
+    await this.scheduleNextAlarm();
+    return { ok: true, room: joinRes.room };
+  }
+
   private async handleSendDirectMessage(
     senderId: string,
     recipientId: string,
@@ -3681,6 +4619,17 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
     });
     if (!res.ok) return res;
 
+    await this.emitNotification({
+      recipientId,
+      type: 'private_message',
+      title: `Message from ${res.message.senderName}`,
+      body: res.message.body.slice(0, 110),
+      actorId: senderId,
+      actorName: res.message.senderName,
+      referenceId: res.message.messageId,
+      dedupeKey: `dm:${senderId}`,
+    });
+
     this.sendToPlayer(senderId, {
       type: 'chat:dm_message',
       message: res.message,
@@ -3694,33 +4643,231 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
     return { ok: true, message: res.message };
   }
 
-  private async broadcastPresenceChanged(
+  private async handleUpdatePrivacySettings(
     playerId: string,
-    status: PresenceStatus,
-    lastSeenAtMs: number,
-  ): Promise<void> {
-    const msg: ServerToClientMessage = {
-      type: 'social:presence_changed',
-      playerId,
-      status,
-      lastSeenAtMs,
-    };
-    this.sendToPlayer(playerId, msg);
-    const friendIds = await this.getSocialService().getFriendIds(playerId);
-    for (const fid of friendIds) {
-      this.sendToPlayer(fid, msg);
+    updates: Partial<PrivacySettings>,
+  ): Promise<PrivacySettings> {
+    const social = this.getSocialService();
+    const updated = await social.updatePrivacySettings(playerId, updates);
+    const liveStatus = await social.getPresenceStatus(playerId);
+    await this.broadcastPresenceChanged(playerId, liveStatus, Date.now());
+    await this.pushOverviewToPlayers([playerId]);
+    return updated;
+  }
+
+  private async emitNotification(params: {
+    recipientId: string;
+    type: NotificationType;
+    title: string;
+    body: string;
+    actorId?: string | null;
+    actorName?: string | null;
+    referenceId?: string | null;
+    dedupeKey?: string | null;
+    ttlMs?: number | null;
+  }): Promise<void> {
+    if (!params.recipientId) return;
+    try {
+      const created = await this.getSocialService().createNotification(params);
+      this.sendToPlayer(params.recipientId, {
+        type: 'notification:new',
+        notification: created.notification,
+        unreadCount: created.unreadCount,
+      });
+    } catch {
+      // Non-blocking notification persistence error
     }
   }
 
-  private async pushOverviewToPlayers(playerIds: string[]): Promise<void> {
-    const social = this.getSocialService();
+  private async broadcastClubUpdated(playerIds: string[], clubId?: string | null): Promise<void> {
+    const clubSvc = this.getClubService();
     const seen = new Set<string>();
     for (const pid of playerIds) {
       if (!pid || seen.has(pid)) continue;
       seen.add(pid);
       if (this.findSocketsByPlayerId(pid).length === 0) continue;
       try {
-        const overview = await social.getOverview(pid);
+        const summary = await clubSvc.getPlayerClubSummary(pid);
+        const targetClubId = summary?.clubId ?? clubId ?? null;
+        const [clubDetail, incomingInvitations] = await Promise.all([
+          targetClubId ? clubSvc.getClubDetail(targetClubId, pid) : Promise.resolve(null),
+          clubSvc.getIncomingClubInvitations(pid),
+        ]);
+        this.sendToPlayer(pid, {
+          type: 'club:updated',
+          clubDetail: summary ? clubDetail : null,
+          incomingInvitations,
+        });
+        const overview = await this.buildSocialOverview(pid);
+        this.sendToPlayer(pid, { type: 'social:state', overview });
+      } catch {
+        // Non-blocking club push
+      }
+    }
+  }
+
+  private async broadcastClubChallengeUpdate(
+    challenge: ClubChallengeRecord,
+    opts?: {
+      notifyRecipients?: string[];
+      notifyTitle?: string;
+      notifyBody?: string;
+      actorId?: string | null;
+    },
+  ): Promise<void> {
+    const clubSvc = this.getClubService();
+    const [m1, m2] = await Promise.all([
+      clubSvc.getClubMemberPlayerIds(challenge.challengerClubId),
+      clubSvc.getClubMemberPlayerIds(challenge.targetClubId),
+    ]);
+    const allMembers = [...new Set([...m1, ...m2])];
+    for (const pid of allMembers) {
+      this.sendToPlayer(pid, {
+        type: 'club:challenge_updated',
+        challenge,
+      });
+    }
+    const recipients = opts?.notifyRecipients ?? allMembers;
+    if (opts?.notifyTitle && opts?.notifyBody) {
+      for (const pid of recipients) {
+        if (opts.actorId && pid === opts.actorId) continue;
+        await this.emitNotification({
+          recipientId: pid,
+          type: 'club_challenge',
+          title: opts.notifyTitle,
+          body: opts.notifyBody,
+          actorId: opts.actorId ?? null,
+          referenceId: challenge.challengeId,
+          dedupeKey: `cchal:${challenge.challengeId}`,
+        });
+      }
+    }
+    await this.broadcastClubUpdated(allMembers, challenge.challengerClubId);
+  }
+
+  private async buildSocialOverview(playerId: string): Promise<SocialOverviewPayload> {
+    const social = this.getSocialService();
+    const clubSvc = this.getClubService();
+    const base = await social.getOverview(playerId);
+
+    const [myClub, incomingClubInvitations, clubBadges] = await Promise.all([
+      clubSvc.getPlayerClubSummary(playerId).catch(() => null),
+      clubSvc.getIncomingClubInvitations(playerId).catch(() => []),
+      clubSvc.getClubBadgesForPlayers(base.friends.map((f) => f.playerId)).catch(() => new Map<string, PlayerClubBadgeSummary>()),
+    ]);
+
+    // Map active rooms to friends whose online status is visible
+    const activeRoomsByPlayer = new Map<string, FriendRoomAvailability>();
+    const now = Date.now();
+    try {
+      const roomRows = this.ctx.storage.sql
+        .exec<Record<string, SqlStorageValue>>(
+          `SELECT room_id, room_code, is_private, match_type, rule_profile_id, status,
+                  allow_spectators, spectator_count, max_spectators, meta_json, expires_at_ms
+           FROM rooms
+           WHERE status IN ('waiting', 'ready', 'playing')`,
+        )
+        .toArray();
+      const visibleFriendIds = new Set(
+        base.friends.filter((f) => f.presence !== 'offline').map((f) => f.playerId),
+      );
+      if (visibleFriendIds.size > 0 && roomRows.length > 0) {
+        const roomLookup = new Map<string, Record<string, SqlStorageValue>>();
+        for (const r of roomRows) {
+          roomLookup.set(String(r.room_id), r);
+        }
+        const sessRows = this.ctx.storage.sql
+          .exec<{ player_id: string | null; active_room_id: string | null }>(
+            'SELECT player_id, active_room_id FROM sessions WHERE active_room_id IS NOT NULL ORDER BY last_seen_at_ms DESC',
+          )
+          .toArray();
+        for (const sr of sessRows) {
+          const pid = sr.player_id ? String(sr.player_id) : '';
+          const rid = sr.active_room_id ? String(sr.active_room_id) : '';
+          if (!pid || !rid || !visibleFriendIds.has(pid) || activeRoomsByPlayer.has(pid)) continue;
+          const r = roomLookup.get(rid);
+          if (!r) continue;
+          const meta = this.parseRoomMetaJson(r.meta_json);
+          const rawStatus = String(r.status);
+          if (rawStatus !== 'waiting' && rawStatus !== 'ready' && rawStatus !== 'playing') continue;
+          const isPrivate = Number(r.is_private) === 1;
+          const allowSpec = Number(r.allow_spectators) === 1;
+          const joinable =
+            rawStatus === 'waiting' &&
+            meta.players.length < 2 &&
+            now < Number(r.expires_at_ms) &&
+            (String(r.match_type) === 'private' || String(r.match_type) === 'quick');
+          const spectatable =
+            allowSpec &&
+            !isPrivate &&
+            Number(r.spectator_count ?? 0) < Number(r.max_spectators ?? this.config.maxSpectatorsPerRoom);
+          activeRoomsByPlayer.set(pid, {
+            roomId: String(r.room_id),
+            roomCode: joinable ? String(r.room_code) : '',
+            status: rawStatus,
+            isPrivate,
+            ruleProfileId: r.rule_profile_id === 'wpa' ? 'wpa' : 'casual',
+            joinable,
+            spectatable,
+          });
+        }
+      }
+    } catch {
+      // Non-blocking room lookup
+    }
+
+    const enrichedFriends: FriendRecord[] = base.friends.map((f) => ({
+      ...f,
+      club: clubBadges.get(f.playerId) ?? null,
+      activeRoom: activeRoomsByPlayer.get(f.playerId) ?? null,
+    }));
+
+    return {
+      ...base,
+      friends: enrichedFriends,
+      friendsTotal: enrichedFriends.length,
+      myClub,
+      incomingClubInvitations,
+    };
+  }
+
+  private async broadcastPresenceChanged(
+    playerId: string,
+    status: PresenceStatus,
+    lastSeenAtMs: number,
+  ): Promise<void> {
+    const social = this.getSocialService();
+    const privacy = await social.getPrivacySettings(playerId).catch(() => DEFAULT_PRIVACY_SETTINGS);
+
+    this.sendToPlayer(playerId, {
+      type: 'social:presence_changed',
+      playerId,
+      status,
+      lastSeenAtMs,
+    });
+
+    const visibleStatus: PresenceStatus = privacy.showOnlineStatus ? status : 'offline';
+    const visibleLastSeen = privacy.showOnlineStatus ? lastSeenAtMs : 0;
+    const friendMsg: ServerToClientMessage = {
+      type: 'social:presence_changed',
+      playerId,
+      status: visibleStatus,
+      lastSeenAtMs: visibleLastSeen,
+    };
+    const friendIds = await social.getFriendIds(playerId);
+    for (const fid of friendIds) {
+      this.sendToPlayer(fid, friendMsg);
+    }
+  }
+
+  private async pushOverviewToPlayers(playerIds: string[]): Promise<void> {
+    const seen = new Set<string>();
+    for (const pid of playerIds) {
+      if (!pid || seen.has(pid)) continue;
+      seen.add(pid);
+      if (this.findSocketsByPlayerId(pid).length === 0) continue;
+      try {
+        const overview = await this.buildSocialOverview(pid);
         this.sendToPlayer(pid, { type: 'social:state', overview });
       } catch {
         // Non-blocking
@@ -3752,6 +4899,8 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
       }
       await this.pushOverviewToPlayers([...affected]);
     }
+
+    await social.expireNotifications(now);
 
     return {
       expiredPresenceIds: expiredPresence.map((e) => e.playerId),

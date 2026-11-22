@@ -40,15 +40,25 @@ import type {
   SpectatableMatchSummary,
   SpectatorCameraMode,
 } from '../multiplayer/shared/protocol';
-import type {
-  BlockedPlayerRecord,
-  DirectMessageRecord,
-  FriendRecord,
-  FriendRequestRecord,
-  MatchInvitationRecord,
-  PresenceStatus,
-  RoomChatMessageRecord,
-  SocialOverviewPayload,
+import {
+  DEFAULT_PRIVACY_SETTINGS,
+  type BlockedPlayerRecord,
+  type ClubChallengeRecord,
+  type ClubDetailPayload,
+  type ClubInvitationRecord,
+  type ClubLeaderboardEntry,
+  type ClubLeaderboardScope,
+  type ClubRecord,
+  type DirectMessageRecord,
+  type FriendRecord,
+  type FriendRequestRecord,
+  type MatchInvitationRecord,
+  type PlayerClubBadgeSummary,
+  type PresenceStatus,
+  type PrivacySettings,
+  type RoomChatMessageRecord,
+  type SocialNotificationRecord,
+  type SocialOverviewPayload,
 } from '../multiplayer/shared/social';
 import {
   COSMETIC_CATALOG,
@@ -312,7 +322,15 @@ export type GameScreen = 'menu' | 'playing';
 export type CameraPreset = 'threeQuarter' | 'topDown' | 'cueAim' | 'sideView';
 export type FeltTheme = 'tournamentGreen' | 'championshipBlue' | 'burgundyClub';
 export type ProgressionTab = 'profile' | 'leaderboard' | 'achievements' | 'history' | 'fairplay';
-export type SocialTab = 'friends' | 'search' | 'requests' | 'messages' | 'blocked';
+export type SocialTab =
+  | 'friends'
+  | 'search'
+  | 'requests'
+  | 'messages'
+  | 'clubs'
+  | 'club_rankings'
+  | 'notifications'
+  | 'privacy';
 export type StoreTab = 'store' | 'inventory' | 'daily' | 'ledger';
 export type StoreCategoryFilter = 'all' | CosmeticCategory;
 export type TournamentTab = 'discover' | 'bracket' | 'leaderboard' | 'career' | 'admin';
@@ -520,12 +538,13 @@ export interface GameState {
   replayIsRecordingVideo: boolean;
   replayVideoNotice: string | null;
 
-  // Social, Presence, Invitations & Real-Time Chat (Phase 7)
+  // Social, Presence, Invitations, Real-Time Chat, Privacy, Notifications & Clubs (Phase 7 & 15)
   socialModalOpen: boolean;
   socialTab: SocialTab;
   activeDmPeerId: string | null;
   selfPresence: PresenceStatus;
   friends: FriendRecord[];
+  friendsTotal: number;
   incomingRequests: FriendRequestRecord[];
   outgoingRequests: FriendRequestRecord[];
   blockedPlayers: BlockedPlayerRecord[];
@@ -537,6 +556,15 @@ export interface GameState {
   roomChatOpen: boolean;
   roomChatUnreadCount: number;
   socialNotice: { type: 'ok' | 'err'; text: string } | null;
+  privacySettings: PrivacySettings;
+  notifications: SocialNotificationRecord[];
+  unreadNotificationCount: number;
+  myClub: PlayerClubBadgeSummary | null;
+  clubDetail: ClubDetailPayload | null;
+  clubsList: ClubRecord[];
+  incomingClubInvitations: ClubInvitationRecord[];
+  clubLeaderboard: ClubLeaderboardEntry[];
+  clubLeaderboardScope: ClubLeaderboardScope;
 
   // Economy, Store & Cosmetic Inventory (Phase 8)
   wallet: WalletSummary | null;
@@ -707,13 +735,26 @@ export interface GameState {
   ) => void;
   resetReplayUiState: () => void;
 
-  // Social Actions (Phase 7)
+  // Social Actions (Phase 7 & 15)
   openSocialModal: (tab?: SocialTab, dmPeerId?: string | null) => void;
   closeSocialModal: () => void;
   setSocialTab: (tab: SocialTab) => void;
   setActiveDmPeerId: (peerId: string | null) => void;
   setSocialNotice: (notice: { type: 'ok' | 'err'; text: string } | null) => void;
   applySocialOverview: (overview: SocialOverviewPayload) => void;
+  setFriendsPage: (friends: FriendRecord[], total: number, append?: boolean) => void;
+  setPrivacySettings: (privacy: PrivacySettings) => void;
+  applyNotificationNew: (notification: SocialNotificationRecord, unreadCount: number) => void;
+  applyNotificationsUpdated: (
+    notifications: SocialNotificationRecord[],
+    unreadCount: number,
+  ) => void;
+  setMyClub: (club: PlayerClubBadgeSummary | null) => void;
+  setClubDetail: (detail: ClubDetailPayload | null) => void;
+  setClubsList: (clubs: ClubRecord[]) => void;
+  setIncomingClubInvitations: (invitations: ClubInvitationRecord[]) => void;
+  setClubLeaderboard: (scope: ClubLeaderboardScope, entries: ClubLeaderboardEntry[]) => void;
+  applyClubChallengeUpdated: (challenge: ClubChallengeRecord) => void;
   updatePlayerPresence: (playerId: string, status: PresenceStatus, lastSeenAtMs: number) => void;
   upsertIncomingFriendRequest: (req: FriendRequestRecord) => void;
   upsertInvitation: (inv: MatchInvitationRecord) => void;
@@ -966,6 +1007,7 @@ export const useGameStore = create<GameState>((set) => ({
   activeDmPeerId: null,
   selfPresence: 'offline',
   friends: [],
+  friendsTotal: 0,
   incomingRequests: [],
   outgoingRequests: [],
   blockedPlayers: [],
@@ -977,6 +1019,15 @@ export const useGameStore = create<GameState>((set) => ({
   roomChatOpen: false,
   roomChatUnreadCount: 0,
   socialNotice: null,
+  privacySettings: { ...DEFAULT_PRIVACY_SETTINGS },
+  notifications: [],
+  unreadNotificationCount: 0,
+  myClub: null,
+  clubDetail: null,
+  clubsList: [],
+  incomingClubInvitations: [],
+  clubLeaderboard: [],
+  clubLeaderboardScope: 'global',
 
   wallet: null,
   inventoryIds: [...STARTER_COSMETIC_IDS],
@@ -1523,15 +1574,72 @@ export const useGameStore = create<GameState>((set) => ({
   setActiveDmPeerId: (activeDmPeerId) => set({ activeDmPeerId }),
   setSocialNotice: (socialNotice) => set({ socialNotice }),
   applySocialOverview: (overview) =>
-    set({
+    set((state) => ({
       selfPresence: overview.selfPresence,
       friends: overview.friends,
+      friendsTotal: overview.friendsTotal ?? overview.friends.length,
       incomingRequests: overview.incomingRequests,
       outgoingRequests: overview.outgoingRequests,
       blockedPlayers: overview.blocked,
       incomingInvitations: overview.incomingInvitations,
       outgoingInvitations: overview.outgoingInvitations,
       totalUnreadDmCount: overview.totalUnreadDmCount,
+      privacySettings: overview.privacy ?? state.privacySettings,
+      notifications: overview.notifications ?? state.notifications,
+      unreadNotificationCount:
+        overview.unreadNotificationCount !== undefined
+          ? overview.unreadNotificationCount
+          : state.unreadNotificationCount,
+      myClub: overview.myClub !== undefined ? overview.myClub : state.myClub,
+      incomingClubInvitations:
+        overview.incomingClubInvitations ?? state.incomingClubInvitations,
+    })),
+  setFriendsPage: (friends, total, append = false) =>
+    set((state) => {
+      if (!append) {
+        return { friends, friendsTotal: total };
+      }
+      const seen = new Set(state.friends.map((f) => f.playerId));
+      const merged = [...state.friends, ...friends.filter((f) => !seen.has(f.playerId))];
+      return { friends: merged, friendsTotal: total };
+    }),
+  setPrivacySettings: (privacySettings) => set({ privacySettings }),
+  applyNotificationNew: (notification, unreadNotificationCount) =>
+    set((state) => ({
+      notifications: [
+        notification,
+        ...state.notifications.filter((n) => n.notificationId !== notification.notificationId),
+      ].slice(0, 100),
+      unreadNotificationCount,
+    })),
+  applyNotificationsUpdated: (notifications, unreadNotificationCount) =>
+    set({ notifications, unreadNotificationCount }),
+  setMyClub: (myClub) => set({ myClub }),
+  setClubDetail: (clubDetail) => set({ clubDetail }),
+  setClubsList: (clubsList) => set({ clubsList }),
+  setIncomingClubInvitations: (incomingClubInvitations) => set({ incomingClubInvitations }),
+  setClubLeaderboard: (clubLeaderboardScope, clubLeaderboard) =>
+    set({ clubLeaderboardScope, clubLeaderboard }),
+  applyClubChallengeUpdated: (challenge) =>
+    set((state) => {
+      if (!state.clubDetail) return state;
+      const isRelated =
+        state.clubDetail.club.clubId === challenge.challengerClubId ||
+        state.clubDetail.club.clubId === challenge.targetClubId;
+      if (!isRelated) return state;
+      const idx = state.clubDetail.challenges.findIndex(
+        (c) => c.challengeId === challenge.challengeId,
+      );
+      const nextChallenges =
+        idx >= 0
+          ? state.clubDetail.challenges.map((c, i) => (i === idx ? challenge : c))
+          : [challenge, ...state.clubDetail.challenges];
+      return {
+        clubDetail: {
+          ...state.clubDetail,
+          challenges: nextChallenges,
+        },
+      };
     }),
   updatePlayerPresence: (playerId, status, lastSeenAtMs) =>
     set((state) => ({
@@ -1674,6 +1782,7 @@ export const useGameStore = create<GameState>((set) => ({
     set({
       selfPresence: 'offline',
       friends: [],
+      friendsTotal: 0,
       incomingRequests: [],
       outgoingRequests: [],
       blockedPlayers: [],
@@ -1685,6 +1794,15 @@ export const useGameStore = create<GameState>((set) => ({
       roomChatOpen: false,
       roomChatUnreadCount: 0,
       socialNotice: null,
+      privacySettings: { ...DEFAULT_PRIVACY_SETTINGS },
+      notifications: [],
+      unreadNotificationCount: 0,
+      myClub: null,
+      clubDetail: null,
+      clubsList: [],
+      incomingClubInvitations: [],
+      clubLeaderboard: [],
+      clubLeaderboardScope: 'global',
     }),
 
   openStoreModal: (tab, category) =>

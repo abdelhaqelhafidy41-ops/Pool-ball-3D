@@ -53,7 +53,7 @@ import {
   type OnlineMatchType,
   type PublicPlayerProfile,
 } from '../multiplayer/shared/progression';
-import { getAvatarVisualMeta } from '../multiplayer/shared/economy';
+import { COSMETIC_CATALOG_MAP, getAvatarVisualMeta, getBadgeVisualMeta } from '../multiplayer/shared/economy';
 import {
   ONLINE_AVATARS,
   type MatchHistoryRecord,
@@ -64,9 +64,10 @@ import {
   SEASON_CONFIG,
   type PenaltyType,
 } from '../multiplayer/shared/ranked';
-import type { SocialReportReason } from '../multiplayer/shared/social';
+import type { PresenceStatus, SocialReportReason } from '../multiplayer/shared/social';
 import { type ProgressionTab, useGameStore } from '../store/useGameStore';
 import { RankBadge, RankProgressCard } from './RankBadge';
+import { presenceDotClass, presenceLabel } from './SocialModal';
 
 function formatDuration(sec: number): string {
   const safe = Math.max(0, Math.round(sec));
@@ -162,6 +163,17 @@ function renderAchievementIcon(icon: AchievementIconId, unlocked: boolean) {
   }
 }
 
+function formatLastSeenCompact(lastSeenAtMs: number | null | undefined, presence?: PresenceStatus): string {
+  if (presence && presence !== 'offline') return presenceLabel(presence);
+  if (!lastSeenAtMs || lastSeenAtMs <= 0) return 'Last seen hidden or offline';
+  const diffMin = Math.max(0, Math.floor((Date.now() - lastSeenAtMs) / 60_000));
+  if (diffMin < 1) return 'Last seen just now';
+  if (diffMin < 60) return `Last seen ${diffMin}m ago`;
+  const diffHr = Math.floor(diffMin / 60);
+  if (diffHr < 24) return `Last seen ${diffHr}h ago`;
+  return `Last seen ${Math.floor(diffHr / 24)}d ago`;
+}
+
 function ProfileDetailsView({
   profile,
   isOwn,
@@ -198,6 +210,18 @@ function ProfileDetailsView({
     setSocialFeedback(res.ok ? okText : res.error ?? 'Action failed.');
   };
 
+  const presence = profile.presence ?? 'offline';
+  const badgeMeta = getBadgeVisualMeta(profile.equippedCosmetics?.badgeId);
+  const cueDef = profile.equippedCosmetics?.cueId
+    ? COSMETIC_CATALOG_MAP.get(profile.equippedCosmetics.cueId)
+    : undefined;
+  const ballDef = profile.equippedCosmetics?.ballId
+    ? COSMETIC_CATALOG_MAP.get(profile.equippedCosmetics.ballId)
+    : undefined;
+  const tableDef = profile.equippedCosmetics?.tableId
+    ? COSMETIC_CATALOG_MAP.get(profile.equippedCosmetics.tableId)
+    : undefined;
+
   return (
     <div className="space-y-4">
       {/* Header Summary */}
@@ -211,10 +235,30 @@ function ProfileDetailsView({
               {avatar.glyph}
             </div>
             <div className="min-w-0">
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-1.5">
                 <h3 className="truncate text-lg font-extrabold text-white">
                   {profile.displayName}
                 </h3>
+                {profile.club && (
+                  <span
+                    className="rounded-md border px-1.5 py-0.5 font-mono text-[10px] font-black"
+                    style={{
+                      borderColor: `${profile.club.emblemColor}66`,
+                      backgroundColor: `${profile.club.emblemColor}20`,
+                      color: profile.club.emblemColor,
+                    }}
+                  >
+                    [{profile.club.tag}] {profile.club.name}
+                  </span>
+                )}
+                {badgeMeta && (
+                  <span
+                    className={`inline-flex items-center gap-0.5 rounded border px-1.5 py-0.5 text-[10px] font-bold ${badgeMeta.className}`}
+                  >
+                    <span>{badgeMeta.glyph}</span>
+                    <span>{badgeMeta.shortLabel}</span>
+                  </span>
+                )}
                 <span
                   className={`rounded-md border px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider ${
                     profile.isGuest
@@ -230,8 +274,13 @@ function ProfileDetailsView({
                   </span>
                 )}
               </div>
-              <div className="mt-0.5 font-mono text-[11px] text-slate-400">
-                ID: {profile.playerId}
+              <div className="mt-1 flex flex-wrap items-center gap-2 font-mono text-[11px] text-slate-400">
+                <span>ID: {profile.playerId}</span>
+                <span>·</span>
+                <span className="inline-flex items-center gap-1 font-sans font-semibold text-slate-300">
+                  <span className={`h-2 w-2 rounded-full ${presenceDotClass(presence)}`} />
+                  {formatLastSeenCompact(profile.lastSeenAtMs, presence)}
+                </span>
               </div>
             </div>
           </div>
@@ -499,91 +548,193 @@ function ProfileDetailsView({
         </div>
       )}
 
-      {/* Career Metrics Grid */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-        {[
-          { label: 'Total Matches', value: String(stats.totalMatches) },
-          { label: 'Wins / Losses', value: `${stats.wins}W – ${stats.losses}L` },
-          { label: 'Win Rate', value: `${stats.winRate.toFixed(1)}%` },
-          { label: 'Peak ELO', value: String(profile.peakElo) },
-          { label: 'Current Streak', value: `${stats.currentStreak}` },
-          { label: 'Best Streak', value: `${stats.bestStreak}` },
-          { label: 'Total Shots', value: `${stats.totalShots}` },
-          { label: 'Successful Shots', value: `${stats.successfulShots}` },
-          { label: 'Balls Pocketed', value: `${stats.ballsPocketed}` },
-          { label: 'Break Success', value: `${stats.breakSuccessRate.toFixed(1)}%` },
-          { label: '8-Ball Wins', value: `${stats.eightBallWins}` },
-          { label: 'Avg Match Time', value: formatDuration(stats.avgMatchDurationSec) },
-        ].map((metric) => (
-          <div
-            key={metric.label}
-            className="rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2"
-          >
-            <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
-              {metric.label}
-            </div>
-            <div className="mt-0.5 font-mono text-sm font-bold tabular-nums text-white">
-              {metric.value}
-            </div>
+      {profile.privacyFiltered ? (
+        <div
+          data-testid="profile-privacy-filtered-notice"
+          className="rounded-xl border border-white/10 bg-black/25 px-4 py-6 text-center space-y-1.5"
+        >
+          <div className="text-xs font-extrabold text-slate-200">
+            Detailed Match Statistics Hidden
           </div>
-        ))}
-      </div>
-
-      {/* Mode Breakdown */}
-      <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
-        {(
-          [
-            { label: 'Ranked', data: stats.byMatchType.ranked ?? { matches: 0, wins: 0 } },
-            { label: 'Quick Match', data: stats.byMatchType.quick },
-            { label: 'Private Room', data: stats.byMatchType.private },
-            { label: 'Strict WPA', data: stats.byMatchType.wpa },
-            { label: 'Casual Rules', data: stats.byMatchType.casual },
-          ] as const
-        ).map((m) => (
-          <div
-            key={m.label}
-            className="rounded-xl border border-white/10 bg-black/25 px-3 py-2"
-          >
-            <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
-              {m.label}
-            </div>
-            <div className="mt-0.5 font-mono text-xs font-semibold tabular-nums text-slate-200">
-              {m.data.wins}W / {m.data.matches}M
-            </div>
-          </div>
-        ))}
-      </div>
-
-      {/* Unlocked Trophies Preview */}
-      <div className="rounded-xl border border-white/10 bg-black/25 p-3">
-        <div className="flex items-center justify-between mb-2">
-          <span className="text-[11px] font-bold uppercase tracking-wider text-amber-400">
-            Achievements & Trophies ({profile.achievements.length} / {ACHIEVEMENTS_CATALOG.length})
-          </span>
+          <p className="text-[11px] text-slate-400">
+            This player has set their detailed career stats, equipped loadout, and recent match
+            history to private.
+          </p>
         </div>
-        {profile.achievements.length === 0 ? (
-          <div className="py-2 text-xs text-slate-400">
-            No competitive achievements unlocked yet.
-          </div>
-        ) : (
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-            {profile.achievements.map((ach) => (
-              <div
-                key={ach.id}
-                className="flex items-center gap-2.5 rounded-lg border border-amber-400/25 bg-amber-500/8 px-2.5 py-2"
-              >
-                <div className="shrink-0">{renderAchievementIcon(ach.icon, true)}</div>
-                <div className="min-w-0">
-                  <div className="truncate text-xs font-bold text-white">{ach.name}</div>
-                  <div className="text-[10px] text-slate-400">
-                    Unlocked {formatShortDate(ach.unlockedAtMs)}
+      ) : (
+        <>
+          {/* Equipped Loadout Preview */}
+          {(cueDef || ballDef || tableDef) && (
+            <div className="rounded-xl border border-white/10 bg-black/25 p-3">
+              <div className="text-[10px] font-bold uppercase tracking-wider text-amber-400 mb-2">
+                Equipped Loadout
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                {[
+                  { label: 'Cue Stick', item: cueDef },
+                  { label: 'Ball Set', item: ballDef },
+                  { label: 'Table Cloth', item: tableDef },
+                ].map((slot) => (
+                  <div
+                    key={slot.label}
+                    className="flex items-center justify-between gap-2 rounded-lg border border-white/10 bg-white/[0.03] px-2.5 py-1.5"
+                  >
+                    <div className="min-w-0">
+                      <div className="text-[9px] font-bold uppercase tracking-wider text-slate-400">
+                        {slot.label}
+                      </div>
+                      <div className="truncate text-xs font-bold text-white">
+                        {slot.item?.name ?? 'Standard Issue'}
+                      </div>
+                    </div>
+                    {slot.item && (
+                      <span
+                        className="h-3.5 w-3.5 shrink-0 rounded-full border border-white/25"
+                        style={{ backgroundColor: slot.item.previewColors[0] }}
+                      />
+                    )}
                   </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Career Metrics Grid */}
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+            {[
+              { label: 'Total Matches', value: String(stats.totalMatches) },
+              { label: 'Wins / Losses', value: `${stats.wins}W – ${stats.losses}L` },
+              { label: 'Win Rate', value: `${stats.winRate.toFixed(1)}%` },
+              { label: 'Peak ELO', value: String(profile.peakElo) },
+              { label: 'Current Streak', value: `${stats.currentStreak}` },
+              { label: 'Best Streak', value: `${stats.bestStreak}` },
+              { label: 'Total Shots', value: `${stats.totalShots}` },
+              { label: 'Successful Shots', value: `${stats.successfulShots}` },
+              { label: 'Balls Pocketed', value: `${stats.ballsPocketed}` },
+              { label: 'Break Success', value: `${stats.breakSuccessRate.toFixed(1)}%` },
+              { label: '8-Ball Wins', value: `${stats.eightBallWins}` },
+              { label: 'Avg Match Time', value: formatDuration(stats.avgMatchDurationSec) },
+            ].map((metric) => (
+              <div
+                key={metric.label}
+                className="rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2"
+              >
+                <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+                  {metric.label}
+                </div>
+                <div className="mt-0.5 font-mono text-sm font-bold tabular-nums text-white">
+                  {metric.value}
                 </div>
               </div>
             ))}
           </div>
-        )}
-      </div>
+
+          {/* Mode Breakdown */}
+          <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
+            {(
+              [
+                { label: 'Ranked', data: stats.byMatchType.ranked ?? { matches: 0, wins: 0 } },
+                { label: 'Quick Match', data: stats.byMatchType.quick },
+                { label: 'Private Room', data: stats.byMatchType.private },
+                { label: 'Strict WPA', data: stats.byMatchType.wpa },
+                { label: 'Casual Rules', data: stats.byMatchType.casual },
+              ] as const
+            ).map((m) => (
+              <div
+                key={m.label}
+                className="rounded-xl border border-white/10 bg-black/25 px-3 py-2"
+              >
+                <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                  {m.label}
+                </div>
+                <div className="mt-0.5 font-mono text-xs font-semibold tabular-nums text-slate-200">
+                  {m.data.wins}W / {m.data.matches}M
+                </div>
+              </div>
+            ))}
+          </div>
+
+          {/* Recent Verified Matches */}
+          {profile.recentMatches && profile.recentMatches.length > 0 && (
+            <div className="rounded-xl border border-white/10 bg-black/25 p-3">
+              <div className="text-[11px] font-bold uppercase tracking-wider text-amber-400 mb-2">
+                Recent Match History ({profile.recentMatches.length})
+              </div>
+              <div className="space-y-1.5">
+                {profile.recentMatches.map((m) => {
+                  const won = m.winnerId === profile.playerId;
+                  const isP1 = m.player1Id === profile.playerId;
+                  const opponentName = isP1 ? m.player2Name : m.player1Name;
+                  const eloDelta = isP1 ? m.p1EloDelta : m.p2EloDelta;
+                  return (
+                    <div
+                      key={m.matchId}
+                      className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-white/10 bg-white/[0.02] px-2.5 py-1.5 text-xs"
+                    >
+                      <div className="flex items-center gap-2 min-w-0">
+                        <span
+                          className={`rounded px-1.5 py-0.5 text-[10px] font-black uppercase ${
+                            won
+                              ? 'bg-emerald-500/20 text-emerald-300'
+                              : 'bg-rose-500/20 text-rose-300'
+                          }`}
+                        >
+                          {won ? 'WIN' : 'LOSS'}
+                        </span>
+                        <span className="truncate font-semibold text-white">
+                          vs {opponentName}
+                        </span>
+                        <span className="text-[10px] text-slate-400">
+                          {formatMatchTypeLabel(m.matchType)} · {m.totalShots} shots
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-2 font-mono text-[10px] tabular-nums text-slate-400">
+                        {typeof eloDelta === 'number' && eloDelta !== 0 && (
+                          <span className={eloDelta > 0 ? 'text-emerald-300' : 'text-rose-300'}>
+                            {eloDelta > 0 ? `+${eloDelta}` : eloDelta} ELO
+                          </span>
+                        )}
+                        <span>{formatShortDate(m.endedAtMs)}</span>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* Unlocked Trophies Preview */}
+          <div className="rounded-xl border border-white/10 bg-black/25 p-3">
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-[11px] font-bold uppercase tracking-wider text-amber-400">
+                Achievements & Trophies ({profile.achievements.length} / {ACHIEVEMENTS_CATALOG.length})
+              </span>
+            </div>
+            {profile.achievements.length === 0 ? (
+              <div className="py-2 text-xs text-slate-400">
+                No competitive achievements unlocked yet.
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                {profile.achievements.map((ach) => (
+                  <div
+                    key={ach.id}
+                    className="flex items-center gap-2.5 rounded-lg border border-amber-400/25 bg-amber-500/8 px-2.5 py-2"
+                  >
+                    <div className="shrink-0">{renderAchievementIcon(ach.icon, true)}</div>
+                    <div className="min-w-0">
+                      <div className="truncate text-xs font-bold text-white">{ach.name}</div>
+                      <div className="text-[10px] text-slate-400">
+                        Unlocked {formatShortDate(ach.unlockedAtMs)}
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </>
+      )}
     </div>
   );
 }

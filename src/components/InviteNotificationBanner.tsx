@@ -1,4 +1,4 @@
-import { Check, Clock, Crown, Swords, X } from 'lucide-react';
+import { Check, Clock, Crown, Eye, Swords, X } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { soundEngine } from '../game/utils/SoundEngine';
 import { multiplayerManager } from '../multiplayer/MultiplayerManager';
@@ -123,6 +123,7 @@ export function InviteNotificationBanner() {
   const topInvite = activeInvites[0];
   const remainingSec = Math.max(0, Math.ceil((topInvite.expiresAtMs - nowMs) / 1000));
   const av = getAvatarVisualMeta(topInvite.senderAvatar);
+  const isSpectateInvite = topInvite.inviteKind === 'spectate';
 
   const handleRespond = async (action: 'accept' | 'reject') => {
     soundEngine.unlock();
@@ -132,9 +133,8 @@ export function InviteNotificationBanner() {
       multiplayerManager.ensureConnected();
     }
     const res = await socialClient.respondInvite(topInvite.inviteId, action);
-    setBusyInviteId(null);
-
     if (!res.ok) {
+      setBusyInviteId(null);
       const msg = res.error ?? 'Invitation unavailable.';
       setOnlineError({ code: res.code ?? 'INVITE_EXPIRED', message: msg });
       setSocialNotice({ type: 'err', text: msg });
@@ -142,10 +142,31 @@ export function InviteNotificationBanner() {
       return;
     }
 
-    if (action === 'accept' && res.data?.room) {
-      useGameStore.getState().setOnlineRoom(res.data.room);
-      useGameStore.getState().openOnlineLobby('friend');
+    if (action === 'accept') {
+      if (isSpectateInvite || res.data?.spectateTarget) {
+        const targetRoomId = res.data?.spectateTarget?.roomId ?? topInvite.roomId ?? undefined;
+        const targetRoomCode = res.data?.spectateTarget?.roomCode ?? topInvite.roomCode ?? undefined;
+        const specRes = await multiplayerManager.joinSpectate({
+          roomId: targetRoomId,
+          roomCode: targetRoomCode,
+          returnTarget: 'menu',
+        });
+        setBusyInviteId(null);
+        if (!specRes.ok) {
+          setSocialNotice({
+            type: 'err',
+            text: specRes.error ?? 'Unable to enter spectator view.',
+          });
+        }
+        return;
+      }
+
+      if (res.data?.room) {
+        useGameStore.getState().setOnlineRoom(res.data.room);
+        useGameStore.getState().openOnlineLobby('friend');
+      }
     }
+    setBusyInviteId(null);
   };
 
   return (
@@ -165,8 +186,8 @@ export function InviteNotificationBanner() {
           </span>
           <div className="min-w-0">
             <div className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-amber-300">
-              <Swords className="h-3 w-3" />
-              Match Invitation
+              {isSpectateInvite ? <Eye className="h-3 w-3" /> : <Swords className="h-3 w-3" />}
+              {isSpectateInvite ? 'Spectate Match Invite' : 'Match Invitation'}
             </div>
             <div className="truncate text-xs font-extrabold text-white">
               {topInvite.senderName}{' '}
@@ -201,16 +222,22 @@ export function InviteNotificationBanner() {
           type="button"
           disabled={busyInviteId === topInvite.inviteId}
           onClick={() => handleRespond('accept')}
-          className="inline-flex items-center justify-center gap-1 rounded-lg bg-amber-500 px-3 py-1.5 text-[11px] font-extrabold text-slate-950 hover:bg-amber-400 disabled:opacity-50 cursor-pointer"
+          className="inline-flex items-center justify-center gap-1 rounded-lg bg-amber-500 px-3 py-1.5 text-[11px] font-extrabold text-slate-950 hover:bg-amber-400 disabled:opacity-50 cursor-pointer whitespace-nowrap"
         >
-          <Check className="h-3.5 w-3.5" />
-          {busyInviteId === topInvite.inviteId ? 'Joining...' : 'Accept 1v1'}
+          {isSpectateInvite ? <Eye className="h-3.5 w-3.5" /> : <Check className="h-3.5 w-3.5" />}
+          {busyInviteId === topInvite.inviteId
+            ? isSpectateInvite
+              ? 'Opening...'
+              : 'Joining...'
+            : isSpectateInvite
+              ? 'Watch Match'
+              : 'Accept 1v1'}
         </button>
         <button
           type="button"
           disabled={busyInviteId === topInvite.inviteId}
           onClick={() => handleRespond('reject')}
-          className="inline-flex items-center justify-center rounded-lg border border-white/15 bg-white/5 px-3 py-1.5 text-[11px] font-bold text-slate-200 hover:bg-white/10 disabled:opacity-50 cursor-pointer"
+          className="inline-flex items-center justify-center rounded-lg border border-white/15 bg-white/5 px-3 py-1.5 text-[11px] font-bold text-slate-200 hover:bg-white/10 disabled:opacity-50 cursor-pointer whitespace-nowrap"
         >
           Decline
         </button>
