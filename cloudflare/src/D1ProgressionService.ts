@@ -796,7 +796,14 @@ export class D1ProgressionService {
             ? iconRaw
             : 'shield';
         const roleRaw = String(clubRow.role ?? 'member');
-        const role: ClubRole = roleRaw === 'owner' || roleRaw === 'admin' ? roleRaw : 'member';
+        const role: ClubRole =
+          roleRaw === 'owner' ||
+          roleRaw === 'president' ||
+          roleRaw === 'vice_president' ||
+          roleRaw === 'captain' ||
+          roleRaw === 'admin'
+            ? roleRaw
+            : 'member';
         const clubSummary: PlayerClubBadgeSummary = {
           clubId: String(clubRow.club_id),
           name: String(clubRow.name),

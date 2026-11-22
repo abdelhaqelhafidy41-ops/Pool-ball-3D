@@ -21,6 +21,7 @@ import type {
   PrivacySettings,
   RoomChatMessageRecord,
 } from './shared/social';
+import { clubLeagueClient } from './ClubLeagueClient';
 import { socialClient } from './SocialClient';
 
 export interface MultiplayerSceneBridge {
@@ -410,6 +411,7 @@ class MultiplayerManagerImpl {
     }
     store.closeOnlineLobby();
     store.closeTournamentModal();
+    store.closeClubLeagueModal();
     store.setScreen('playing');
     if (data.match && data.balls) {
       this.sceneBridge?.onOnlineMatchEntered(data.match, data.balls);
@@ -665,6 +667,35 @@ class MultiplayerManagerImpl {
       store.setTournamentMatchAlert(null);
     }
     store.closeTournamentModal();
+    if (store.screen !== 'playing') {
+      store.openOnlineLobby('quick');
+    }
+    soundEngine.playUiClick();
+    return { ok: true };
+  }
+
+  public async joinTeamSubMatch(
+    subMatchId: string,
+  ): Promise<{ ok: boolean; error?: string }> {
+    this.ensureConnected();
+    const store = useGameStore.getState();
+    const res = await clubLeagueClient.joinSubMatch(subMatchId, store.onlineSessionId);
+    if (!res.ok || !res.data) {
+      const msg = res.error ?? 'Unable to enter club board match room.';
+      store.setClubLeagueNotice({ type: 'err', text: msg });
+      store.setOnlineError({ code: res.code ?? 'INVALID_ROOM', message: msg });
+      return { ok: false, error: msg };
+    }
+
+    this.network.saveSessionCredentials(
+      res.data.roomSession.sessionId,
+      res.data.roomSession.reconnectToken,
+    );
+    store.setOnlineSessionId(res.data.roomSession.sessionId);
+    this.network.bindRoomSocket(res.data.room.roomId);
+    store.setOnlineRoom(res.data.room);
+    store.setOnlineError(null);
+    store.closeClubLeagueModal();
     if (store.screen !== 'playing') {
       store.openOnlineLobby('quick');
     }
@@ -1066,6 +1097,52 @@ class MultiplayerManagerImpl {
 
       case 'club:challenge_updated': {
         store.applyClubChallengeUpdated(msg.challenge);
+        break;
+      }
+
+      case 'club:chat_message': {
+        if (store.myClub?.clubId === msg.clubId || store.clubDetail?.club.clubId === msg.clubId) {
+          store.appendClubChatMessage(msg.message);
+        }
+        break;
+      }
+
+      case 'club:league_updated': {
+        if (store.clubLeagueModalOpen) {
+          void clubLeagueClient.listLeagues();
+          if (store.selectedLeagueId === msg.leagueId) {
+            void clubLeagueClient.getLeagueDetail(msg.leagueId);
+          }
+        }
+        break;
+      }
+
+      case 'club:championship_updated': {
+        if (store.clubLeagueModalOpen) {
+          void clubLeagueClient.listChampionships();
+          if (store.selectedChampionshipId === msg.championshipId) {
+            void clubLeagueClient.getChampionshipDetail(msg.championshipId);
+          }
+        }
+        break;
+      }
+
+      case 'club:team_match_ready': {
+        store.setClubLeagueNotice({
+          type: 'ok',
+          text: `${msg.competitionTitle} · ${msg.subMatch.boardLabel} is ready to play.`,
+        });
+        soundEngine.playUiClick();
+        if (store.clubLeagueModalOpen) {
+          if (msg.competitionKind === 'league' && store.selectedLeagueId === msg.competitionId) {
+            void clubLeagueClient.getLeagueDetail(msg.competitionId);
+          } else if (
+            msg.competitionKind === 'club_championship' &&
+            store.selectedChampionshipId === msg.competitionId
+          ) {
+            void clubLeagueClient.getChampionshipDetail(msg.competitionId);
+          }
+        }
         break;
       }
 

@@ -16,6 +16,7 @@ import type {
 } from './progression';
 import type {
   ClubChallengeRecord,
+  ClubChatMessageRecord,
   ClubDetailPayload,
   ClubInvitationRecord,
   DirectMessageRecord,
@@ -32,6 +33,7 @@ import type {
   SocialOverviewPayload,
 } from './social';
 import type { TournamentMatch, TournamentRecord } from './tournaments';
+import type { TeamSubMatchRecord } from './clubLeagues';
 
 import type { RankTierDefinition } from './ranked';
 
@@ -115,6 +117,22 @@ export interface OnlineRoomTournamentContext {
   readyDeadlineMs: number | null;
 }
 
+export interface OnlineRoomClubLeagueContext {
+  competitionKind: 'league' | 'club_championship';
+  competitionId: string;
+  competitionTitle: string;
+  encounterId: string;
+  subMatchId: string;
+  slotIndex: number;
+  boardLabel: string;
+  homeTeamId: string;
+  homeTeamName: string;
+  homeTeamTag: string;
+  awayTeamId: string;
+  awayTeamName: string;
+  awayTeamTag: string;
+}
+
 export interface SpectatorSummary {
   playerId: string;
   displayName: string;
@@ -147,6 +165,7 @@ export interface SpectatableMatchSummary {
   startedAtMs?: number | null;
   players: SpectatableMatchPlayer[];
   tournament?: OnlineRoomTournamentContext | null;
+  clubLeague?: OnlineRoomClubLeagueContext | null;
 }
 
 export interface OnlineRoomInfo {
@@ -168,6 +187,7 @@ export interface OnlineRoomInfo {
   createdAtMs: number;
   expiresAtMs: number;
   tournament?: OnlineRoomTournamentContext | null;
+  clubLeague?: OnlineRoomClubLeagueContext | null;
 }
 
 export interface OnlineBallFrame {
@@ -738,4 +758,28 @@ export type ServerToClientMessage =
   | {
       type: 'club:challenge_updated';
       challenge: ClubChallengeRecord;
+    }
+  | {
+      type: 'club:chat_message';
+      clubId: string;
+      message: ClubChatMessageRecord;
+    }
+  | {
+      type: 'club:league_updated';
+      leagueId: string;
+      status?: string;
+    }
+  | {
+      type: 'club:championship_updated';
+      championshipId: string;
+      status?: string;
+    }
+  | {
+      type: 'club:team_match_ready';
+      competitionKind: 'league' | 'club_championship';
+      competitionId: string;
+      competitionTitle: string;
+      encounterId: string;
+      subMatch: TeamSubMatchRecord;
+      room?: OnlineRoomInfo;
     };

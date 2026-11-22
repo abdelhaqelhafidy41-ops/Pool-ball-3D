@@ -372,15 +372,21 @@ export function OnlineLobbyUI() {
                 <div className="text-[10px] font-bold uppercase tracking-wider text-amber-300">
                   {onlineRoom.tournament
                     ? `${onlineRoom.tournament.tournamentTitle} · ${onlineRoom.tournament.roundLabel}`
-                    : onlineRoom.matchType === 'ranked'
-                      ? 'Ranked Competitive Room'
-                      : onlineRoom.isPrivate
-                        ? 'Private Room Code'
-                        : 'Matched Quick Room'}
+                    : onlineRoom.clubLeague
+                      ? `${onlineRoom.clubLeague.competitionTitle} · ${onlineRoom.clubLeague.boardLabel}`
+                      : onlineRoom.matchType === 'ranked'
+                        ? 'Ranked Competitive Room'
+                        : onlineRoom.isPrivate
+                          ? 'Private Room Code'
+                          : 'Matched Quick Room'}
                 </div>
                 {onlineRoom.tournament ? (
                   <div className="mt-0.5 text-xs font-extrabold text-white">
                     Official Tournament Match · Auto-starts when both players confirm ready
+                  </div>
+                ) : onlineRoom.clubLeague ? (
+                  <div className="mt-0.5 text-xs font-extrabold text-white">
+                    [{onlineRoom.clubLeague.homeTeamTag}] {onlineRoom.clubLeague.homeTeamName} vs [{onlineRoom.clubLeague.awayTeamTag}] {onlineRoom.clubLeague.awayTeamName} · Auto-starts when ready
                   </div>
                 ) : (
                   <div className="mt-0.5 flex items-center gap-2">
@@ -439,7 +445,7 @@ export function OnlineLobbyUI() {
                       className="flex flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-white/15 bg-black/25 p-3.5 text-xs font-medium text-slate-400"
                     >
                       <span>Waiting for opponent to join...</span>
-                      {!onlineRoom.tournament && (
+                      {!onlineRoom.tournament && !onlineRoom.clubLeague && (
                         <button
                           type="button"
                           onClick={() => {
@@ -629,7 +635,7 @@ export function OnlineLobbyUI() {
                 </button>
               )}
 
-              {isHost && !onlineRoom.tournament && (
+              {isHost && !onlineRoom.tournament && !onlineRoom.clubLeague && (
                 <button
                   type="button"
                   disabled={!bothReady}
@@ -657,6 +663,22 @@ export function OnlineLobbyUI() {
                   className="inline-flex items-center justify-center rounded-xl border border-white/15 bg-white/5 px-3.5 py-2.5 text-xs font-bold text-slate-200 hover:bg-white/10 transition-colors cursor-pointer whitespace-nowrap"
                 >
                   Back to Bracket
+                </button>
+              ) : onlineRoom.clubLeague ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    soundEngine.playUiClick();
+                    const kind = onlineRoom.clubLeague!.competitionKind;
+                    multiplayerManager.leaveMatchOrRoom();
+                    closeOnlineLobby();
+                    useGameStore
+                      .getState()
+                      .openClubLeagueModal(kind === 'league' ? 'leagues' : 'championships');
+                  }}
+                  className="inline-flex items-center justify-center rounded-xl border border-white/15 bg-white/5 px-3.5 py-2.5 text-xs font-bold text-slate-200 hover:bg-white/10 transition-colors cursor-pointer whitespace-nowrap"
+                >
+                  Back to Club Competition
                 </button>
               ) : (
                 <button

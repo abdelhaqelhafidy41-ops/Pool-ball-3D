@@ -13,6 +13,7 @@ import { SocialModal } from './components/SocialModal';
 import { StoreModal } from './components/StoreModal';
 import { TournamentModal } from './components/TournamentModal';
 import { BattlePassModal } from './components/BattlePassModal';
+import { ClubLeagueModal } from './components/ClubLeagueModal';
 import { ProgressionToastBanner } from './components/ProgressionToastBanner';
 import type { ReplayCameraMode, ReplaySpeed } from './game/replay/types';
 import type { PocketId } from './game/rules/types';
@@ -23,8 +24,10 @@ import { multiplayerManager } from './multiplayer/MultiplayerManager';
 import { progressionClient } from './multiplayer/ProgressionClient';
 import { socialClient } from './multiplayer/SocialClient';
 import { useGameStore } from './store/useGameStore';
+import { useTranslation } from './i18n';
 
 export default function App() {
+  const { t } = useTranslation();
   const actionsRef = useRef<PoolSceneActions | null>(null);
   const spectateLinkHandledRef = useRef(false);
   const setIsFullscreen = useGameStore((s) => s.setIsFullscreen);
@@ -248,10 +251,16 @@ export default function App() {
         <SocialModal />
         <StoreModal />
         <ErrorBoundary
-          sectionName="Global Tournaments"
+          sectionName={t('menu.globalTournamentsButton')}
           onReset={() => useGameStore.getState().closeTournamentModal()}
         >
           <TournamentModal />
+        </ErrorBoundary>
+        <ErrorBoundary
+          sectionName={t('menu.clubsLeaguesButton')}
+          onReset={() => useGameStore.getState().closeClubLeagueModal()}
+        >
+          <ClubLeagueModal />
         </ErrorBoundary>
         <BattlePassModal />
         <InviteNotificationBanner />

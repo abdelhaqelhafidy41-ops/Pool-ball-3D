@@ -15,6 +15,7 @@ import {
   PlusCircle,
   Search,
   Settings,
+  Shield,
   ShoppingBag,
   Swords,
   Target,
@@ -26,10 +27,15 @@ import {
   VolumeX,
 } from 'lucide-react';
 import { useEffect } from 'react';
-import { AI_DIFFICULTY_PROFILES } from '../game/ai/AIDifficultyConfig';
 import { computeAverageBallsPerTurn } from '../game/rules/MatchStatistics';
 import type { AiDifficulty } from '../game/rules/types';
 import { soundEngine } from '../game/utils/SoundEngine';
+import {
+  localizeAiDifficulty,
+  localizePlayerName,
+  localizePresence,
+  useTranslation,
+} from '../i18n';
 import { multiplayerManager } from '../multiplayer/MultiplayerManager';
 import { progressionClient } from '../multiplayer/ProgressionClient';
 import {
@@ -41,7 +47,7 @@ import type { OnlineModeIntent } from '../multiplayer/shared/protocol';
 import { useGameStore } from '../store/useGameStore';
 import { FpsCounter } from './FpsCounter';
 import { RankBadge } from './RankBadge';
-import { presenceDotClass, presenceLabel } from './SocialModal';
+import { presenceDotClass } from './SocialModal';
 
 interface MainMenuProps {
   onStartMatch: () => void;
@@ -49,6 +55,8 @@ interface MainMenuProps {
 }
 
 export function MainMenu({ onStartMatch, onToggleFullscreen }: MainMenuProps) {
+  const { t, lang, setLanguage, formatNumber } = useTranslation();
+
   const screen = useGameStore((s) => s.screen);
   const setSettingsOpen = useGameStore((s) => s.setSettingsOpen);
   const soundEnabled = useGameStore((s) => s.soundEnabled);
@@ -76,6 +84,7 @@ export function MainMenu({ onStartMatch, onToggleFullscreen }: MainMenuProps) {
   const dailyReward = useGameStore((s) => s.dailyReward);
   const openStoreModal = useGameStore((s) => s.openStoreModal);
   const openTournamentModal = useGameStore((s) => s.openTournamentModal);
+  const openClubLeagueModal = useGameStore((s) => s.openClubLeagueModal);
   const battlePassOverview = useGameStore((s) => s.battlePassOverview);
   const openBattlePassModal = useGameStore((s) => s.openBattlePassModal);
 
@@ -111,6 +120,13 @@ export function MainMenu({ onStartMatch, onToggleFullscreen }: MainMenuProps) {
 
   const isEightBall = matchConfig.gameMode === 'eightBall';
   const avgBalls = computeAverageBallsPerTurn(matchStats);
+  const activeAiMeta = localizeAiDifficulty(matchConfig.aiDifficulty, lang);
+
+  const p1InputDisplay =
+    matchConfig.player1Name === 'Player 1' || matchConfig.player1Name === 'اللاعب ١'
+      ? localizePlayerName(matchConfig.player1Name, 'player1', lang)
+      : matchConfig.player1Name;
+  const p2InputDisplay = localizePlayerName(matchConfig.player2Name, 'player2', lang);
 
   return (
     <div className="pointer-events-none fixed inset-0 z-20 flex flex-col justify-between p-4 sm:p-8 overflow-y-auto">
@@ -149,11 +165,11 @@ export function MainMenu({ onStartMatch, onToggleFullscreen }: MainMenuProps) {
                 8
               </text>
             </svg>
-            <div>
-              <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-amber-400">
-                Championship Simulation
+            <div className="min-w-0">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-amber-400">
+                {t('menu.subtitle')}
               </p>
-              <h1 className="text-2xl sm:text-3xl font-extrabold tracking-tight text-white leading-tight">
+              <h1 dir="ltr" className="text-2xl sm:text-3xl font-extrabold tracking-tight text-white leading-tight text-start">
                 ULTIMATE POOL <span className="text-amber-400">3D</span>
               </h1>
             </div>
@@ -173,7 +189,7 @@ export function MainMenu({ onStartMatch, onToggleFullscreen }: MainMenuProps) {
                   : 'text-slate-300 hover:text-white'
               }`}
             >
-              8-Ball Pool
+              {t('menu.formatEightBall')}
             </button>
             <button
               type="button"
@@ -187,7 +203,7 @@ export function MainMenu({ onStartMatch, onToggleFullscreen }: MainMenuProps) {
                   : 'text-slate-300 hover:text-white'
               }`}
             >
-              Free Play
+              {t('menu.formatFreePlay')}
             </button>
           </div>
 
@@ -208,7 +224,7 @@ export function MainMenu({ onStartMatch, onToggleFullscreen }: MainMenuProps) {
                   }`}
                 >
                   <Users className="h-3.5 w-3.5" />
-                  Player vs Player
+                  {t('menu.modeLocal')}
                 </button>
                 <button
                   type="button"
@@ -223,25 +239,25 @@ export function MainMenu({ onStartMatch, onToggleFullscreen }: MainMenuProps) {
                   }`}
                 >
                   <Cpu className="h-3.5 w-3.5" />
-                  Player vs AI
+                  {t('menu.modeAi')}
                 </button>
               </div>
 
               {/* AI Difficulty Selector */}
               {matchConfig.opponentType === 'ai' && (
                 <div>
-                  <div className="flex items-center justify-between mb-1">
-                    <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
-                      AI Difficulty
+                  <div className="flex items-center justify-between gap-2 mb-1">
+                    <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-400 shrink-0">
+                      {t('menu.aiDifficultyLabel')}
                     </span>
                     <span className="text-[10px] font-medium text-amber-300 truncate max-w-[220px]">
-                      {AI_DIFFICULTY_PROFILES[matchConfig.aiDifficulty].tagline.split(' · ')[0]}
+                      {activeAiMeta.tagline.split(' · ')[0]}
                     </span>
                   </div>
                   <div className="grid grid-cols-4 gap-1.5">
                     {(['beginner', 'intermediate', 'pro', 'legend'] as AiDifficulty[]).map((lvl) => {
                       const active = matchConfig.aiDifficulty === lvl;
-                      const prof = AI_DIFFICULTY_PROFILES[lvl];
+                      const prof = localizeAiDifficulty(lvl, lang);
                       return (
                         <button
                           key={lvl}
@@ -268,24 +284,26 @@ export function MainMenu({ onStartMatch, onToggleFullscreen }: MainMenuProps) {
               <div className="grid grid-cols-2 gap-2">
                 <div>
                   <label className="block text-[10px] font-semibold uppercase tracking-wider text-slate-400 mb-1">
-                    Player 1
+                    {t('menu.player1NameLabel')}
                   </label>
                   <input
                     type="text"
                     maxLength={16}
-                    value={matchConfig.player1Name}
+                    value={p1InputDisplay}
                     onChange={(e) => updateMatchConfig({ player1Name: e.target.value })}
                     className="w-full rounded-lg border border-white/12 bg-black/40 px-2.5 py-1.5 text-xs font-medium text-white focus:border-amber-400 focus:outline-none"
                   />
                 </div>
                 <div>
                   <label className="block text-[10px] font-semibold uppercase tracking-wider text-slate-400 mb-1">
-                    {matchConfig.opponentType === 'ai' ? 'AI Opponent' : 'Player 2'}
+                    {matchConfig.opponentType === 'ai'
+                      ? t('menu.aiOpponentNameLabel')
+                      : t('menu.player2NameLabel')}
                   </label>
                   <input
                     type="text"
                     maxLength={16}
-                    value={matchConfig.player2Name}
+                    value={p2InputDisplay}
                     onChange={(e) => updateMatchConfig({ player2Name: e.target.value })}
                     className="w-full rounded-lg border border-white/12 bg-black/40 px-2.5 py-1.5 text-xs font-medium text-white focus:border-amber-400 focus:outline-none"
                   />
@@ -300,14 +318,14 @@ export function MainMenu({ onStartMatch, onToggleFullscreen }: MainMenuProps) {
                     soundEngine.playUiClick();
                     updateMatchConfig({ ruleProfileId: 'casual', calledShotsEnabled: false });
                   }}
-                  className={`rounded-xl border px-2.5 py-1.5 text-left transition-colors cursor-pointer ${
+                  className={`rounded-xl border px-2.5 py-1.5 text-start transition-colors cursor-pointer ${
                     matchConfig.ruleProfileId === 'casual'
                       ? 'border-amber-400/70 bg-amber-500/12 text-white'
                       : 'border-white/10 bg-white/5 text-slate-400 hover:text-slate-200'
                   }`}
                 >
-                  <div className="text-[11px] font-bold">Standard Casual</div>
-                  <div className="text-[10px] text-slate-400">Auto pocket · Anywhere BIH</div>
+                  <div className="text-[11px] font-bold">{t('menu.ruleCasual')}</div>
+                  <div className="text-[10px] text-slate-400">{t('menu.ruleCasualShortDesc')}</div>
                 </button>
                 <button
                   type="button"
@@ -315,14 +333,14 @@ export function MainMenu({ onStartMatch, onToggleFullscreen }: MainMenuProps) {
                     soundEngine.playUiClick();
                     updateMatchConfig({ ruleProfileId: 'wpa', calledShotsEnabled: true });
                   }}
-                  className={`rounded-xl border px-2.5 py-1.5 text-left transition-colors cursor-pointer ${
+                  className={`rounded-xl border px-2.5 py-1.5 text-start transition-colors cursor-pointer ${
                     matchConfig.ruleProfileId === 'wpa'
                       ? 'border-amber-400/70 bg-amber-500/12 text-white'
                       : 'border-white/10 bg-white/5 text-slate-400 hover:text-slate-200'
                   }`}
                 >
-                  <div className="text-[11px] font-bold">Strict Called (WPA)</div>
-                  <div className="text-[10px] text-slate-400">Call ball+pocket · Kitchen break</div>
+                  <div className="text-[11px] font-bold">{t('menu.ruleWpa')}</div>
+                  <div className="text-[10px] text-slate-400">{t('menu.ruleWpaShortDesc')}</div>
                 </button>
               </div>
             </div>
@@ -333,38 +351,43 @@ export function MainMenu({ onStartMatch, onToggleFullscreen }: MainMenuProps) {
             <div className="mt-3 flex items-center justify-between rounded-xl border border-white/10 bg-black/30 px-3 py-1.5 text-[10px] font-mono tabular-nums text-slate-300">
               <span className="inline-flex items-center gap-1 text-amber-300 font-bold">
                 <Trophy className="h-3 w-3" />
-                {matchStats.wins}W–{matchStats.losses}L
+                {t('menu.statsWinsLosses', {
+                  wins: formatNumber(matchStats.wins),
+                  losses: formatNumber(matchStats.losses),
+                })}
               </span>
-              <span>SHOTS {matchStats.totalShots}</span>
-              <span>POCKETS {matchStats.ballsPocketed}</span>
-              <span>AVG {avgBalls.toFixed(1)}</span>
+              <span>{t('menu.statsShotsShort', { count: formatNumber(matchStats.totalShots) })}</span>
+              <span>{t('menu.statsPocketsShort', { count: formatNumber(matchStats.ballsPocketed) })}</span>
+              <span>{t('menu.statsAvgShort', { avg: avgBalls.toFixed(1) })}</span>
             </div>
           )}
 
           <div className="mt-4 flex flex-wrap items-center gap-2.5">
             <button
               type="button"
+              data-testid="start-match-btn"
               onClick={handlePlay}
-              className="inline-flex flex-1 items-center justify-center gap-2 rounded-xl bg-amber-500 px-6 py-2.5 text-sm font-extrabold tracking-wide text-slate-950 shadow-lg hover:bg-amber-400 active:scale-[0.98] transition-all cursor-pointer whitespace-nowrap"
+              className="inline-flex flex-1 items-center justify-center gap-2 rounded-xl bg-amber-500 px-5 py-2.5 text-sm font-extrabold tracking-wide text-slate-950 shadow-lg hover:bg-amber-400 active:scale-[0.98] transition-all cursor-pointer whitespace-nowrap"
             >
               <Play className="h-4 w-4 fill-slate-950" />
-              {isEightBall ? 'START 8-BALL MATCH' : 'START FREE PLAY'}
+              {isEightBall ? t('menu.startMatchButton') : t('menu.startFreePlayButton')}
             </button>
             <button
               type="button"
+              data-testid="open-settings-btn"
               onClick={handleSettings}
               className="inline-flex items-center gap-2 rounded-xl border border-white/15 bg-white/5 px-4 py-2.5 text-sm font-semibold text-slate-200 hover:bg-white/10 transition-colors cursor-pointer whitespace-nowrap"
             >
               <Settings className="h-4 w-4 text-amber-400" />
-              Settings
+              {t('menu.settingsButton')}
             </button>
           </div>
 
           {/* Online Multiplayer Section */}
           <div className="mt-3.5 pt-3 border-t border-white/10">
             <div className="flex items-center justify-between mb-2">
-              <span className="text-[10px] font-bold uppercase tracking-[0.18em] text-amber-400">
-                Online Multiplayer
+              <span className="text-[10px] font-bold uppercase tracking-[0.14em] text-amber-400">
+                {t('menu.onlineSectionTitle')}
               </span>
               <div className="flex items-center gap-3">
                 <button
@@ -374,7 +397,7 @@ export function MainMenu({ onStartMatch, onToggleFullscreen }: MainMenuProps) {
                   className="inline-flex items-center gap-1 text-[11px] font-bold text-amber-300 hover:text-amber-200 cursor-pointer whitespace-nowrap"
                 >
                   <Eye className="h-3 w-3" />
-                  Watch Live
+                  {t('menu.watchLiveButton')}
                 </button>
                 <button
                   type="button"
@@ -382,7 +405,7 @@ export function MainMenu({ onStartMatch, onToggleFullscreen }: MainMenuProps) {
                   className="inline-flex items-center gap-1 text-[11px] font-bold text-emerald-300 hover:text-emerald-200 cursor-pointer whitespace-nowrap"
                 >
                   <Globe className="h-3 w-3" />
-                  Play Online
+                  {t('menu.playOnlineButton')}
                 </button>
               </div>
             </div>
@@ -394,15 +417,16 @@ export function MainMenu({ onStartMatch, onToggleFullscreen }: MainMenuProps) {
                 className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-amber-400/45 bg-amber-500/15 px-2.5 py-2 text-[11px] font-extrabold text-amber-200 hover:bg-amber-500/25 transition-colors cursor-pointer whitespace-nowrap"
               >
                 <Swords className="h-3.5 w-3.5 text-amber-400 shrink-0" />
-                Ranked Match
+                {t('menu.rankedMatchButton')}
               </button>
               <button
                 type="button"
+                data-testid="open-quick-online-btn"
                 onClick={() => handleOpenOnline('quick')}
                 className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-emerald-400/35 bg-emerald-500/10 px-2.5 py-2 text-[11px] font-bold text-emerald-200 hover:bg-emerald-500/20 transition-colors cursor-pointer whitespace-nowrap"
               >
                 <Search className="h-3.5 w-3.5 text-emerald-400 shrink-0" />
-                Quick Match
+                {t('menu.quickMatchButton')}
               </button>
             </div>
             <div className="mt-1.5 grid grid-cols-3 gap-1.5">
@@ -412,7 +436,7 @@ export function MainMenu({ onStartMatch, onToggleFullscreen }: MainMenuProps) {
                 className="inline-flex items-center justify-center gap-1 rounded-xl border border-white/12 bg-white/5 px-2 py-2 text-[11px] font-bold text-slate-200 hover:bg-white/10 transition-colors cursor-pointer whitespace-nowrap"
               >
                 <PlusCircle className="h-3.5 w-3.5 text-amber-400 shrink-0" />
-                Create Room
+                {t('menu.createRoomButton')}
               </button>
               <button
                 type="button"
@@ -420,7 +444,7 @@ export function MainMenu({ onStartMatch, onToggleFullscreen }: MainMenuProps) {
                 className="inline-flex items-center justify-center gap-1 rounded-xl border border-white/12 bg-white/5 px-2 py-2 text-[11px] font-bold text-slate-200 hover:bg-white/10 transition-colors cursor-pointer whitespace-nowrap"
               >
                 <KeyRound className="h-3.5 w-3.5 text-amber-400 shrink-0" />
-                Join Room
+                {t('menu.joinRoomButton')}
               </button>
               <button
                 type="button"
@@ -428,7 +452,7 @@ export function MainMenu({ onStartMatch, onToggleFullscreen }: MainMenuProps) {
                 className="inline-flex items-center justify-center gap-1 rounded-xl border border-white/12 bg-white/5 px-2 py-2 text-[11px] font-bold text-slate-200 hover:bg-white/10 transition-colors cursor-pointer whitespace-nowrap"
               >
                 <UserPlus className="h-3.5 w-3.5 text-amber-400 shrink-0" />
-                Play Friend
+                {t('menu.playFriendButton')}
               </button>
             </div>
 
@@ -457,9 +481,10 @@ export function MainMenu({ onStartMatch, onToggleFullscreen }: MainMenuProps) {
                         soundEngine.playUiClick();
                         openProgressionModal('profile');
                       }}
-                      className="flex items-center gap-2 min-w-0 text-left hover:opacity-90 cursor-pointer"
+                      className="flex items-center gap-2 min-w-0 text-start hover:opacity-90 cursor-pointer"
                     >
                       <span
+                        dir="ltr"
                         className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-white/15 text-xs font-bold"
                         style={{ backgroundColor: `${av.accent}22`, color: av.accent }}
                       >
@@ -472,6 +497,7 @@ export function MainMenu({ onStartMatch, onToggleFullscreen }: MainMenuProps) {
                           </span>
                           {myClub && (
                             <span
+                              dir="ltr"
                               className="rounded border px-1 py-0.2 font-mono text-[9px] font-black shrink-0"
                               style={{
                                 borderColor: `${myClub.emblemColor}66`,
@@ -484,6 +510,7 @@ export function MainMenu({ onStartMatch, onToggleFullscreen }: MainMenuProps) {
                           )}
                           {badgeMeta && (
                             <span
+                              dir="ltr"
                               className={`inline-flex items-center gap-0.5 rounded border px-1 py-0.2 text-[9px] font-extrabold shrink-0 ${badgeMeta.className}`}
                             >
                               <span>{badgeMeta.glyph}</span>
@@ -491,7 +518,7 @@ export function MainMenu({ onStartMatch, onToggleFullscreen }: MainMenuProps) {
                             </span>
                           )}
                           <span className="rounded border border-amber-400/35 bg-amber-500/12 px-1 py-0.2 text-[9px] font-mono font-bold text-amber-300 shrink-0">
-                            Lv {level}
+                            {t('common.levelShort')} {formatNumber(level)}
                           </span>
                         </div>
                         <div className="mt-1 h-1 w-24 overflow-hidden rounded bg-white/10">
@@ -503,13 +530,17 @@ export function MainMenu({ onStartMatch, onToggleFullscreen }: MainMenuProps) {
                       </div>
                     </button>
 
-                    <div className="flex flex-col items-end gap-0.5 text-right font-mono tabular-nums shrink-0">
+                    <div className="flex flex-col items-end gap-0.5 text-end font-mono tabular-nums shrink-0">
                       <div className="flex items-center gap-1.5">
                         <RankBadge elo={elo} size="xs" />
-                        <span className="text-xs font-black text-amber-300">{elo} ELO</span>
+                        <span dir="ltr" className="text-xs font-black text-amber-300">
+                          {formatNumber(elo)} ELO
+                        </span>
                       </div>
                       <div className="text-[10px] text-slate-400">
-                        {ownProfile?.rank ? `Global #${ownProfile.rank}` : 'Unranked'}
+                        {ownProfile?.rank
+                          ? t('menu.globalRankBadge', { rank: formatNumber(ownProfile.rank) })
+                          : t('menu.unrankedBadge')}
                       </div>
                     </div>
                   </div>
@@ -517,10 +548,10 @@ export function MainMenu({ onStartMatch, onToggleFullscreen }: MainMenuProps) {
                   <div className="mt-2 grid grid-cols-4 gap-1">
                     {(
                       [
-                        { id: 'profile', label: 'Profile', icon: User },
-                        { id: 'leaderboard', label: 'Ranks', icon: BarChart3 },
-                        { id: 'achievements', label: 'Trophies', icon: Award },
-                        { id: 'history', label: 'History', icon: History },
+                        { id: 'profile', label: t('menu.navProfile'), icon: User },
+                        { id: 'leaderboard', label: t('menu.navRanks'), icon: BarChart3 },
+                        { id: 'achievements', label: t('menu.navTrophies'), icon: Award },
+                        { id: 'history', label: t('menu.navHistory'), icon: History },
                       ] as const
                     ).map((btn) => {
                       const Icon = btn.icon;
@@ -528,6 +559,7 @@ export function MainMenu({ onStartMatch, onToggleFullscreen }: MainMenuProps) {
                         <button
                           key={btn.id}
                           type="button"
+                          data-testid={`menu-nav-${btn.id}`}
                           onClick={() => {
                             soundEngine.unlock();
                             soundEngine.playUiClick();
@@ -559,21 +591,22 @@ export function MainMenu({ onStartMatch, onToggleFullscreen }: MainMenuProps) {
                           multiplayerManager.ensureConnected();
                           openSocialModal('friends');
                         }}
-                        className="mt-1.5 flex w-full items-center justify-between rounded-lg border border-white/10 bg-white/5 px-2.5 py-1.5 text-[11px] font-bold text-slate-200 hover:bg-white/10 transition-colors cursor-pointer"
+                        className="mt-1.5 flex w-full items-center justify-between gap-1.5 rounded-lg border border-white/10 bg-white/5 px-2.5 py-1.5 text-[11px] font-bold text-slate-200 hover:bg-white/10 transition-colors cursor-pointer"
                       >
-                        <span className="inline-flex items-center gap-1.5">
-                          <Users className="h-3.5 w-3.5 text-amber-400" />
-                          <span>Friends, Clubs & Social</span>
-                          <span className="inline-flex items-center gap-1 rounded border border-white/10 bg-black/40 px-1.5 py-0.2 text-[9px] font-semibold text-slate-300">
+                        <span className="inline-flex items-center gap-1.5 min-w-0">
+                          <Users className="h-3.5 w-3.5 text-amber-400 shrink-0" />
+                          <span className="truncate">{t('menu.friendsSocialButton')}</span>
+                          <span className="inline-flex items-center gap-1 rounded border border-white/10 bg-black/40 px-1.5 py-0.2 text-[9px] font-semibold text-slate-300 shrink-0">
                             <span
                               className={`h-1.5 w-1.5 rounded-full ${presenceDotClass(selfPresence)}`}
                             />
-                            {presenceLabel(selfPresence)}
+                            {localizePresence(selfPresence, lang)}
                           </span>
                         </span>
-                        <span className="inline-flex items-center gap-1.5 font-mono text-[10px] text-slate-400 tabular-nums">
+                        <span className="inline-flex items-center gap-1.5 font-mono text-[10px] text-slate-400 tabular-nums shrink-0">
                           {myClub && (
                             <span
+                              dir="ltr"
                               className="rounded border px-1 py-0.2 text-[9px] font-bold"
                               style={{
                                 borderColor: `${myClub.emblemColor}55`,
@@ -583,10 +616,10 @@ export function MainMenu({ onStartMatch, onToggleFullscreen }: MainMenuProps) {
                               [{myClub.tag}]
                             </span>
                           )}
-                          <span>{friends.length} friends</span>
+                          <span>{t('menu.friendsCountLabel', { count: friends.length })}</span>
                           {socialBadge > 0 && (
                             <span className="rounded bg-amber-500 px-1.5 py-0.2 font-black text-slate-950">
-                              {socialBadge}
+                              {formatNumber(socialBadge)}
                             </span>
                           )}
                         </span>
@@ -608,11 +641,11 @@ export function MainMenu({ onStartMatch, onToggleFullscreen }: MainMenuProps) {
                     >
                       <span className="inline-flex items-center gap-1.5">
                         <ShoppingBag className="h-3.5 w-3.5 text-amber-400 shrink-0" />
-                        <span>Store & Inventory</span>
+                        <span>{t('menu.storeInventoryButton')}</span>
                       </span>
-                      <span className="inline-flex items-center gap-1 font-mono font-extrabold tabular-nums text-amber-300">
+                      <span dir="ltr" className="inline-flex items-center gap-1 font-mono font-extrabold tabular-nums text-amber-300">
                         <Coins className="h-3 w-3 text-amber-400 shrink-0" />
-                        {coinBalance.toLocaleString()}
+                        {formatNumber(coinBalance)}
                       </span>
                     </button>
 
@@ -635,7 +668,11 @@ export function MainMenu({ onStartMatch, onToggleFullscreen }: MainMenuProps) {
                           dailyReward?.canClaim ? 'text-emerald-400' : 'text-amber-400'
                         }`}
                       />
-                      <span>{dailyReward?.canClaim ? 'Claim Daily' : 'Daily'}</span>
+                      <span>
+                        {dailyReward?.canClaim
+                          ? t('menu.claimDailyButton')
+                          : t('menu.dailyButton')}
+                      </span>
                     </button>
                   </div>
 
@@ -653,10 +690,31 @@ export function MainMenu({ onStartMatch, onToggleFullscreen }: MainMenuProps) {
                   >
                     <span className="inline-flex items-center gap-1.5">
                       <Crown className="h-3.5 w-3.5 text-amber-400 shrink-0" />
-                      <span>Global Tournaments & Brackets</span>
+                      <span>{t('menu.globalTournamentsButton')}</span>
                     </span>
                     <span className="text-[10px] font-bold uppercase tracking-wider text-amber-300">
-                      Compete
+                      {t('menu.competeBadge')}
+                    </span>
+                  </button>
+
+                  {/* Clubs & Team Leagues */}
+                  <button
+                    type="button"
+                    data-testid="open-clubs-leagues-btn"
+                    onClick={() => {
+                      soundEngine.unlock();
+                      soundEngine.playUiClick();
+                      multiplayerManager.ensureConnected();
+                      openClubLeagueModal('club_hq');
+                    }}
+                    className="mt-1.5 flex w-full items-center justify-between gap-2 rounded-lg border border-emerald-400/35 bg-emerald-500/12 px-2.5 py-1.5 text-[11px] font-extrabold text-emerald-100 hover:bg-emerald-500/20 transition-colors cursor-pointer whitespace-nowrap"
+                  >
+                    <span className="inline-flex items-center gap-1.5">
+                      <Shield className="h-3.5 w-3.5 text-emerald-400 shrink-0" />
+                      <span>{t('menu.clubsLeaguesButton')}</span>
+                    </span>
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-emerald-300">
+                      {myClub ? `[${myClub.tag}]` : t('menu.squadsBadge')}
                     </span>
                   </button>
 
@@ -685,12 +743,15 @@ export function MainMenu({ onStartMatch, onToggleFullscreen }: MainMenuProps) {
                           <span className="inline-flex items-center gap-1.5 truncate">
                             <Award className="h-3.5 w-3.5 text-amber-400 shrink-0" />
                             <span className="truncate">
-                              Battle Pass · Lv {bpLevel}/{bpMax}
+                              {t('menu.battlePassLevelLabel', {
+                                level: formatNumber(bpLevel),
+                                max: formatNumber(bpMax),
+                              })}
                             </span>
                           </span>
                           {bpTrackClaimable > 0 && (
-                            <span className="rounded bg-emerald-500 px-1.5 py-0.2 font-mono text-[10px] font-black tabular-nums text-slate-950 shrink-0">
-                              +{bpTrackClaimable}
+                            <span dir="ltr" className="rounded bg-emerald-500 px-1.5 py-0.2 font-mono text-[10px] font-black tabular-nums text-slate-950 shrink-0">
+                              +{formatNumber(bpTrackClaimable)}
                             </span>
                           )}
                         </button>
@@ -710,10 +771,10 @@ export function MainMenu({ onStartMatch, onToggleFullscreen }: MainMenuProps) {
                           }`}
                         >
                           <Target className="h-3.5 w-3.5 text-amber-400 shrink-0" />
-                          <span>Missions</span>
+                          <span>{t('menu.missionsButton')}</span>
                           {missionClaimable > 0 && (
                             <span className="rounded bg-amber-500 px-1.5 py-0.2 font-mono text-[10px] font-black tabular-nums text-slate-950">
-                              {missionClaimable}
+                              {formatNumber(missionClaimable)}
                             </span>
                           )}
                         </button>
@@ -726,16 +787,55 @@ export function MainMenu({ onStartMatch, onToggleFullscreen }: MainMenuProps) {
           </div>
         </div>
 
-        {/* Top-Right Compact Controls */}
+        {/* Top-Right Compact Controls + Visible Language Selector */}
         <div className="pointer-events-auto self-end sm:self-auto flex items-center gap-2 shrink-0">
           <FpsCounter />
+          <div
+            data-testid="menu-language-selector"
+            role="group"
+            aria-label={t('menu.languageSelectorLabel')}
+            className="inline-flex h-9 items-center rounded-lg border border-white/15 bg-[#0d131a]/92 p-0.5 text-[11px] font-bold shadow-md"
+          >
+            <button
+              type="button"
+              data-testid="menu-lang-ar"
+              onClick={() => {
+                soundEngine.unlock();
+                soundEngine.playUiClick();
+                setLanguage('ar');
+              }}
+              className={`h-full rounded-md px-2.5 transition-colors cursor-pointer whitespace-nowrap ${
+                lang === 'ar'
+                  ? 'bg-amber-500 text-slate-950'
+                  : 'text-slate-300 hover:text-white'
+              }`}
+            >
+              {t('meta.switchToArabic')}
+            </button>
+            <button
+              type="button"
+              data-testid="menu-lang-en"
+              onClick={() => {
+                soundEngine.unlock();
+                soundEngine.playUiClick();
+                setLanguage('en');
+              }}
+              className={`h-full rounded-md px-2.5 transition-colors cursor-pointer whitespace-nowrap ${
+                lang === 'en'
+                  ? 'bg-amber-500 text-slate-950'
+                  : 'text-slate-300 hover:text-white'
+              }`}
+            >
+              {t('meta.switchToEnglish')}
+            </button>
+          </div>
           <button
             type="button"
             onClick={() => {
               soundEngine.unlock();
               toggleSound();
             }}
-            aria-label={soundEnabled ? 'Mute sound' : 'Unmute sound'}
+            aria-label={soundEnabled ? t('settings.muteAudio') : t('settings.unmuteAudio')}
             className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-white/10 bg-[#0d131a]/90 text-slate-200 hover:bg-white/10 transition-colors cursor-pointer"
           >
             {soundEnabled ? <Volume2 className="h-4 w-4 text-amber-400" /> : <VolumeX className="h-4 w-4 text-slate-400" />}
@@ -743,7 +843,7 @@ export function MainMenu({ onStartMatch, onToggleFullscreen }: MainMenuProps) {
           <button
             type="button"
             onClick={onToggleFullscreen}
-            aria-label={isFullscreen ? 'Exit fullscreen' : 'Enter fullscreen'}
+            aria-label={isFullscreen ? t('menu.fullscreenExit') : t('menu.fullscreenEnter')}
             className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-white/10 bg-[#0d131a]/90 text-slate-200 hover:bg-white/10 transition-colors cursor-pointer"
           >
             {isFullscreen ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
@@ -753,8 +853,8 @@ export function MainMenu({ onStartMatch, onToggleFullscreen }: MainMenuProps) {
 
       {/* Bottom Flat Control Hint Line */}
       <div className="flex justify-center pt-4">
-        <div className="rounded-lg border border-white/10 bg-[#0b1016]/85 px-4 py-2 text-xs font-medium tracking-wide text-slate-300">
-          Drag Orbit · Scroll/Pinch Zoom · Tap Table or A/D Aim · Pull Cue to Shoot · R Re-Rack · Enter to Play
+        <div className="rounded-lg border border-white/10 bg-[#0b1016]/85 px-4 py-2 text-xs font-medium tracking-wide text-slate-300 text-center">
+          {t('menu.controlsHintDesktop')}
         </div>
       </div>
     </div>

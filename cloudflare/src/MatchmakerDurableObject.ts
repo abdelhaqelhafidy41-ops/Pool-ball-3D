@@ -13,6 +13,7 @@ import type {
   OnlineAvatarId,
   OnlineBallFrame,
   OnlineMatchSnapshot,
+  OnlineRoomClubLeagueContext,
   OnlineRoomInfo,
   OnlineRoomStatus,
   OnlineRoomTournamentContext,
@@ -27,11 +28,14 @@ import {
   sanitizeChatText,
   SOCIAL_LIMITS,
   type ClubChallengeRecord,
+  type ClubChatMessageRecord,
   type ClubDetailPayload,
   type ClubInvitationRecord,
   type ClubLeaderboardEntry,
   type ClubLeaderboardScope,
   type ClubRecord,
+  type ClubRole,
+  type ClubTrophyRecord,
   type DirectMessageRecord,
   type FriendRecord,
   type FriendRequestAction,
@@ -62,14 +66,16 @@ import {
   type Env,
   type WorkerRuntimeConfig,
 } from './config';
-import { createDurableObjectSqlDb, D1ProgressionService } from './D1ProgressionService';
+import { createDurableObjectSqlDb, D1ProgressionService, type ProgressionSqlDb } from './D1ProgressionService';
 import { ClubService, type ClubServiceError } from './ClubService';
+import { ClubLeagueService, type ClubLeagueServiceError } from './ClubLeagueService';
 import { EconomyService } from './EconomyService';
 import { AntiCheatService, type AntiCheatMatchInspectionInput } from './AntiCheatService';
 import { RankedSeasonService } from './RankedSeasonService';
 import { SocialService, type SocialError } from './SocialService';
 import { TournamentService, type TournamentServiceError } from './TournamentService';
 import { BattlePassService } from './BattlePassService';
+import type { TeamSubMatchRecord } from '../../src/multiplayer/shared/clubLeagues';
 import type {
   AiMatchProgressRequest,
   BattlePassTrack,
@@ -1151,6 +1157,7 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
     await this.pruneExpiredWaitingRooms();
     await this.pruneExpiredSocialState();
     await this.processTournamentTimersInternal();
+    await this.processClubLeagueTimersInternal();
     await this.scheduleNextAlarm();
   }
 
@@ -1241,12 +1248,14 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
       calledShotsEnabled: boolean;
       players: SpectatableMatchPlayer[];
       tournament?: OnlineRoomTournamentContext | null;
+      clubLeague?: OnlineRoomClubLeagueContext | null;
     },
   ): Promise<void> {
     this.ensureSchema();
     const serialized = JSON.stringify({
       players: meta.players,
       tournament: meta.tournament ?? null,
+      clubLeague: meta.clubLeague ?? null,
     });
     this.ctx.storage.sql.exec(
       `UPDATE rooms
@@ -1552,6 +1561,11 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
       return new ClubService(this.env.DB);
     }
     return new ClubService(createDurableObjectSqlDb(this.ctx.storage.sql));
+  }
+
+  private getClubLeagueService(): ClubLeagueService {
+    const db = (this.env.DB ?? createDurableObjectSqlDb(this.ctx.storage.sql)) as unknown as ProgressionSqlDb;
+    return new ClubLeagueService(db);
   }
 
   private async authenticateRestPlayer(
@@ -2145,6 +2159,8 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
       emblemColor?: unknown;
       emblemIcon?: unknown;
       joinMode?: unknown;
+      region?: unknown;
+      maxMembers?: unknown;
     },
   ): Promise<{ ok: true; detail: ClubDetailPayload } | ClubServiceError> {
     this.ensureSchema();
@@ -2165,6 +2181,9 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
       emblemColor?: unknown;
       emblemIcon?: unknown;
       joinMode?: unknown;
+      region?: unknown;
+      maxMembers?: unknown;
+      announcement?: unknown;
     },
   ): Promise<{ ok: true; detail: ClubDetailPayload } | ClubServiceError> {
     this.ensureSchema();
@@ -2317,7 +2336,7 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
     playerToken: string,
     clubId: string,
     targetPlayerId: string,
-    role: 'owner' | 'admin' | 'member',
+    role: ClubRole,
   ) {
     this.ensureSchema();
     const auth = await this.authenticateRestPlayer(playerId, playerToken);
@@ -2427,26 +2446,836 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
     return res;
   }
 
+  public async clubGetChatMessages(
+    clubId: string,
+    limit = 50,
+  ): Promise<ClubChatMessageRecord[]> {
+    this.ensureSchema();
+    return this.getClubService().getClubChatMessages(clubId, limit);
+  }
+
+  public async clubSendChatMessage(
+    playerId: string,
+    playerToken: string,
+    clubId: string,
+    body: unknown,
+  ): Promise<{ ok: true; message: ClubChatMessageRecord } | ClubServiceError> {
+    this.ensureSchema();
+    const auth = await this.authenticateRestPlayer(playerId, playerToken);
+    if (!auth.ok) return auth;
+    const clubSvc = this.getClubService();
+    const res = await clubSvc.sendClubChatMessage(auth.playerId, clubId, body);
+    if (!res.ok) return res;
+
+    const memberIds = await clubSvc.getClubMemberPlayerIds(clubId);
+    for (const pid of memberIds) {
+      this.sendToPlayer(pid, {
+        type: 'club:chat_message',
+        clubId,
+        message: res.message,
+      });
+    }
+    return res;
+  }
+
+  public async clubUpdateAnnouncement(
+    playerId: string,
+    playerToken: string,
+    clubId: string,
+    announcement: unknown,
+  ): Promise<{ ok: true; detail: ClubDetailPayload } | ClubServiceError> {
+    this.ensureSchema();
+    const auth = await this.authenticateRestPlayer(playerId, playerToken);
+    if (!auth.ok) return auth;
+    const clubSvc = this.getClubService();
+    const res = await clubSvc.updateClub(auth.playerId, clubId, { announcement });
+    if (!res.ok) return res;
+    const memberIds = await clubSvc.getClubMemberPlayerIds(clubId);
+    await this.broadcastClubUpdated(memberIds, clubId);
+    return res;
+  }
+
+  public async clubGetTrophies(clubId: string, limit = 30): Promise<ClubTrophyRecord[]> {
+    this.ensureSchema();
+    return this.getClubService().getClubTrophies(clubId, limit);
+  }
+
+  // ===== Phase 16 Club Teams, Team Leagues & Club Championships RPC Methods =====
+
+  public async teamListByClub(clubId: string) {
+    this.ensureSchema();
+    return this.getClubLeagueService().listClubTeams(clubId);
+  }
+
+  public async teamGetDetail(teamId: string) {
+    this.ensureSchema();
+    return this.getClubLeagueService().getTeamById(teamId);
+  }
+
+  public async teamCreate(
+    playerId: string,
+    playerToken: string,
+    clubId: string,
+    input: {
+      name: unknown;
+      tag: unknown;
+      badgeColor?: unknown;
+      badgeIcon?: unknown;
+      region?: unknown;
+      minRosterSize?: unknown;
+      maxRosterSize?: unknown;
+      captainId?: unknown;
+      memberIds?: unknown;
+    },
+  ) {
+    this.ensureSchema();
+    const auth = await this.authenticateRestPlayer(playerId, playerToken);
+    if (!auth.ok) return auth;
+    const res = await this.getClubLeagueService().createTeam(auth.playerId, clubId, input);
+    if (!res.ok) return res;
+    const memberIds = await this.getClubService().getClubMemberPlayerIds(clubId);
+    await this.broadcastClubUpdated(memberIds, clubId);
+    return res;
+  }
+
+  public async teamAddMember(
+    playerId: string,
+    playerToken: string,
+    teamId: string,
+    targetPlayerId: string,
+    role?: unknown,
+  ) {
+    this.ensureSchema();
+    const auth = await this.authenticateRestPlayer(playerId, playerToken);
+    if (!auth.ok) return auth;
+    const res = await this.getClubLeagueService().addTeamMember(
+      auth.playerId,
+      teamId,
+      targetPlayerId,
+      role,
+    );
+    if (!res.ok) return res;
+    const memberIds = await this.getClubService().getClubMemberPlayerIds(res.team.clubId);
+    await this.broadcastClubUpdated(memberIds, res.team.clubId);
+    return res;
+  }
+
+  public async teamRemoveMember(
+    playerId: string,
+    playerToken: string,
+    teamId: string,
+    targetPlayerId: string,
+  ) {
+    this.ensureSchema();
+    const auth = await this.authenticateRestPlayer(playerId, playerToken);
+    if (!auth.ok) return auth;
+    const res = await this.getClubLeagueService().removeTeamMember(
+      auth.playerId,
+      teamId,
+      targetPlayerId,
+    );
+    if (!res.ok) return res;
+    const memberIds = await this.getClubService().getClubMemberPlayerIds(res.team.clubId);
+    await this.broadcastClubUpdated(memberIds, res.team.clubId);
+    return res;
+  }
+
+  public async teamSetMemberRole(
+    playerId: string,
+    playerToken: string,
+    teamId: string,
+    targetPlayerId: string,
+    role: unknown,
+  ) {
+    this.ensureSchema();
+    const auth = await this.authenticateRestPlayer(playerId, playerToken);
+    if (!auth.ok) return auth;
+    const res = await this.getClubLeagueService().setTeamMemberRole(
+      auth.playerId,
+      teamId,
+      targetPlayerId,
+      role,
+    );
+    if (!res.ok) return res;
+    const memberIds = await this.getClubService().getClubMemberPlayerIds(res.team.clubId);
+    await this.broadcastClubUpdated(memberIds, res.team.clubId);
+    return res;
+  }
+
+  public async leagueList(opts?: {
+    scope?: string | null;
+    region?: string | null;
+    status?: string | null;
+  }) {
+    this.ensureSchema();
+    return this.getClubLeagueService().listLeagues(opts);
+  }
+
+  public async leagueGetDetail(leagueId: string, viewerId?: string | null) {
+    this.ensureSchema();
+    return this.getClubLeagueService().getLeagueDetail(leagueId, viewerId ?? undefined);
+  }
+
+  public async leagueCreate(
+    playerId: string,
+    playerToken: string,
+    input: {
+      title: unknown;
+      description?: unknown;
+      scope?: unknown;
+      region?: unknown;
+      cadence?: unknown;
+      divisionTier?: unknown;
+      seasonLabel?: unknown;
+      matchFormat?: unknown;
+      ruleProfileId?: unknown;
+      calledShotsEnabled?: unknown;
+      doubleRoundRobin?: unknown;
+      maxTeams?: unknown;
+      promotionSlots?: unknown;
+      relegationSlots?: unknown;
+      matchDurationMinutes?: unknown;
+    },
+  ) {
+    this.ensureSchema();
+    const auth = await this.authenticateRestPlayer(playerId, playerToken);
+    if (!auth.ok) return auth;
+    const res = await this.getClubLeagueService().createLeague(auth.playerId, input);
+    if (!res.ok) return res;
+    this.broadcastClubLeagueUpdate('league', res.detail.league.leagueId);
+    return res;
+  }
+
+  public async leagueRegisterTeam(
+    playerId: string,
+    playerToken: string,
+    leagueId: string,
+    teamId: string,
+  ) {
+    this.ensureSchema();
+    const auth = await this.authenticateRestPlayer(playerId, playerToken);
+    if (!auth.ok) return auth;
+    const res = await this.getClubLeagueService().registerTeamForLeague(
+      auth.playerId,
+      leagueId,
+      teamId,
+    );
+    if (!res.ok) return res;
+    this.broadcastClubLeagueUpdate('league', leagueId);
+    return res;
+  }
+
+  public async leagueWithdrawTeam(
+    playerId: string,
+    playerToken: string,
+    leagueId: string,
+    teamId: string,
+  ) {
+    this.ensureSchema();
+    const auth = await this.authenticateRestPlayer(playerId, playerToken);
+    if (!auth.ok) return auth;
+    const res = await this.getClubLeagueService().withdrawTeamFromLeague(
+      auth.playerId,
+      leagueId,
+      teamId,
+    );
+    if (!res.ok) return res;
+    this.broadcastClubLeagueUpdate('league', leagueId);
+    return res;
+  }
+
+  public async leagueStart(playerId: string, playerToken: string, leagueId: string) {
+    this.ensureSchema();
+    const auth = await this.authenticateRestPlayer(playerId, playerToken);
+    if (!auth.ok) return auth;
+    const res = await this.getClubLeagueService().startLeague(auth.playerId, leagueId);
+    if (!res.ok) return res;
+    this.broadcastClubLeagueUpdate('league', leagueId);
+    await this.scheduleNextAlarm();
+    return res;
+  }
+
+  public async championshipList(opts?: {
+    format?: string | null;
+    region?: string | null;
+    status?: string | null;
+  }) {
+    this.ensureSchema();
+    return this.getClubLeagueService().listChampionships(opts);
+  }
+
+  public async championshipGetDetail(championshipId: string, viewerId?: string | null) {
+    this.ensureSchema();
+    return this.getClubLeagueService().getChampionshipDetail(
+      championshipId,
+      viewerId ?? undefined,
+    );
+  }
+
+  public async championshipCreate(
+    playerId: string,
+    playerToken: string,
+    input: {
+      title: unknown;
+      description?: unknown;
+      format?: unknown;
+      region?: unknown;
+      seasonLabel?: unknown;
+      matchFormat?: unknown;
+      ruleProfileId?: unknown;
+      calledShotsEnabled?: unknown;
+      maxTeams?: unknown;
+      swissRounds?: unknown;
+      groupSize?: unknown;
+      groupAdvanceCount?: unknown;
+      prizeCoinsChampion?: unknown;
+    },
+  ) {
+    this.ensureSchema();
+    const auth = await this.authenticateRestPlayer(playerId, playerToken);
+    if (!auth.ok) return auth;
+    const res = await this.getClubLeagueService().createChampionship(auth.playerId, input);
+    if (!res.ok) return res;
+    this.broadcastClubLeagueUpdate('club_championship', res.detail.championship.championshipId);
+    return res;
+  }
+
+  public async championshipRegisterTeam(
+    playerId: string,
+    playerToken: string,
+    championshipId: string,
+    teamId: string,
+  ) {
+    this.ensureSchema();
+    const auth = await this.authenticateRestPlayer(playerId, playerToken);
+    if (!auth.ok) return auth;
+    const res = await this.getClubLeagueService().registerTeamForChampionship(
+      auth.playerId,
+      championshipId,
+      teamId,
+    );
+    if (!res.ok) return res;
+    this.broadcastClubLeagueUpdate('club_championship', championshipId);
+    return res;
+  }
+
+  public async championshipWithdrawTeam(
+    playerId: string,
+    playerToken: string,
+    championshipId: string,
+    teamId: string,
+  ) {
+    this.ensureSchema();
+    const auth = await this.authenticateRestPlayer(playerId, playerToken);
+    if (!auth.ok) return auth;
+    const res = await this.getClubLeagueService().withdrawTeamFromChampionship(
+      auth.playerId,
+      championshipId,
+      teamId,
+    );
+    if (!res.ok) return res;
+    this.broadcastClubLeagueUpdate('club_championship', championshipId);
+    return res;
+  }
+
+  public async championshipStart(
+    playerId: string,
+    playerToken: string,
+    championshipId: string,
+  ) {
+    this.ensureSchema();
+    const auth = await this.authenticateRestPlayer(playerId, playerToken);
+    if (!auth.ok) return auth;
+    const res = await this.getClubLeagueService().startChampionship(auth.playerId, championshipId);
+    if (!res.ok) return res;
+    this.broadcastClubLeagueUpdate('club_championship', championshipId);
+    await this.scheduleNextAlarm();
+    return res;
+  }
+
+  public async championshipResolveEncounter(
+    playerId: string,
+    playerToken: string,
+    competitionKind: 'league' | 'club_championship',
+    competitionId: string,
+    encounterId: string,
+    input: {
+      winnerTeamId: string;
+      resolution: 'walkover' | 'disqualified';
+      reason?: string;
+    },
+  ) {
+    this.ensureSchema();
+    const auth = await this.authenticateRestPlayer(playerId, playerToken);
+    if (!auth.ok) return auth;
+    const res = await this.getClubLeagueService().resolveEncounterWalkoverOrDq(auth.playerId, {
+      competitionKind,
+      competitionId,
+      encounterId,
+      winnerTeamId: input.winnerTeamId,
+      resolution: input.resolution,
+      reason: input.reason,
+    });
+    if (!res.ok) return res;
+    for (const rid of res.roomsToClose) {
+      await this.closeRoomFromTournament(rid, 'Encounter resolved by competition organizer.');
+    }
+    this.broadcastClubLeagueUpdate(competitionKind, competitionId);
+    await this.scheduleNextAlarm();
+    return res;
+  }
+
+  public async encounterSubmitLineup(
+    playerId: string,
+    playerToken: string,
+    input: {
+      competitionKind: 'league' | 'club_championship';
+      competitionId: string;
+      encounterId: string;
+      teamId: string;
+      playerIds: string[];
+    },
+  ) {
+    this.ensureSchema();
+    const auth = await this.authenticateRestPlayer(playerId, playerToken);
+    if (!auth.ok) return auth;
+    const res = await this.getClubLeagueService().submitEncounterLineup(auth.playerId, input);
+    if (!res.ok) return res;
+
+    const competitionTitle =
+      input.competitionKind === 'league'
+        ? ((await this.getClubLeagueService().getLeagueDetail(input.competitionId))?.league.title ?? 'Team League')
+        : ((await this.getClubLeagueService().getChampionshipDetail(input.competitionId))?.championship.title ??
+            'Club Championship');
+
+    for (const sm of res.subMatches) {
+      if (sm.status === 'ready' && sm.homePlayerId && sm.awayPlayerId) {
+        const msg: ServerToClientMessage = {
+          type: 'club:team_match_ready',
+          competitionKind: input.competitionKind,
+          competitionId: input.competitionId,
+          competitionTitle,
+          encounterId: input.encounterId,
+          subMatch: sm,
+        };
+        this.sendToPlayer(sm.homePlayerId, msg);
+        this.sendToPlayer(sm.awayPlayerId, msg);
+      }
+    }
+    this.broadcastClubLeagueUpdate(input.competitionKind, input.competitionId);
+    return res;
+  }
+
+  public async encounterSubstituteSlot(
+    playerId: string,
+    playerToken: string,
+    input: {
+      subMatchId: string;
+      teamId: string;
+      newPlayerId: string;
+    },
+  ) {
+    this.ensureSchema();
+    const auth = await this.authenticateRestPlayer(playerId, playerToken);
+    if (!auth.ok) return auth;
+    const res = await this.getClubLeagueService().substituteLineupSlot(auth.playerId, input);
+    if (!res.ok) return res;
+
+    if (res.closedRoomId) {
+      await this.closeRoomFromTournament(
+        res.closedRoomId,
+        'Team captain updated the lineup before match start.',
+      );
+    }
+    if (res.subMatch.homePlayerId && res.subMatch.awayPlayerId) {
+      const competitionTitle =
+        res.subMatch.competitionKind === 'league'
+          ? ((await this.getClubLeagueService().getLeagueDetail(res.subMatch.competitionId))?.league.title ??
+              'Team League')
+          : ((await this.getClubLeagueService().getChampionshipDetail(res.subMatch.competitionId))?.championship
+              .title ?? 'Club Championship');
+      const msg: ServerToClientMessage = {
+        type: 'club:team_match_ready',
+        competitionKind: res.subMatch.competitionKind,
+        competitionId: res.subMatch.competitionId,
+        competitionTitle,
+        encounterId: res.subMatch.encounterId,
+        subMatch: res.subMatch,
+      };
+      this.sendToPlayer(res.subMatch.homePlayerId, msg);
+      this.sendToPlayer(res.subMatch.awayPlayerId, msg);
+    }
+    this.broadcastClubLeagueUpdate(res.subMatch.competitionKind, res.subMatch.competitionId);
+    return res;
+  }
+
+  public async subMatchJoin(
+    playerId: string,
+    playerToken: string,
+    subMatchId: string,
+    sessionId?: string | null,
+  ): Promise<
+    | {
+        ok: true;
+        subMatch: TeamSubMatchRecord;
+        room: OnlineRoomInfo;
+        roomSession: { sessionId: string; reconnectToken: string };
+      }
+    | ClubLeagueServiceError
+  > {
+    this.ensureSchema();
+    const auth = await this.authenticateRestPlayer(playerId, playerToken);
+    if (!auth.ok) return auth;
+
+    const svc = this.getClubLeagueService();
+    const prepInfo = await svc.prepareSubMatchForRoom(auth.playerId, subMatchId);
+    if (!prepInfo.ok) return prepInfo;
+    const sm = prepInfo.subMatch;
+    if (!sm.homePlayerId || !sm.awayPlayerId) {
+      return {
+        ok: false,
+        status: 409,
+        code: 'MATCH_NOT_READY',
+        message: 'Both teams must nominate lineups before entering the match room.',
+      };
+    }
+
+    let sess =
+      (sessionId ? this.getSession(sessionId) : null) ??
+      this.findLatestConnectedSessionByPlayerId(auth.playerId) ??
+      this.findLatestSessionByPlayerId(auth.playerId);
+
+    if (!sess) {
+      const prof = await this.getProgressionService().getPublicProfile(auth.playerId);
+      sess = this.createSession(
+        prof?.displayName ?? 'Player',
+        sanitizeAvatarId(prof?.avatarId),
+        35,
+        auth.playerId,
+      );
+    }
+
+    if (sess.in_matchmaking === 1) {
+      return {
+        ok: false,
+        status: 409,
+        code: 'ALREADY_IN_MATCH',
+        message: 'Leave matchmaking before entering a club team board.',
+      };
+    }
+
+    if (sess.active_room_id && sess.active_room_id !== sm.roomId) {
+      const activeRoomRows = this.ctx.storage.sql
+        .exec<{ status: string }>(
+          'SELECT status FROM rooms WHERE room_id = ? LIMIT 1',
+          sess.active_room_id,
+        )
+        .toArray();
+      if (activeRoomRows[0]?.status === 'playing') {
+        return {
+          ok: false,
+          status: 409,
+          code: 'ALREADY_IN_MATCH',
+          message: 'Finish your active match before entering a team board.',
+        };
+      }
+      this.ctx.storage.sql.exec(
+        'UPDATE sessions SET active_room_id = NULL WHERE session_id = ?',
+        sess.session_id,
+      );
+      sess.active_room_id = null;
+    }
+
+    // Provision room if missing
+    let roomInfo: OnlineRoomInfo | null = null;
+    if (sm.roomId) {
+      const existingStub = this.env.POOL_ROOM.get(this.env.POOL_ROOM.idFromName(sm.roomId));
+      const resume = await existingStub.getResumeData();
+      if (resume) {
+        roomInfo = resume.room;
+      }
+    }
+
+    if (!roomInfo) {
+      const p1Id = sm.homePlayerId;
+      const p2Id = sm.awayPlayerId;
+      const now = Date.now();
+      const newRoomId = `room_${crypto.randomUUID().replace(/-/g, '').slice(0, 12)}`;
+      const newRoomCode = this.generateUniqueCode();
+      const expiresAtMs = now + this.config.roomTtlMs + 180_000;
+
+      const p1Sess = this.findLatestSessionByPlayerId(p1Id);
+      const p2Sess = this.findLatestSessionByPlayerId(p2Id);
+      const [p1Cosmetics, p2Cosmetics, p1Profile, p2Profile] = await Promise.all([
+        this.getEconomyService().getEquippedCosmetics(p1Id),
+        this.getEconomyService().getEquippedCosmetics(p2Id),
+        this.getProgressionService().getPublicProfile(p1Id),
+        this.getProgressionService().getPublicProfile(p2Id),
+      ]);
+
+      const p1SessId =
+        p1Sess?.session_id ?? `ply_${crypto.randomUUID().replace(/-/g, '').slice(0, 16)}`;
+      const p2SessId =
+        p2Sess?.session_id ?? `ply_${crypto.randomUUID().replace(/-/g, '').slice(0, 16)}`;
+      const p1Rec = p1Sess?.reconnect_token ?? randomHexToken(24);
+      const p2Rec = p2Sess?.reconnect_token ?? randomHexToken(24);
+      const p1Name = sm.homePlayerName ?? p1Profile?.displayName ?? 'Player 1';
+      const p2Name = sm.awayPlayerName ?? p2Profile?.displayName ?? 'Player 2';
+      const p1Avatar = sanitizeAvatarId(sm.homePlayerAvatar ?? p1Profile?.avatarId);
+      const p2Avatar = sanitizeAvatarId(sm.awayPlayerAvatar ?? p2Profile?.avatarId);
+
+      const clubLeagueCtx: OnlineRoomClubLeagueContext = {
+        competitionKind: sm.competitionKind,
+        competitionId: sm.competitionId,
+        competitionTitle: prepInfo.competitionTitle,
+        encounterId: sm.encounterId,
+        subMatchId: sm.subMatchId,
+        slotIndex: sm.slotIndex,
+        boardLabel: sm.boardLabel,
+        homeTeamId: prepInfo.homeTeam.teamId,
+        homeTeamName: prepInfo.homeTeam.name,
+        homeTeamTag: prepInfo.homeTeam.tag,
+        awayTeamId: prepInfo.awayTeam.teamId,
+        awayTeamName: prepInfo.awayTeam.name,
+        awayTeamTag: prepInfo.awayTeam.tag,
+      };
+
+      const metaJson = JSON.stringify({
+        players: [
+          {
+            playerId: p1Id,
+            displayName: p1Name,
+            avatarId: p1Avatar,
+            role: 'player1',
+            elo: p1Profile?.elo,
+            rankTier: p1Profile?.rankTier,
+          },
+          {
+            playerId: p2Id,
+            displayName: p2Name,
+            avatarId: p2Avatar,
+            role: 'player2',
+            elo: p2Profile?.elo,
+            rankTier: p2Profile?.rankTier,
+          },
+        ] satisfies SpectatableMatchPlayer[],
+        tournament: null,
+        clubLeague: clubLeagueCtx,
+      });
+
+      this.ctx.storage.sql.exec(
+        `INSERT INTO rooms (
+          room_id, room_code, host_session_id, is_private, match_type, rule_profile_id,
+          called_shots_enabled, status, allow_spectators, allow_spectator_chat,
+          spectator_count, max_spectators, meta_json, created_at_ms, expires_at_ms
+        ) VALUES (?, ?, ?, 0, 'tournament', ?, ?, 'waiting', 1, 1, 0, ?, ?, ?, ?)`,
+        newRoomId,
+        newRoomCode,
+        p1SessId,
+        prepInfo.ruleProfileId,
+        prepInfo.calledShotsEnabled ? 1 : 0,
+        this.config.maxSpectatorsPerRoom,
+        metaJson,
+        now,
+        expiresAtMs,
+      );
+
+      const newStub = this.env.POOL_ROOM.get(this.env.POOL_ROOM.idFromName(newRoomId));
+      roomInfo = await newStub.initClubLeagueRoom({
+        roomId: newRoomId,
+        roomCode: newRoomCode,
+        ruleProfileId: prepInfo.ruleProfileId,
+        calledShotsEnabled: prepInfo.calledShotsEnabled,
+        allowSpectators: true,
+        clubLeague: clubLeagueCtx,
+        createdAtMs: now,
+        expiresAtMs,
+        player1: {
+          sessionId: p1SessId,
+          playerId: p1Id,
+          reconnectToken: p1Rec,
+          displayName: p1Name,
+          avatarId: p1Avatar,
+          elo: p1Profile?.elo,
+          rankTier: p1Profile?.rankTier,
+          equippedCosmetics: p1Cosmetics,
+          latencyMs: p1Sess?.latency_ms ?? 35,
+        },
+        player2: {
+          sessionId: p2SessId,
+          playerId: p2Id,
+          reconnectToken: p2Rec,
+          displayName: p2Name,
+          avatarId: p2Avatar,
+          elo: p2Profile?.elo,
+          rankTier: p2Profile?.rankTier,
+          equippedCosmetics: p2Cosmetics,
+          latencyMs: p2Sess?.latency_ms ?? 35,
+        },
+      });
+
+      await svc.attachRoomToSubMatch(subMatchId, newRoomId, newRoomCode);
+      sm.roomId = newRoomId;
+      sm.roomCode = newRoomCode;
+
+      const opponentId = auth.playerId === p1Id ? p2Id : p1Id;
+      await this.emitNotification({
+        recipientId: opponentId,
+        type:
+          sm.competitionKind === 'league' ? 'team_league_event' : 'club_championship_event',
+        title: `${prepInfo.competitionTitle} · ${sm.boardLabel}`,
+        body: `[${prepInfo.homeTeam.tag}] vs [${prepInfo.awayTeam.tag}] board room ${newRoomCode} is ready.`,
+        referenceId: sm.competitionId,
+        dedupeKey: `tsm_ready:${sm.subMatchId}`,
+      });
+      this.sendToPlayer(opponentId, {
+        type: 'club:team_match_ready',
+        competitionKind: sm.competitionKind,
+        competitionId: sm.competitionId,
+        competitionTitle: prepInfo.competitionTitle,
+        encounterId: sm.encounterId,
+        subMatch: sm,
+        room: roomInfo,
+      });
+    }
+
+    const joinCosmetics = await this.getEconomyService().getEquippedCosmetics(auth.playerId);
+    const joinProfile = await this.getProgressionService().getPublicProfile(auth.playerId);
+    const roomStub = this.env.POOL_ROOM.get(this.env.POOL_ROOM.idFromName(roomInfo.roomId));
+    const prepRes = await roomStub.prepareClubLeaguePlayerSession(auth.playerId, {
+      sessionId: sess.session_id,
+      playerId: auth.playerId,
+      reconnectToken: sess.reconnect_token,
+      displayName: sess.display_name,
+      avatarId: sanitizeAvatarId(sess.avatar_id),
+      elo: joinProfile?.elo,
+      rankTier: joinProfile?.rankTier,
+      equippedCosmetics: joinCosmetics,
+      latencyMs: sess.latency_ms,
+    });
+
+    if (!prepRes.ok) {
+      return {
+        ok: false,
+        status: 409,
+        code: prepRes.code,
+        message: prepRes.message,
+      };
+    }
+
+    this.ctx.storage.sql.exec(
+      'UPDATE sessions SET active_room_id = ?, in_matchmaking = 0 WHERE session_id = ?',
+      roomInfo.roomId,
+      sess.session_id,
+    );
+    this.broadcastClubLeagueUpdate(sm.competitionKind, sm.competitionId);
+    await this.scheduleNextAlarm();
+
+    return {
+      ok: true,
+      subMatch: sm,
+      room: prepRes.room,
+      roomSession: {
+        sessionId: sess.session_id,
+        reconnectToken: sess.reconnect_token,
+      },
+    };
+  }
+
+  public async onTeamSubMatchStarted(subMatchId: string): Promise<void> {
+    this.ensureSchema();
+    const res = await this.getClubLeagueService().markSubMatchInProgress(subMatchId);
+    if (res) {
+      this.broadcastClubLeagueUpdate(res.competitionKind, res.competitionId);
+    }
+  }
+
+  public async onTeamSubMatchCompleted(input: {
+    subMatchId: string;
+    matchId: string;
+    winnerPlayerId: string;
+    reason: string;
+    completedAtMs: number;
+  }): Promise<void> {
+    this.ensureSchema();
+    const res = await this.getClubLeagueService().settleSubMatchResult({
+      subMatchId: input.subMatchId,
+      matchId: input.matchId,
+      winnerPlayerId: input.winnerPlayerId,
+      reason: input.reason,
+      nowMs: input.completedAtMs,
+    });
+    if (!res.ok) return;
+
+    for (const rid of res.roomsToClose) {
+      await this.closeRoomFromTournament(rid, 'Team match series already clinched.');
+    }
+    this.broadcastClubLeagueUpdate(res.competitionKind, res.competitionId);
+    await this.scheduleNextAlarm();
+  }
+
+  public async clubLeaguesRankings(opts?: { region?: string | null; limit?: number }) {
+    this.ensureSchema();
+    return this.getClubLeagueService().getTeamRankings(opts);
+  }
+
+  private async processClubLeagueTimersInternal(): Promise<void> {
+    try {
+      const res = await this.getClubLeagueService().processDueDeadlines(Date.now());
+      for (const rid of res.roomsToClose) {
+        await this.closeRoomFromTournament(rid, 'Team match deadline expired.');
+      }
+    } catch {
+      // Non-blocking deadline processor
+    }
+  }
+
+  private broadcastClubLeagueUpdate(
+    competitionKind: 'league' | 'club_championship',
+    competitionId: string,
+  ): void {
+    const encoded = JSON.stringify(
+      competitionKind === 'league'
+        ? ({ type: 'club:league_updated', leagueId: competitionId } satisfies ServerToClientMessage)
+        : ({
+            type: 'club:championship_updated',
+            championshipId: competitionId,
+          } satisfies ServerToClientMessage),
+    );
+    for (const ws of this.ctx.getWebSockets()) {
+      const att = this.getAttachment(ws);
+      if (!att.sessionId) continue;
+      try {
+        ws.send(encoded);
+      } catch {
+        // Ignore closed socket
+      }
+    }
+  }
+
   // ===== Phase 14 Spectator & Live Broadcast RPC Methods =====
 
   private parseRoomMetaJson(raw: unknown): {
     players: SpectatableMatchPlayer[];
     tournament: OnlineRoomTournamentContext | null;
+    clubLeague: OnlineRoomClubLeagueContext | null;
   } {
     if (typeof raw !== 'string' || !raw) {
-      return { players: [], tournament: null };
+      return { players: [], tournament: null, clubLeague: null };
     }
     try {
       const parsed = JSON.parse(raw) as {
         players?: SpectatableMatchPlayer[];
         tournament?: OnlineRoomTournamentContext | null;
+        clubLeague?: OnlineRoomClubLeagueContext | null;
       };
       return {
         players: Array.isArray(parsed.players) ? parsed.players : [],
         tournament: parsed.tournament ?? null,
+        clubLeague: parsed.clubLeague ?? null,
       };
     } catch {
-      return { players: [], tournament: null };
+      return { players: [], tournament: null, clubLeague: null };
     }
   }
 
@@ -2503,6 +3332,7 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
         startedAtMs: status === 'playing' ? Number(r.created_at_ms) : null,
         players: meta.players,
         tournament: meta.tournament,
+        clubLeague: meta.clubLeague,
       });
     }
     return results;
@@ -2636,6 +3466,7 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
         startedAtMs: row.status === 'playing' ? Number(row.created_at_ms) : null,
         players: meta.players,
         tournament: meta.tournament,
+        clubLeague: meta.clubLeague,
       },
     };
   }
@@ -5544,6 +6375,15 @@ export class MatchmakerDurableObject extends DurableObject<Env> {
       }
     } catch {
       // Ignore if tournament schema not yet ready
+    }
+
+    try {
+      const clubLeagueDue = await this.getClubLeagueService().getEarliestDueTimestampMs();
+      if (clubLeagueDue !== null) {
+        candidates.push(Math.max(now + 250, clubLeagueDue));
+      }
+    } catch {
+      // Ignore if club league schema not yet ready
     }
 
     if (candidates.length === 0) {

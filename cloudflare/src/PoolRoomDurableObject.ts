@@ -8,6 +8,7 @@ import type {
   OnlineBallFrame,
   OnlineMatchSnapshot,
   OnlinePlayerProfile,
+  OnlineRoomClubLeagueContext,
   OnlineRoomInfo,
   OnlineRoomStatus,
   OnlineRoomTournamentContext,
@@ -90,6 +91,7 @@ interface StoredRoomState {
   players: StoredPlayerRecord[];
   spectators: StoredSpectatorRecord[];
   tournament?: OnlineRoomTournamentContext | null;
+  clubLeague?: OnlineRoomClubLeagueContext | null;
 }
 
 export interface InitRoomPlayerInput {
@@ -139,7 +141,8 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
         spectator_share_token TEXT,
         created_at_ms INTEGER NOT NULL,
         expires_at_ms INTEGER NOT NULL,
-        tournament_json TEXT
+        tournament_json TEXT,
+        club_league_json TEXT
       );
       CREATE TABLE IF NOT EXISTS room_players (
         session_id TEXT PRIMARY KEY,
@@ -193,6 +196,7 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
     `);
     const alterStmts = [
       'ALTER TABLE room_meta ADD COLUMN tournament_json TEXT',
+      'ALTER TABLE room_meta ADD COLUMN club_league_json TEXT',
       'ALTER TABLE room_meta ADD COLUMN match_type TEXT',
       'ALTER TABLE room_meta ADD COLUMN allow_spectators INTEGER NOT NULL DEFAULT 1',
       'ALTER TABLE room_meta ADD COLUMN allow_spectator_chat INTEGER NOT NULL DEFAULT 1',
@@ -238,6 +242,15 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
         }
       }
 
+      let parsedClubLeague: OnlineRoomClubLeagueContext | null = null;
+      if (typeof m.club_league_json === 'string' && m.club_league_json.length > 0) {
+        try {
+          parsedClubLeague = JSON.parse(m.club_league_json) as OnlineRoomClubLeagueContext;
+        } catch {
+          parsedClubLeague = null;
+        }
+      }
+
       const persistedMatchType: OnlineMatchType =
         m.match_type === 'ranked'
           ? 'ranked'
@@ -247,7 +260,7 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
               ? 'private'
               : m.match_type === 'quick'
                 ? 'quick'
-                : parsedTournament
+                : parsedTournament || parsedClubLeague
                   ? 'tournament'
                   : Number(m.is_private) === 1
                     ? 'private'
@@ -287,6 +300,7 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
         createdAtMs: Number(m.created_at_ms),
         expiresAtMs: Number(m.expires_at_ms),
         tournament: parsedTournament,
+        clubLeague: parsedClubLeague,
         players: playerRows.map((p) => {
           let equipped: EquippedCosmetics = { ...DEFAULT_EQUIPPED_COSMETICS };
           if (typeof p.cosmetics_json === 'string' && p.cosmetics_json.length > 0) {
@@ -378,14 +392,18 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
 
     const computedMatchType: OnlineMatchType =
       this.room.matchType ??
-      (this.room.tournament ? 'tournament' : this.room.isPrivate ? 'private' : 'quick');
+      (this.room.tournament || this.room.clubLeague
+        ? 'tournament'
+        : this.room.isPrivate
+          ? 'private'
+          : 'quick');
 
     sql.exec(
       `INSERT OR REPLACE INTO room_meta (
         id, room_id, room_code, host_session_id, is_private, match_type,
         rule_profile_id, called_shots_enabled, status, allow_spectators, allow_spectator_chat,
-        max_spectators, spectator_share_token, created_at_ms, expires_at_ms, tournament_json
-      ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        max_spectators, spectator_share_token, created_at_ms, expires_at_ms, tournament_json, club_league_json
+      ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       this.room.roomId,
       this.room.roomCode,
       this.room.hostSessionId,
@@ -401,6 +419,7 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
       this.room.createdAtMs,
       this.room.expiresAtMs,
       this.room.tournament ? JSON.stringify(this.room.tournament) : null,
+      this.room.clubLeague ? JSON.stringify(this.room.clubLeague) : null,
     );
 
     sql.exec('DELETE FROM room_players');
@@ -759,6 +778,136 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
   }
 
   public async forceCloseTournamentRoom(reason: string): Promise<void> {
+    await this.ensureHydrated();
+    await this.destroyRoom(reason);
+  }
+
+  public async initClubLeagueRoom(params: {
+    roomId: string;
+    roomCode: string;
+    ruleProfileId: RuleProfileId;
+    calledShotsEnabled: boolean;
+    clubLeague: OnlineRoomClubLeagueContext;
+    player1: InitRoomPlayerInput;
+    player2: InitRoomPlayerInput;
+    allowSpectators?: boolean;
+    createdAtMs: number;
+    expiresAtMs: number;
+  }): Promise<OnlineRoomInfo> {
+    await this.ensureHydrated();
+    this.match?.dispose();
+    this.match = null;
+    this.ctx.storage.sql.exec('DELETE FROM match_state');
+    this.ctx.storage.sql.exec('DELETE FROM used_shot_tokens');
+    this.ctx.storage.sql.exec('DELETE FROM room_chat_messages');
+    this.ctx.storage.sql.exec('DELETE FROM room_spectators');
+
+    this.room = {
+      roomId: params.roomId,
+      roomCode: params.roomCode,
+      hostSessionId: params.player1.sessionId,
+      isPrivate: false,
+      matchType: 'tournament',
+      ruleProfileId: params.ruleProfileId,
+      calledShotsEnabled: params.calledShotsEnabled,
+      status: 'waiting',
+      allowSpectators: params.allowSpectators !== false,
+      allowSpectatorChat: true,
+      maxSpectators: this.config.maxSpectatorsPerRoom,
+      spectatorShareToken: randomHexToken(12),
+      createdAtMs: params.createdAtMs,
+      expiresAtMs: params.expiresAtMs,
+      tournament: null,
+      clubLeague: params.clubLeague,
+      players: [
+        {
+          sessionId: params.player1.sessionId,
+          playerId: params.player1.playerId ?? params.player1.sessionId,
+          reconnectToken: params.player1.reconnectToken,
+          displayName: sanitizeDisplayName(params.player1.displayName),
+          avatarId: sanitizeAvatarId(params.player1.avatarId),
+          elo: params.player1.elo,
+          rankTier:
+            params.player1.rankTier ??
+            (params.player1.elo !== undefined ? getRankForElo(params.player1.elo) : undefined),
+          equippedCosmetics: sanitizeEquippedCosmetics(params.player1.equippedCosmetics),
+          role: 'player1',
+          connected: false,
+          ready: false,
+          latencyMs: clampLatency(params.player1.latencyMs),
+          disconnectedAtMs: null,
+          reconnectDeadlineMs: null,
+          rematchRequested: false,
+        },
+        {
+          sessionId: params.player2.sessionId,
+          playerId: params.player2.playerId ?? params.player2.sessionId,
+          reconnectToken: params.player2.reconnectToken,
+          displayName: sanitizeDisplayName(params.player2.displayName),
+          avatarId: sanitizeAvatarId(params.player2.avatarId),
+          elo: params.player2.elo,
+          rankTier:
+            params.player2.rankTier ??
+            (params.player2.elo !== undefined ? getRankForElo(params.player2.elo) : undefined),
+          equippedCosmetics: sanitizeEquippedCosmetics(params.player2.equippedCosmetics),
+          role: 'player2',
+          connected: false,
+          ready: false,
+          latencyMs: clampLatency(params.player2.latencyMs),
+          disconnectedAtMs: null,
+          reconnectDeadlineMs: null,
+          rematchRequested: false,
+        },
+      ],
+      spectators: [],
+    };
+
+    this.persistRoomState();
+    await this.scheduleNextAlarm();
+    return this.toRoomInfo(this.room);
+  }
+
+  public async prepareClubLeaguePlayerSession(
+    playerId: string,
+    input: InitRoomPlayerInput,
+  ): Promise<
+    | { ok: true; room: OnlineRoomInfo }
+    | { ok: false; code: MultiplayerErrorCode; message: string }
+  > {
+    await this.ensureHydrated();
+    if (!this.room || !this.room.clubLeague) {
+      return { ok: false, code: 'INVALID_ROOM', message: 'Club match room no longer exists.' };
+    }
+    const existing = this.room.players.find((p) => p.playerId === playerId);
+    if (!existing) {
+      return {
+        ok: false,
+        code: 'UNAUTHORIZED',
+        message: 'You are not an assigned competitor in this club board match.',
+      };
+    }
+
+    existing.sessionId = input.sessionId;
+    existing.reconnectToken = input.reconnectToken;
+    existing.displayName = sanitizeDisplayName(input.displayName);
+    existing.avatarId = sanitizeAvatarId(input.avatarId);
+    if (input.elo !== undefined) {
+      existing.elo = input.elo;
+      existing.rankTier = input.rankTier ?? getRankForElo(input.elo);
+    }
+    if (input.equippedCosmetics) {
+      existing.equippedCosmetics = sanitizeEquippedCosmetics(input.equippedCosmetics);
+    }
+    existing.latencyMs = clampLatency(input.latencyMs);
+    if (existing.role === 'player1') {
+      this.room.hostSessionId = existing.sessionId;
+    }
+
+    this.persistRoomState();
+    return { ok: true, room: this.toRoomInfo(this.room) };
+  }
+
+  public async forceCloseClubLeagueRoom(reason: string): Promise<void> {
     await this.ensureHydrated();
     await this.destroyRoom(reason);
   }
@@ -1305,22 +1454,30 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
         await this.notifyMatchmakerRoomMeta();
         this.broadcastRoomUpdate(this.room);
         if (
-          this.room.tournament &&
+          (this.room.tournament || this.room.clubLeague) &&
           this.room.players.length === 2 &&
           this.room.players.every((p) => p.ready && p.connected)
         ) {
           await this.initializeAndStartMatch(this.room);
-          await this.getMatchmakerStub().onTournamentMatchStarted(
-            this.room.tournament.tournamentId,
-            this.room.tournament.bracketMatchId,
-          );
+          if (this.room.tournament) {
+            await this.getMatchmakerStub().onTournamentMatchStarted(
+              this.room.tournament.tournamentId,
+              this.room.tournament.bracketMatchId,
+            );
+          } else if (this.room.clubLeague) {
+            await this.getMatchmakerStub().onTeamSubMatchStarted(this.room.clubLeague.subMatchId);
+          }
           await this.scheduleNextAlarm();
         }
         break;
       }
 
       case 'room:start': {
-        if (this.room.hostSessionId !== player.sessionId && !this.room.tournament) {
+        if (
+          this.room.hostSessionId !== player.sessionId &&
+          !this.room.tournament &&
+          !this.room.clubLeague
+        ) {
           this.sendError(ws, 'UNAUTHORIZED', 'Only the room host can start the match.');
           return;
         }
@@ -1342,17 +1499,19 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
             this.room.tournament.tournamentId,
             this.room.tournament.bracketMatchId,
           );
+        } else if (this.room.clubLeague) {
+          await this.getMatchmakerStub().onTeamSubMatchStarted(this.room.clubLeague.subMatchId);
         }
         await this.scheduleNextAlarm();
         break;
       }
 
       case 'room:cancel': {
-        if (this.room.tournament) {
+        if (this.room.tournament || this.room.clubLeague) {
           this.sendError(
             ws,
             'UNAUTHORIZED',
-            'Tournament rooms cannot be cancelled manually. Withdraw or forfeit instead.',
+            'Tournament and club league rooms cannot be cancelled manually. Withdraw or forfeit instead.',
           );
           return;
         }
@@ -1378,11 +1537,11 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
       }
 
       case 'room:rematch': {
-        if (this.room.tournament) {
+        if (this.room.tournament || this.room.clubLeague) {
           this.sendError(
             ws,
             'INVALID_INPUT',
-            'Rematches are disabled in single-elimination tournament matches.',
+            'Rematches are disabled in tournament and club league matches.',
           );
           return;
         }
@@ -2207,6 +2366,22 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
       }
     }
 
+    if (params.roomSnapshot.clubLeague) {
+      const winnerPlayerId =
+        enrichedRecord.winnerRole === 'player1' ? params.p1.playerId : params.p2.playerId;
+      try {
+        await this.getMatchmakerStub().onTeamSubMatchCompleted({
+          subMatchId: params.roomSnapshot.clubLeague.subMatchId,
+          matchId: enrichedRecord.matchId,
+          winnerPlayerId,
+          reason: enrichedRecord.reason,
+          completedAtMs: enrichedRecord.endedAtMs,
+        });
+      } catch {
+        // Non-blocking fallback
+      }
+    }
+
     const currentRoom = this.room ?? params.roomSnapshot;
     currentRoom.status = 'finished';
     this.broadcastToRoom({
@@ -2345,7 +2520,11 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
   private toRoomInfo(room: StoredRoomState, includeShareToken = false): OnlineRoomInfo {
     const matchType: OnlineMatchType =
       room.matchType ??
-      (room.tournament ? 'tournament' : room.isPrivate ? 'private' : 'quick');
+      (room.tournament || room.clubLeague
+        ? 'tournament'
+        : room.isPrivate
+          ? 'private'
+          : 'quick');
     return {
       roomId: room.roomId,
       roomCode: room.roomCode,
@@ -2385,6 +2564,7 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
       createdAtMs: room.createdAtMs,
       expiresAtMs: room.expiresAtMs,
       tournament: room.tournament ?? null,
+      clubLeague: room.clubLeague ?? null,
     };
   }
 
@@ -2734,7 +2914,11 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
         maxSpectators: this.room.maxSpectators,
         matchType:
           this.room.matchType ??
-          (this.room.tournament ? 'tournament' : this.room.isPrivate ? 'private' : 'quick'),
+          (this.room.tournament || this.room.clubLeague
+            ? 'tournament'
+            : this.room.isPrivate
+              ? 'private'
+              : 'quick'),
         ruleProfileId: this.room.ruleProfileId,
         calledShotsEnabled: this.room.calledShotsEnabled,
         players: this.room.players.map((p) => ({
@@ -2746,6 +2930,7 @@ export class PoolRoomDurableObject extends DurableObject<Env> {
           rankTier: p.rankTier,
         })),
         tournament: this.room.tournament ?? null,
+        clubLeague: this.room.clubLeague ?? null,
       });
     } catch {
       // Non-blocking sync

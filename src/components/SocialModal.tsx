@@ -38,6 +38,8 @@ import { multiplayerManager } from '../multiplayer/MultiplayerManager';
 import { socialClient } from '../multiplayer/SocialClient';
 import { getAvatarVisualMeta } from '../multiplayer/shared/economy';
 import {
+  getClubRoleLabel,
+  isClubOfficerRole,
   SOCIAL_LIMITS,
   type ClubEmblemIcon,
   type ClubJoinMode,
@@ -184,6 +186,7 @@ export function SocialModal() {
   const ownProfile = useGameStore((s) => s.ownProfile);
   const onlineRoom = useGameStore((s) => s.onlineRoom);
   const openProgressionModal = useGameStore((s) => s.openProgressionModal);
+  const openClubLeagueModal = useGameStore((s) => s.openClubLeagueModal);
 
   const privacySettings = useGameStore((s) => s.privacySettings);
   const notifications = useGameStore((s) => s.notifications);
@@ -1780,8 +1783,19 @@ export function SocialModal() {
                       </div>
 
                       <div className="flex flex-wrap items-center gap-1.5">
-                        {(clubDetail.viewerRole === 'owner' ||
-                          clubDetail.viewerRole === 'admin') && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            soundEngine.playUiClick();
+                            closeSocialModal();
+                            openClubLeagueModal('teams');
+                          }}
+                          className="inline-flex items-center gap-1 rounded-lg border border-emerald-400/40 bg-emerald-500/15 px-2.5 py-1 text-[11px] font-extrabold text-emerald-200 hover:bg-emerald-500/25 cursor-pointer whitespace-nowrap"
+                        >
+                          <Trophy className="h-3 w-3 text-emerald-400" />
+                          Teams & Leagues
+                        </button>
+                        {isClubOfficerRole(clubDetail.viewerRole) && (
                           <>
                             <button
                               type="button"
@@ -1878,9 +1892,7 @@ export function SocialModal() {
                     </div>
 
                     {/* Officer Settings Drawer */}
-                    {editingClub &&
-                      (clubDetail.viewerRole === 'owner' ||
-                        clubDetail.viewerRole === 'admin') && (
+                    {editingClub && isClubOfficerRole(clubDetail.viewerRole) && (
                         <div className="rounded-xl border border-white/10 bg-[#0b1017] p-3 space-y-2.5">
                           <div className="text-[10px] font-bold uppercase tracking-wider text-amber-400">
                             Update Club Settings
@@ -1965,9 +1977,7 @@ export function SocialModal() {
                       )}
 
                     {/* Club Challenge Creator */}
-                    {challengeModalOpen &&
-                      (clubDetail.viewerRole === 'owner' ||
-                        clubDetail.viewerRole === 'admin') && (
+                    {challengeModalOpen && isClubOfficerRole(clubDetail.viewerRole) && (
                         <div className="rounded-xl border border-amber-400/35 bg-amber-500/8 p-3 space-y-2.5">
                           <div className="flex items-center justify-between">
                             <span className="text-[11px] font-extrabold uppercase tracking-wider text-amber-300">
@@ -2063,7 +2073,7 @@ export function SocialModal() {
                       )}
 
                     {/* Officer Invite Bar */}
-                    {(clubDetail.viewerRole === 'owner' || clubDetail.viewerRole === 'admin') && (
+                    {isClubOfficerRole(clubDetail.viewerRole) && (
                       <div className="flex flex-wrap items-center gap-2 pt-1 border-t border-white/10">
                         <input
                           type="text"
@@ -2110,7 +2120,7 @@ export function SocialModal() {
                   </div>
 
                   {/* Pending Join Requests (Officers) */}
-                  {(clubDetail.viewerRole === 'owner' || clubDetail.viewerRole === 'admin') &&
+                  {isClubOfficerRole(clubDetail.viewerRole) &&
                     clubDetail.joinRequests.length > 0 && (
                       <div className="rounded-xl border border-amber-400/30 bg-amber-500/8 p-3 space-y-2">
                         <div className="text-[10px] font-bold uppercase tracking-wider text-amber-300">
@@ -2178,9 +2188,7 @@ export function SocialModal() {
                       <div className="space-y-1.5">
                         {clubDetail.challenges.map((ch) => {
                           const isTarget = ch.targetClubId === clubDetail.club.clubId;
-                          const isOfficer =
-                            clubDetail.viewerRole === 'owner' ||
-                            clubDetail.viewerRole === 'admin';
+                          const isOfficer = isClubOfficerRole(clubDetail.viewerRole);
                           return (
                             <div
                               key={ch.challengeId}
@@ -2275,11 +2283,20 @@ export function SocialModal() {
                       {clubDetail.members.map((m) => {
                         const isSelf = ownProfile?.playerId === m.playerId;
                         const canManageRole =
-                          clubDetail.viewerRole === 'owner' && !isSelf;
+                          !isSelf &&
+                          (clubDetail.viewerRole === 'owner' ||
+                            (clubDetail.viewerRole === 'president' &&
+                              m.role !== 'owner' &&
+                              m.role !== 'president'));
                         const canKick =
                           !isSelf &&
                           (clubDetail.viewerRole === 'owner' ||
-                            (clubDetail.viewerRole === 'admin' && m.role === 'member'));
+                            (clubDetail.viewerRole === 'president' &&
+                              m.role !== 'owner' &&
+                              m.role !== 'president') ||
+                            ((clubDetail.viewerRole === 'vice_president' ||
+                              clubDetail.viewerRole === 'admin') &&
+                              (m.role === 'member' || m.role === 'captain')));
                         return (
                           <div
                             key={m.playerId}
@@ -2294,12 +2311,14 @@ export function SocialModal() {
                                 className={`rounded px-1.5 py-0.2 text-[9px] font-black uppercase ${
                                   m.role === 'owner'
                                     ? 'bg-amber-500/25 text-amber-300'
-                                    : m.role === 'admin'
+                                    : isClubOfficerRole(m.role)
                                       ? 'bg-sky-500/20 text-sky-300'
-                                      : 'bg-white/10 text-slate-300'
+                                      : m.role === 'captain'
+                                        ? 'bg-emerald-500/20 text-emerald-300'
+                                        : 'bg-white/10 text-slate-300'
                                 }`}
                               >
-                                {m.role}
+                                {getClubRoleLabel(m.role)}
                               </span>
                               <span className="font-mono text-[10px] text-slate-400 tabular-nums">
                                 {m.elo} ELO · {m.wins}W
@@ -2309,40 +2328,45 @@ export function SocialModal() {
                             <div className="flex items-center gap-1">
                               {canManageRole && (
                                 <>
-                                  <button
-                                    type="button"
+                                  <select
+                                    value={m.role === 'admin' ? 'vice_president' : m.role}
                                     disabled={busyActionId === `role:${m.playerId}`}
-                                    onClick={async () => {
+                                    onChange={async (e) => {
                                       setBusyActionId(`role:${m.playerId}`);
-                                      const nextRole: ClubRole =
-                                        m.role === 'admin' ? 'member' : 'admin';
                                       await socialClient.updateClubMemberRole(
                                         clubDetail.club.clubId,
                                         m.playerId,
-                                        nextRole,
+                                        e.target.value as ClubRole,
                                       );
                                       setBusyActionId(null);
                                     }}
-                                    className="rounded border border-white/15 bg-white/5 px-2 py-0.5 text-[10px] font-bold text-slate-200 hover:bg-white/10 cursor-pointer whitespace-nowrap"
+                                    className="rounded border border-white/15 bg-[#0b1017] px-1.5 py-0.5 text-[10px] font-bold text-slate-200 cursor-pointer"
                                   >
-                                    {m.role === 'admin' ? 'Demote' : 'Promote Admin'}
-                                  </button>
-                                  <button
-                                    type="button"
-                                    disabled={busyActionId === `owner:${m.playerId}`}
-                                    onClick={async () => {
-                                      setBusyActionId(`owner:${m.playerId}`);
-                                      await socialClient.updateClubMemberRole(
-                                        clubDetail.club.clubId,
-                                        m.playerId,
-                                        'owner',
-                                      );
-                                      setBusyActionId(null);
-                                    }}
-                                    className="rounded border border-amber-400/35 bg-amber-500/10 px-2 py-0.5 text-[10px] font-bold text-amber-200 hover:bg-amber-500/20 cursor-pointer whitespace-nowrap"
-                                  >
-                                    Make Owner
-                                  </button>
+                                    {clubDetail.viewerRole === 'owner' && (
+                                      <option value="president">President</option>
+                                    )}
+                                    <option value="vice_president">Vice President</option>
+                                    <option value="captain">Captain</option>
+                                    <option value="member">Member</option>
+                                  </select>
+                                  {clubDetail.viewerRole === 'owner' && (
+                                    <button
+                                      type="button"
+                                      disabled={busyActionId === `owner:${m.playerId}`}
+                                      onClick={async () => {
+                                        setBusyActionId(`owner:${m.playerId}`);
+                                        await socialClient.updateClubMemberRole(
+                                          clubDetail.club.clubId,
+                                          m.playerId,
+                                          'owner',
+                                        );
+                                        setBusyActionId(null);
+                                      }}
+                                      className="rounded border border-amber-400/35 bg-amber-500/10 px-2 py-0.5 text-[10px] font-bold text-amber-200 hover:bg-amber-500/20 cursor-pointer whitespace-nowrap"
+                                    >
+                                      Make Owner
+                                    </button>
+                                  )}
                                 </>
                               )}
                               {canKick && (

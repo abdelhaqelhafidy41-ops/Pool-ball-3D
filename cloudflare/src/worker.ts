@@ -810,6 +810,8 @@ export default {
         emblemColor: body.emblemColor,
         emblemIcon: body.emblemIcon,
         joinMode: body.joinMode,
+        region: body.region,
+        maxMembers: body.maxMembers,
       });
       if (!res.ok) {
         return jsonResponse({ error: res.code, message: res.message }, res.status, cors);
@@ -921,8 +923,29 @@ export default {
     }
 
     if (url.pathname.startsWith('/api/clubs/') && request.method === 'GET') {
-      const clubId = decodeURIComponent(url.pathname.slice('/api/clubs/'.length)).trim();
-      if (!clubId || clubId.includes('/')) {
+      const restPath = url.pathname.slice('/api/clubs/'.length);
+      const slashIdx = restPath.indexOf('/');
+      if (slashIdx > 0) {
+        const clubId = decodeURIComponent(restPath.slice(0, slashIdx)).trim();
+        const subAction = restPath.slice(slashIdx + 1);
+        if (subAction === 'chat') {
+          const limit = Number.parseInt(url.searchParams.get('limit') ?? '50', 10) || 50;
+          const messages = await getMatchmakerStub().clubGetChatMessages(clubId, limit);
+          return jsonResponse({ ok: true, messages }, 200, cors);
+        }
+        if (subAction === 'trophies') {
+          const limit = Number.parseInt(url.searchParams.get('limit') ?? '30', 10) || 30;
+          const trophies = await getMatchmakerStub().clubGetTrophies(clubId, limit);
+          return jsonResponse({ ok: true, trophies }, 200, cors);
+        }
+        if (subAction === 'teams') {
+          const teams = await getMatchmakerStub().teamListByClub(clubId);
+          return jsonResponse({ ok: true, teams }, 200, cors);
+        }
+        return jsonResponse({ error: 'NOT_FOUND', message: 'Club resource not found.' }, 404, cors);
+      }
+      const clubId = decodeURIComponent(restPath).trim();
+      if (!clubId) {
         return jsonResponse({ error: 'INVALID_INPUT', message: 'Invalid clubId.' }, 400, cors);
       }
       const viewerId = url.searchParams.get('playerId')?.trim() || null;
@@ -954,6 +977,47 @@ export default {
           emblemColor: body.emblemColor,
           emblemIcon: body.emblemIcon,
           joinMode: body.joinMode,
+          region: body.region,
+          maxMembers: body.maxMembers,
+          announcement: body.announcement,
+        });
+        if (!res.ok) return jsonResponse({ error: res.code, message: res.message }, res.status, cors);
+        return jsonResponse(res, 200, cors);
+      }
+
+      if (subAction === 'chat') {
+        const res = await getMatchmakerStub().clubSendChatMessage(
+          body.playerId,
+          token,
+          clubId,
+          body.body,
+        );
+        if (!res.ok) return jsonResponse({ error: res.code, message: res.message }, res.status, cors);
+        return jsonResponse(res, 200, cors);
+      }
+
+      if (subAction === 'announcement') {
+        const res = await getMatchmakerStub().clubUpdateAnnouncement(
+          body.playerId,
+          token,
+          clubId,
+          body.announcement,
+        );
+        if (!res.ok) return jsonResponse({ error: res.code, message: res.message }, res.status, cors);
+        return jsonResponse(res, 200, cors);
+      }
+
+      if (subAction === 'teams') {
+        const res = await getMatchmakerStub().teamCreate(body.playerId, token, clubId, {
+          name: body.name,
+          tag: body.tag,
+          badgeColor: body.badgeColor,
+          badgeIcon: body.badgeIcon,
+          region: body.region,
+          minRosterSize: body.minRosterSize,
+          maxRosterSize: body.maxRosterSize,
+          captainId: body.captainId,
+          memberIds: body.memberIds,
         });
         if (!res.ok) return jsonResponse({ error: res.code, message: res.message }, res.status, cors);
         return jsonResponse(res, 200, cors);
@@ -1016,10 +1080,15 @@ export default {
 
       if (subAction === 'members/role') {
         const role = body.role;
-        if (
-          typeof body.targetPlayerId !== 'string' ||
-          (role !== 'owner' && role !== 'admin' && role !== 'member')
-        ) {
+        const validRoles = new Set([
+          'owner',
+          'president',
+          'vice_president',
+          'captain',
+          'member',
+          'admin',
+        ]);
+        if (typeof body.targetPlayerId !== 'string' || typeof role !== 'string' || !validRoles.has(role)) {
           return jsonResponse(
             { error: 'INVALID_INPUT', message: 'targetPlayerId and valid role are required.' },
             400,
@@ -1056,6 +1125,437 @@ export default {
       }
 
       return jsonResponse({ error: 'NOT_FOUND', message: 'Unknown club endpoint.' }, 404, cors);
+    }
+
+    // ===== Phase 16 Teams, Team Leagues & Club Championships API =====
+
+    if (url.pathname.startsWith('/api/teams/') && request.method === 'GET') {
+      const teamId = decodeURIComponent(url.pathname.slice('/api/teams/'.length)).trim();
+      if (!teamId || teamId.includes('/')) {
+        return jsonResponse({ error: 'INVALID_INPUT', message: 'Invalid teamId.' }, 400, cors);
+      }
+      const detail = await getMatchmakerStub().teamGetDetail(teamId);
+      if (!detail) {
+        return jsonResponse({ error: 'NOT_FOUND', message: 'Team not found.' }, 404, cors);
+      }
+      return jsonResponse({ ok: true, ...detail }, 200, cors);
+    }
+
+    if (url.pathname.startsWith('/api/teams/') && request.method === 'POST') {
+      const restPath = url.pathname.slice('/api/teams/'.length);
+      const slashIdx = restPath.indexOf('/');
+      if (slashIdx <= 0) {
+        return jsonResponse({ error: 'NOT_FOUND', message: 'Team action not found.' }, 404, cors);
+      }
+      const teamId = decodeURIComponent(restPath.slice(0, slashIdx)).trim();
+      const subAction = restPath.slice(slashIdx + 1);
+      const body = await readJsonBody(request);
+      if (!body || typeof body.playerId !== 'string') {
+        return jsonResponse({ error: 'INVALID_INPUT', message: 'playerId is required.' }, 400, cors);
+      }
+      const token = extractBearerToken(request, body);
+
+      if (subAction === 'members') {
+        if (typeof body.targetPlayerId !== 'string') {
+          return jsonResponse({ error: 'INVALID_INPUT', message: 'targetPlayerId is required.' }, 400, cors);
+        }
+        const res = await getMatchmakerStub().teamAddMember(
+          body.playerId,
+          token,
+          teamId,
+          body.targetPlayerId,
+          body.role,
+        );
+        if (!res.ok) return jsonResponse({ error: res.code, message: res.message }, res.status, cors);
+        return jsonResponse(res, 200, cors);
+      }
+
+      if (subAction === 'members/remove') {
+        if (typeof body.targetPlayerId !== 'string') {
+          return jsonResponse({ error: 'INVALID_INPUT', message: 'targetPlayerId is required.' }, 400, cors);
+        }
+        const res = await getMatchmakerStub().teamRemoveMember(
+          body.playerId,
+          token,
+          teamId,
+          body.targetPlayerId,
+        );
+        if (!res.ok) return jsonResponse({ error: res.code, message: res.message }, res.status, cors);
+        return jsonResponse(res, 200, cors);
+      }
+
+      if (subAction === 'members/role') {
+        if (typeof body.targetPlayerId !== 'string' || typeof body.role !== 'string') {
+          return jsonResponse(
+            { error: 'INVALID_INPUT', message: 'targetPlayerId and role are required.' },
+            400,
+            cors,
+          );
+        }
+        const res = await getMatchmakerStub().teamSetMemberRole(
+          body.playerId,
+          token,
+          teamId,
+          body.targetPlayerId,
+          body.role,
+        );
+        if (!res.ok) return jsonResponse({ error: res.code, message: res.message }, res.status, cors);
+        return jsonResponse(res, 200, cors);
+      }
+
+      return jsonResponse({ error: 'NOT_FOUND', message: 'Unknown team endpoint.' }, 404, cors);
+    }
+
+    if (url.pathname === '/api/team-leagues' && request.method === 'GET') {
+      const leagues = await getMatchmakerStub().leagueList({
+        scope: url.searchParams.get('scope'),
+        region: url.searchParams.get('region'),
+        status: url.searchParams.get('status'),
+      });
+      return jsonResponse({ ok: true, leagues }, 200, cors);
+    }
+
+    if (url.pathname === '/api/team-leagues' && request.method === 'POST') {
+      const body = await readJsonBody(request);
+      if (!body || typeof body.playerId !== 'string') {
+        return jsonResponse({ error: 'INVALID_INPUT', message: 'playerId is required.' }, 400, cors);
+      }
+      const token = extractBearerToken(request, body);
+      const res = await getMatchmakerStub().leagueCreate(body.playerId, token, {
+        title: body.title,
+        description: body.description,
+        scope: body.scope,
+        region: body.region,
+        cadence: body.cadence,
+        divisionTier: body.divisionTier,
+        seasonLabel: body.seasonLabel,
+        matchFormat: body.matchFormat,
+        ruleProfileId: body.ruleProfileId,
+        calledShotsEnabled: body.calledShotsEnabled,
+        doubleRoundRobin: body.doubleRoundRobin,
+        maxTeams: body.maxTeams,
+        promotionSlots: body.promotionSlots,
+        relegationSlots: body.relegationSlots,
+        matchDurationMinutes: body.matchDurationMinutes,
+      });
+      if (!res.ok) return jsonResponse({ error: res.code, message: res.message }, res.status, cors);
+      return jsonResponse(res, 200, cors);
+    }
+
+    if (url.pathname.startsWith('/api/team-leagues/') && request.method === 'GET') {
+      const leagueId = decodeURIComponent(url.pathname.slice('/api/team-leagues/'.length)).trim();
+      if (!leagueId || leagueId.includes('/')) {
+        return jsonResponse({ error: 'INVALID_INPUT', message: 'Invalid leagueId.' }, 400, cors);
+      }
+      const viewerId = url.searchParams.get('playerId')?.trim() || null;
+      const detail = await getMatchmakerStub().leagueGetDetail(leagueId, viewerId);
+      if (!detail) {
+        return jsonResponse({ error: 'NOT_FOUND', message: 'Team league not found.' }, 404, cors);
+      }
+      return jsonResponse({ ok: true, detail }, 200, cors);
+    }
+
+    if (url.pathname.startsWith('/api/team-leagues/') && request.method === 'POST') {
+      const restPath = url.pathname.slice('/api/team-leagues/'.length);
+      const slashIdx = restPath.indexOf('/');
+      if (slashIdx <= 0) {
+        return jsonResponse({ error: 'NOT_FOUND', message: 'League action not found.' }, 404, cors);
+      }
+      const leagueId = decodeURIComponent(restPath.slice(0, slashIdx)).trim();
+      const subAction = restPath.slice(slashIdx + 1);
+      const body = await readJsonBody(request);
+      if (!body || typeof body.playerId !== 'string') {
+        return jsonResponse({ error: 'INVALID_INPUT', message: 'playerId is required.' }, 400, cors);
+      }
+      const token = extractBearerToken(request, body);
+
+      if (subAction === 'register') {
+        if (typeof body.teamId !== 'string') {
+          return jsonResponse({ error: 'INVALID_INPUT', message: 'teamId is required.' }, 400, cors);
+        }
+        const res = await getMatchmakerStub().leagueRegisterTeam(
+          body.playerId,
+          token,
+          leagueId,
+          body.teamId,
+        );
+        if (!res.ok) return jsonResponse({ error: res.code, message: res.message }, res.status, cors);
+        return jsonResponse(res, 200, cors);
+      }
+
+      if (subAction === 'withdraw') {
+        if (typeof body.teamId !== 'string') {
+          return jsonResponse({ error: 'INVALID_INPUT', message: 'teamId is required.' }, 400, cors);
+        }
+        const res = await getMatchmakerStub().leagueWithdrawTeam(
+          body.playerId,
+          token,
+          leagueId,
+          body.teamId,
+        );
+        if (!res.ok) return jsonResponse({ error: res.code, message: res.message }, res.status, cors);
+        return jsonResponse(res, 200, cors);
+      }
+
+      if (subAction === 'start') {
+        const res = await getMatchmakerStub().leagueStart(body.playerId, token, leagueId);
+        if (!res.ok) return jsonResponse({ error: res.code, message: res.message }, res.status, cors);
+        return jsonResponse(res, 200, cors);
+      }
+
+      if (subAction === 'resolve') {
+        if (
+          typeof body.encounterId !== 'string' ||
+          typeof body.winnerTeamId !== 'string' ||
+          (body.resolution !== 'walkover' && body.resolution !== 'disqualified')
+        ) {
+          return jsonResponse(
+            { error: 'INVALID_INPUT', message: 'encounterId, winnerTeamId, and resolution are required.' },
+            400,
+            cors,
+          );
+        }
+        const res = await getMatchmakerStub().championshipResolveEncounter(
+          body.playerId,
+          token,
+          'league',
+          leagueId,
+          body.encounterId,
+          {
+            winnerTeamId: body.winnerTeamId,
+            resolution: body.resolution,
+            reason: typeof body.reason === 'string' ? body.reason : undefined,
+          },
+        );
+        if (!res.ok) return jsonResponse({ error: res.code, message: res.message }, res.status, cors);
+        return jsonResponse(res, 200, cors);
+      }
+
+      return jsonResponse({ error: 'NOT_FOUND', message: 'Unknown league endpoint.' }, 404, cors);
+    }
+
+    if (url.pathname === '/api/club-championships' && request.method === 'GET') {
+      const championships = await getMatchmakerStub().championshipList({
+        format: url.searchParams.get('format'),
+        region: url.searchParams.get('region'),
+        status: url.searchParams.get('status'),
+      });
+      return jsonResponse({ ok: true, championships }, 200, cors);
+    }
+
+    if (url.pathname === '/api/club-championships' && request.method === 'POST') {
+      const body = await readJsonBody(request);
+      if (!body || typeof body.playerId !== 'string') {
+        return jsonResponse({ error: 'INVALID_INPUT', message: 'playerId is required.' }, 400, cors);
+      }
+      const token = extractBearerToken(request, body);
+      const res = await getMatchmakerStub().championshipCreate(body.playerId, token, {
+        title: body.title,
+        description: body.description,
+        format: body.format,
+        region: body.region,
+        seasonLabel: body.seasonLabel,
+        matchFormat: body.matchFormat,
+        ruleProfileId: body.ruleProfileId,
+        calledShotsEnabled: body.calledShotsEnabled,
+        maxTeams: body.maxTeams,
+        swissRounds: body.swissRounds,
+        groupSize: body.groupSize,
+        groupAdvanceCount: body.groupAdvanceCount,
+        prizeCoinsChampion: body.prizeCoinsChampion,
+      });
+      if (!res.ok) return jsonResponse({ error: res.code, message: res.message }, res.status, cors);
+      return jsonResponse(res, 200, cors);
+    }
+
+    if (url.pathname.startsWith('/api/club-championships/') && request.method === 'GET') {
+      const championshipId = decodeURIComponent(
+        url.pathname.slice('/api/club-championships/'.length),
+      ).trim();
+      if (!championshipId || championshipId.includes('/')) {
+        return jsonResponse({ error: 'INVALID_INPUT', message: 'Invalid championshipId.' }, 400, cors);
+      }
+      const viewerId = url.searchParams.get('playerId')?.trim() || null;
+      const detail = await getMatchmakerStub().championshipGetDetail(championshipId, viewerId);
+      if (!detail) {
+        return jsonResponse(
+          { error: 'NOT_FOUND', message: 'Club championship not found.' },
+          404,
+          cors,
+        );
+      }
+      return jsonResponse({ ok: true, detail }, 200, cors);
+    }
+
+    if (url.pathname.startsWith('/api/club-championships/') && request.method === 'POST') {
+      const restPath = url.pathname.slice('/api/club-championships/'.length);
+      const slashIdx = restPath.indexOf('/');
+      if (slashIdx <= 0) {
+        return jsonResponse(
+          { error: 'NOT_FOUND', message: 'Championship action not found.' },
+          404,
+          cors,
+        );
+      }
+      const championshipId = decodeURIComponent(restPath.slice(0, slashIdx)).trim();
+      const subAction = restPath.slice(slashIdx + 1);
+      const body = await readJsonBody(request);
+      if (!body || typeof body.playerId !== 'string') {
+        return jsonResponse({ error: 'INVALID_INPUT', message: 'playerId is required.' }, 400, cors);
+      }
+      const token = extractBearerToken(request, body);
+
+      if (subAction === 'register') {
+        if (typeof body.teamId !== 'string') {
+          return jsonResponse({ error: 'INVALID_INPUT', message: 'teamId is required.' }, 400, cors);
+        }
+        const res = await getMatchmakerStub().championshipRegisterTeam(
+          body.playerId,
+          token,
+          championshipId,
+          body.teamId,
+        );
+        if (!res.ok) return jsonResponse({ error: res.code, message: res.message }, res.status, cors);
+        return jsonResponse(res, 200, cors);
+      }
+
+      if (subAction === 'withdraw') {
+        if (typeof body.teamId !== 'string') {
+          return jsonResponse({ error: 'INVALID_INPUT', message: 'teamId is required.' }, 400, cors);
+        }
+        const res = await getMatchmakerStub().championshipWithdrawTeam(
+          body.playerId,
+          token,
+          championshipId,
+          body.teamId,
+        );
+        if (!res.ok) return jsonResponse({ error: res.code, message: res.message }, res.status, cors);
+        return jsonResponse(res, 200, cors);
+      }
+
+      if (subAction === 'start') {
+        const res = await getMatchmakerStub().championshipStart(
+          body.playerId,
+          token,
+          championshipId,
+        );
+        if (!res.ok) return jsonResponse({ error: res.code, message: res.message }, res.status, cors);
+        return jsonResponse(res, 200, cors);
+      }
+
+      if (subAction === 'resolve') {
+        if (
+          typeof body.encounterId !== 'string' ||
+          typeof body.winnerTeamId !== 'string' ||
+          (body.resolution !== 'walkover' && body.resolution !== 'disqualified')
+        ) {
+          return jsonResponse(
+            {
+              error: 'INVALID_INPUT',
+              message: 'encounterId, winnerTeamId, and resolution are required.',
+            },
+            400,
+            cors,
+          );
+        }
+        const res = await getMatchmakerStub().championshipResolveEncounter(
+          body.playerId,
+          token,
+          'club_championship',
+          championshipId,
+          body.encounterId,
+          {
+            winnerTeamId: body.winnerTeamId,
+            resolution: body.resolution,
+            reason: typeof body.reason === 'string' ? body.reason : undefined,
+          },
+        );
+        if (!res.ok) return jsonResponse({ error: res.code, message: res.message }, res.status, cors);
+        return jsonResponse(res, 200, cors);
+      }
+
+      return jsonResponse({ error: 'NOT_FOUND', message: 'Unknown championship endpoint.' }, 404, cors);
+    }
+
+    if (url.pathname === '/api/club-competitions/lineup' && request.method === 'POST') {
+      const body = await readJsonBody(request);
+      if (
+        !body ||
+        typeof body.playerId !== 'string' ||
+        (body.competitionKind !== 'league' && body.competitionKind !== 'club_championship') ||
+        typeof body.competitionId !== 'string' ||
+        typeof body.encounterId !== 'string' ||
+        typeof body.teamId !== 'string' ||
+        !Array.isArray(body.playerIds)
+      ) {
+        return jsonResponse(
+          { error: 'INVALID_INPUT', message: 'Valid competitionKind, competitionId, encounterId, teamId, and playerIds are required.' },
+          400,
+          cors,
+        );
+      }
+      const token = extractBearerToken(request, body);
+      const res = await getMatchmakerStub().encounterSubmitLineup(body.playerId, token, {
+        competitionKind: body.competitionKind,
+        competitionId: body.competitionId,
+        encounterId: body.encounterId,
+        teamId: body.teamId,
+        playerIds: body.playerIds.filter((id): id is string => typeof id === 'string'),
+      });
+      if (!res.ok) return jsonResponse({ error: res.code, message: res.message }, res.status, cors);
+      return jsonResponse(res, 200, cors);
+    }
+
+    if (url.pathname === '/api/club-competitions/substitute' && request.method === 'POST') {
+      const body = await readJsonBody(request);
+      if (
+        !body ||
+        typeof body.playerId !== 'string' ||
+        typeof body.subMatchId !== 'string' ||
+        typeof body.teamId !== 'string' ||
+        typeof body.newPlayerId !== 'string'
+      ) {
+        return jsonResponse(
+          { error: 'INVALID_INPUT', message: 'playerId, subMatchId, teamId, and newPlayerId are required.' },
+          400,
+          cors,
+        );
+      }
+      const token = extractBearerToken(request, body);
+      const res = await getMatchmakerStub().encounterSubstituteSlot(body.playerId, token, {
+        subMatchId: body.subMatchId,
+        teamId: body.teamId,
+        newPlayerId: body.newPlayerId,
+      });
+      if (!res.ok) return jsonResponse({ error: res.code, message: res.message }, res.status, cors);
+      return jsonResponse(res, 200, cors);
+    }
+
+    if (url.pathname === '/api/club-competitions/submatches/join' && request.method === 'POST') {
+      const body = await readJsonBody(request);
+      if (!body || typeof body.playerId !== 'string' || typeof body.subMatchId !== 'string') {
+        return jsonResponse(
+          { error: 'INVALID_INPUT', message: 'playerId and subMatchId are required.' },
+          400,
+          cors,
+        );
+      }
+      const token = extractBearerToken(request, body);
+      const res = await getMatchmakerStub().subMatchJoin(
+        body.playerId,
+        token,
+        body.subMatchId,
+        typeof body.sessionId === 'string' ? body.sessionId : undefined,
+      );
+      if (!res.ok) return jsonResponse({ error: res.code, message: res.message }, res.status, cors);
+      return jsonResponse(res, 200, cors);
+    }
+
+    if (url.pathname === '/api/rankings/clubs-teams' && request.method === 'GET') {
+      const region = url.searchParams.get('region') ?? 'ALL';
+      const limit = Number.parseInt(url.searchParams.get('limit') ?? '30', 10) || 30;
+      const rankings = await getMatchmakerStub().clubLeaguesRankings({ region, limit });
+      return jsonResponse({ ok: true, ...rankings }, 200, cors);
     }
 
     // ===== Phase 8 In-Game Store, Currency & Cosmetic Inventory API =====

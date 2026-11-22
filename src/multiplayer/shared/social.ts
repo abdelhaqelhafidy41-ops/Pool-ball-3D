@@ -56,7 +56,14 @@ export const SOCIAL_LIMITS = {
   maxDmHistory: 60,
   maxRoomChatHistory: 80,
   maxNotifications: 100,
-  maxClubMembers: 50,
+  maxClubMembers: 100,
+  defaultClubCapacity: 50,
+  minClubCapacity: 10,
+  clubChatMaxLength: 240,
+  clubAnnouncementMaxLength: 280,
+  maxTeamsPerClub: 8,
+  minTeamRoster: 1,
+  maxTeamRoster: 10,
 } as const;
 
 export interface FriendRoomAvailability {
@@ -167,7 +174,9 @@ export type NotificationType =
   | 'club_join_request'
   | 'private_message'
   | 'club_challenge'
-  | 'tournament_event';
+  | 'tournament_event'
+  | 'team_league_event'
+  | 'club_championship_event';
 
 export interface SocialNotificationRecord {
   notificationId: string;
@@ -184,7 +193,97 @@ export interface SocialNotificationRecord {
   expiresAtMs: number | null;
 }
 
-export type ClubRole = 'owner' | 'admin' | 'member';
+export type ClubRole =
+  | 'owner'
+  | 'president'
+  | 'vice_president'
+  | 'captain'
+  | 'member'
+  | 'admin';
+
+export const CLUB_ROLE_RANK: Record<ClubRole, number> = {
+  owner: 5,
+  president: 4,
+  vice_president: 3,
+  admin: 3,
+  captain: 2,
+  member: 1,
+};
+
+export function normalizeClubRole(raw: unknown): ClubRole {
+  switch (raw) {
+    case 'owner':
+    case 'president':
+    case 'vice_president':
+    case 'captain':
+    case 'admin':
+    case 'member':
+      return raw;
+    default:
+      return 'member';
+  }
+}
+
+export function isClubOfficerRole(role: ClubRole | null | undefined): boolean {
+  return (
+    role === 'owner' ||
+    role === 'president' ||
+    role === 'vice_president' ||
+    role === 'admin'
+  );
+}
+
+export function canManageClubTeams(role: ClubRole | null | undefined): boolean {
+  return isClubOfficerRole(role) || role === 'captain';
+}
+
+export function getClubRoleLabel(role: ClubRole): string {
+  switch (role) {
+    case 'owner':
+      return 'Owner';
+    case 'president':
+      return 'President';
+    case 'vice_president':
+    case 'admin':
+      return 'Vice President';
+    case 'captain':
+      return 'Captain';
+    case 'member':
+    default:
+      return 'Member';
+  }
+}
+
+export function calculateClubLevelFromXp(rawXp: number): {
+  level: number;
+  xp: number;
+  xpIntoLevel: number;
+  xpForNextLevel: number;
+} {
+  const xp = Math.max(0, Math.floor(Number.isFinite(rawXp) ? rawXp : 0));
+  let level = 1;
+  let remaining = xp;
+  while (level < 100) {
+    const req = 250 + (level - 1) * 150;
+    if (remaining < req) {
+      return {
+        level,
+        xp,
+        xpIntoLevel: remaining,
+        xpForNextLevel: req,
+      };
+    }
+    remaining -= req;
+    level += 1;
+  }
+  return {
+    level: 100,
+    xp,
+    xpIntoLevel: remaining,
+    xpForNextLevel: 250 + 99 * 150,
+  };
+}
+
 export type ClubJoinMode = 'public' | 'approval';
 export type ClubEmblemIcon = 'shield' | 'crown' | 'flame' | 'star' | 'swords' | 'target';
 export type ClubLeaderboardScope = 'global' | 'weekly' | 'seasonal';
@@ -206,6 +305,16 @@ export interface ClubRecord {
   emblemIcon: ClubEmblemIcon;
   joinMode: ClubJoinMode;
   ownerId: string;
+  region?: string;
+  maxMembers?: number;
+  level?: number;
+  xp?: number;
+  xpIntoLevel?: number;
+  xpForNextLevel?: number;
+  announcement?: string;
+  announcementUpdatedAtMs?: number | null;
+  leagueTitles?: number;
+  championshipTitles?: number;
   memberCount: number;
   totalWins: number;
   totalMatches: number;
@@ -314,12 +423,38 @@ export interface ClubChallengeRecord {
   completedAtMs: number | null;
 }
 
+export interface ClubChatMessageRecord {
+  messageId: string;
+  clubId: string;
+  senderId: string;
+  senderName: string;
+  senderAvatar: OnlineAvatarId;
+  senderRole: ClubRole;
+  body: string;
+  createdAtMs: number;
+}
+
+export interface ClubTrophyRecord {
+  trophyId: string;
+  clubId: string;
+  teamId?: string | null;
+  teamName?: string | null;
+  competitionKind: 'league' | 'club_championship' | 'challenge';
+  competitionId: string;
+  title: string;
+  tier: 'champion' | 'runner_up' | 'promoted' | 'milestone';
+  seasonLabel: string;
+  awardedAtMs: number;
+}
+
 export interface ClubDetailPayload {
   club: ClubRecord;
   members: ClubMemberRecord[];
   recentActivity: ClubActivityRecord[];
   joinRequests: ClubJoinRequestRecord[];
   challenges: ClubChallengeRecord[];
+  chatMessages?: ClubChatMessageRecord[];
+  trophies?: ClubTrophyRecord[];
   viewerRole: ClubRole | null;
   viewerHasPendingRequest: boolean;
 }

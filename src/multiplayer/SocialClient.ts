@@ -4,6 +4,7 @@ import { getStoredPlayerIdentity, progressionClient, resolveProgressionApiBase, 
 import type { OnlineRoomInfo } from './shared/protocol';
 import type {
   ClubChallengeRecord,
+  ClubChatMessageRecord,
   ClubDetailPayload,
   ClubEmblemIcon,
   ClubJoinMode,
@@ -11,6 +12,7 @@ import type {
   ClubLeaderboardScope,
   ClubRecord,
   ClubRole,
+  ClubTrophyRecord,
   DirectMessageRecord,
   FriendRecord,
   FriendRequestAction,
@@ -680,6 +682,8 @@ class SocialClientImpl {
     emblemColor?: string;
     emblemIcon?: ClubEmblemIcon;
     joinMode?: ClubJoinMode;
+    region?: string;
+    maxMembers?: number;
   }): Promise<ApiResult<ClubDetailPayload>> {
     const creds = await this.ensureCredentials();
     if (!creds) return { ok: false, error: 'Player session not initialized.' };
@@ -716,6 +720,9 @@ class SocialClientImpl {
       emblemColor?: string;
       emblemIcon?: ClubEmblemIcon;
       joinMode?: ClubJoinMode;
+      region?: string;
+      maxMembers?: number;
+      announcement?: string;
     },
   ): Promise<ApiResult<ClubDetailPayload>> {
     const creds = await this.ensureCredentials();
@@ -1019,6 +1026,90 @@ class SocialClientImpl {
       return { ok: true, data: json.challenge };
     } catch {
       return { ok: false, error: 'Network error responding to club challenge.' };
+    }
+  }
+
+  public async fetchClubChat(clubId: string, limit = 50): Promise<ClubChatMessageRecord[]> {
+    try {
+      const { ok, json } = await this.requestJson<{ messages: ClubChatMessageRecord[] }>(
+        `/api/clubs/${encodeURIComponent(clubId)}/chat?limit=${encodeURIComponent(String(limit))}`,
+      );
+      const messages = ok && Array.isArray(json.messages) ? json.messages : [];
+      useGameStore.getState().setClubChatMessages(messages);
+      return messages;
+    } catch {
+      return [];
+    }
+  }
+
+  public async sendClubChat(
+    clubId: string,
+    body: string,
+  ): Promise<ApiResult<ClubChatMessageRecord>> {
+    const creds = await this.ensureCredentials();
+    if (!creds) return { ok: false, error: 'Player session not initialized.' };
+    try {
+      const { ok, json } = await this.requestJson<{ message: ClubChatMessageRecord }>(
+        `/api/clubs/${encodeURIComponent(clubId)}/chat`,
+        {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${creds.playerToken}` },
+          body: JSON.stringify({ playerId: creds.playerId, body }),
+        },
+      );
+      if (!ok || !json.message) {
+        return {
+          ok: false,
+          code: json.error,
+          error: json.message ?? 'Unable to post club chat message.',
+        };
+      }
+      useGameStore.getState().appendClubChatMessage(json.message);
+      return { ok: true, data: json.message };
+    } catch {
+      return { ok: false, error: 'Network error posting club chat message.' };
+    }
+  }
+
+  public async updateClubAnnouncement(
+    clubId: string,
+    announcement: string,
+  ): Promise<ApiResult<ClubDetailPayload>> {
+    const creds = await this.ensureCredentials();
+    if (!creds) return { ok: false, error: 'Player session not initialized.' };
+    try {
+      const { ok, json } = await this.requestJson<{ detail: ClubDetailPayload }>(
+        `/api/clubs/${encodeURIComponent(clubId)}/announcement`,
+        {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${creds.playerToken}` },
+          body: JSON.stringify({ playerId: creds.playerId, announcement }),
+        },
+      );
+      if (!ok || !json.detail) {
+        return {
+          ok: false,
+          code: json.error,
+          error: json.message ?? 'Unable to update announcement.',
+        };
+      }
+      useGameStore.getState().setClubDetail(json.detail);
+      return { ok: true, data: json.detail };
+    } catch {
+      return { ok: false, error: 'Network error updating club announcement.' };
+    }
+  }
+
+  public async fetchClubTrophies(clubId: string, limit = 30): Promise<ClubTrophyRecord[]> {
+    try {
+      const { ok, json } = await this.requestJson<{ trophies: ClubTrophyRecord[] }>(
+        `/api/clubs/${encodeURIComponent(clubId)}/trophies?limit=${encodeURIComponent(String(limit))}`,
+      );
+      const trophies = ok && Array.isArray(json.trophies) ? json.trophies : [];
+      useGameStore.getState().setClubTrophies(trophies);
+      return trophies;
+    } catch {
+      return [];
     }
   }
 }

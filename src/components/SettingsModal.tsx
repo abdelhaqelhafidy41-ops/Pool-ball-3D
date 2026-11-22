@@ -1,13 +1,10 @@
-import { Cpu, Music, RotateCcw, Sparkles, Trash2, Users, Volume2, VolumeX, X } from 'lucide-react';
-import { AI_DIFFICULTY_PROFILES } from '../game/ai/AIDifficultyConfig';
+import { Cpu, Globe, Music, RotateCcw, Sparkles, Trash2, Users, Volume2, VolumeX, X } from 'lucide-react';
 import { computeAverageBallsPerTurn } from '../game/rules/MatchStatistics';
 import type { AiDifficulty, AiThinkingSpeed } from '../game/rules/types';
 import { FELT_PALETTES } from '../game/utils/constants';
-import {
-  GRAPHICS_QUALITY_PROFILES,
-  type GraphicsQuality,
-} from '../game/utils/graphicsQuality';
+import type { GraphicsQuality } from '../game/utils/graphicsQuality';
 import { soundEngine } from '../game/utils/SoundEngine';
+import { localizeAiDifficulty, useTranslation } from '../i18n';
 import { useGameStore, type FeltTheme } from '../store/useGameStore';
 
 interface SettingsModalProps {
@@ -16,6 +13,8 @@ interface SettingsModalProps {
 }
 
 export function SettingsModal({ onRestartMatch, onResetAllStats }: SettingsModalProps) {
+  const { t, lang, setLanguage, formatNumber } = useTranslation();
+
   const settingsOpen = useGameStore((s) => s.settingsOpen);
   const setSettingsOpen = useGameStore((s) => s.setSettingsOpen);
   const soundEnabled = useGameStore((s) => s.soundEnabled);
@@ -46,18 +45,38 @@ export function SettingsModal({ onRestartMatch, onResetAllStats }: SettingsModal
     setSettingsOpen(false);
   };
 
+  const getGraphicsShortLabel = (tier: GraphicsQuality) => {
+    if (tier === 'low') return t('settings.graphicsTierLowShort');
+    if (tier === 'high') return t('settings.graphicsTierHighShort');
+    return t('settings.graphicsTierMediumShort');
+  };
+
+  const getGraphicsDesc = (tier: GraphicsQuality) => {
+    if (tier === 'low') return t('settings.graphicsTierLowDesc');
+    if (tier === 'high') return t('settings.graphicsTierHighDesc');
+    return t('settings.graphicsTierMediumDesc');
+  };
+
+  const getFeltLabel = (key: FeltTheme) => {
+    if (key === 'championshipBlue') return t('settings.feltTournamentBlue');
+    if (key === 'burgundyClub') return t('settings.feltRoyalBurgundy');
+    return t('settings.feltEmerald');
+  };
+
+  const activeAi = localizeAiDifficulty(matchConfig.aiDifficulty, lang);
+
   return (
     <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/65 p-4">
       <div className="w-full max-w-md max-h-[92dvh] modal-scroll-y rounded-2xl border border-white/15 bg-[#0f161f] p-5 sm:p-6 shadow-2xl text-slate-100">
         <div className="flex items-center justify-between border-b border-white/10 pb-3.5">
           <div>
-            <h2 className="text-lg font-bold tracking-wide text-white">Game & Match Settings</h2>
-            <p className="text-xs text-slate-400">Rules, table finish, camera & audio</p>
+            <h2 className="text-lg font-bold tracking-wide text-white">{t('settings.title')}</h2>
+            <p className="text-xs text-slate-400">{t('settings.subtitle')}</p>
           </div>
           <button
             type="button"
             onClick={close}
-            aria-label="Close settings"
+            aria-label={t('common.close')}
             className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-white/10 bg-white/5 text-slate-300 hover:bg-white/10 cursor-pointer"
           >
             <X className="h-4 w-4" />
@@ -65,11 +84,57 @@ export function SettingsModal({ onRestartMatch, onResetAllStats }: SettingsModal
         </div>
 
         <div className="mt-4 space-y-5">
+          {/* Language Selector Section */}
+          <div
+            className="space-y-2 rounded-xl border border-amber-400/25 bg-amber-500/[0.06] p-3.5"
+            data-testid="settings-language-selector"
+          >
+            <div className="flex items-center justify-between gap-2">
+              <span className="inline-flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-amber-300">
+                <Globe className="h-3.5 w-3.5 text-amber-400" />
+                {t('settings.languageSectionTitle')}
+              </span>
+            </div>
+            <p className="text-[11px] text-slate-400">{t('settings.languageSectionDesc')}</p>
+            <div className="grid grid-cols-2 gap-2 pt-0.5">
+              <button
+                type="button"
+                data-testid="settings-lang-ar"
+                onClick={() => {
+                  soundEngine.playUiClick();
+                  setLanguage('ar');
+                }}
+                className={`min-h-[40px] rounded-xl border px-3 py-2 text-xs font-bold transition-colors cursor-pointer ${
+                  lang === 'ar'
+                    ? 'border-amber-400 bg-amber-500 text-slate-950'
+                    : 'border-white/10 bg-white/5 text-slate-200 hover:bg-white/10'
+                }`}
+              >
+                {t('meta.switchToArabic')}
+              </button>
+              <button
+                type="button"
+                data-testid="settings-lang-en"
+                onClick={() => {
+                  soundEngine.playUiClick();
+                  setLanguage('en');
+                }}
+                className={`min-h-[40px] rounded-xl border px-3 py-2 text-xs font-bold transition-colors cursor-pointer ${
+                  lang === 'en'
+                    ? 'border-amber-400 bg-amber-500 text-slate-950'
+                    : 'border-white/10 bg-white/5 text-slate-200 hover:bg-white/10'
+                }`}
+              >
+                {t('meta.switchToEnglish')}
+              </button>
+            </div>
+          </div>
+
           {/* Match Rules Section (locked during active online match) */}
           {!(screen === 'playing' && matchConfig.opponentType === 'online') && (
             <div className="space-y-2.5">
               <span className="block text-xs font-semibold uppercase tracking-wider text-slate-400">
-                8-Ball Match Rules
+                {t('settings.rulesSectionTitle')}
               </span>
 
               <div className="grid grid-cols-2 gap-2">
@@ -79,14 +144,14 @@ export function SettingsModal({ onRestartMatch, onResetAllStats }: SettingsModal
                     soundEngine.playUiClick();
                     updateMatchConfig({ ruleProfileId: 'casual', calledShotsEnabled: false });
                   }}
-                  className={`rounded-xl border px-3 py-2 text-left transition-colors cursor-pointer ${
+                  className={`rounded-xl border px-3 py-2 text-start transition-colors cursor-pointer ${
                     matchConfig.ruleProfileId === 'casual'
                       ? 'border-amber-400 bg-amber-500/12 text-white'
                       : 'border-white/10 bg-white/5 text-slate-300 hover:bg-white/10'
                   }`}
                 >
-                  <div className="text-xs font-bold">Standard Casual</div>
-                  <div className="text-[10px] text-slate-400">Auto group · Anywhere BIH</div>
+                  <div className="text-xs font-bold">{t('menu.ruleCasual')}</div>
+                  <div className="text-[10px] text-slate-400">{t('menu.ruleCasualShortDesc')}</div>
                 </button>
                 <button
                   type="button"
@@ -94,22 +159,24 @@ export function SettingsModal({ onRestartMatch, onResetAllStats }: SettingsModal
                     soundEngine.playUiClick();
                     updateMatchConfig({ ruleProfileId: 'wpa', calledShotsEnabled: true });
                   }}
-                  className={`rounded-xl border px-3 py-2 text-left transition-colors cursor-pointer ${
+                  className={`rounded-xl border px-3 py-2 text-start transition-colors cursor-pointer ${
                     matchConfig.ruleProfileId === 'wpa'
                       ? 'border-amber-400 bg-amber-500/12 text-white'
                       : 'border-white/10 bg-white/5 text-slate-300 hover:bg-white/10'
                   }`}
                 >
-                  <div className="text-xs font-bold">Strict Called (WPA)</div>
-                  <div className="text-[10px] text-slate-400">Call pocket · Kitchen break</div>
+                  <div className="text-xs font-bold">{t('menu.ruleWpa')}</div>
+                  <div className="text-[10px] text-slate-400">{t('menu.ruleWpaShortDesc')}</div>
                 </button>
               </div>
 
-              <label className="flex items-center justify-between rounded-xl border border-white/10 bg-white/5 px-3.5 py-2.5 cursor-pointer">
+              <label className="flex items-center justify-between gap-2 rounded-xl border border-white/10 bg-white/5 px-3.5 py-2.5 cursor-pointer">
                 <div>
-                  <span className="block text-sm text-slate-200">Require Called Shots & Pockets</span>
+                  <span className="block text-sm text-slate-200">
+                    {t('settings.requireCalledShotsLabel')}
+                  </span>
                   <span className="block text-[11px] text-slate-400">
-                    Target ball & pocket must match on open/group/8-ball shots
+                    {t('settings.requireCalledShotsDesc')}
                   </span>
                 </div>
                 <input
@@ -118,12 +185,14 @@ export function SettingsModal({ onRestartMatch, onResetAllStats }: SettingsModal
                   onChange={(e) =>
                     updateMatchConfig({ calledShotsEnabled: e.target.checked })
                   }
-                  className="h-4 w-4 accent-amber-500 cursor-pointer shrink-0 ml-2"
+                  className="h-4 w-4 accent-amber-500 cursor-pointer shrink-0"
                 />
               </label>
 
               <div className="flex items-center justify-between rounded-xl border border-white/10 bg-white/5 px-3.5 py-2">
-                <span className="text-xs font-semibold text-slate-300">Starting Breaker</span>
+                <span className="text-xs font-semibold text-slate-300">
+                  {t('settings.startingBreakerLabel')}
+                </span>
                 <div className="flex items-center gap-1">
                   {(['player1', 'player2'] as const).map((pid) => (
                     <button
@@ -139,7 +208,11 @@ export function SettingsModal({ onRestartMatch, onResetAllStats }: SettingsModal
                           : 'bg-black/30 text-slate-300 hover:text-white'
                       }`}
                     >
-                      {pid === 'player1' ? 'Player 1' : matchConfig.opponentType === 'ai' ? 'CPU' : 'Player 2'}
+                      {pid === 'player1'
+                        ? t('common.player1')
+                        : matchConfig.opponentType === 'ai'
+                          ? t('settings.cpuShort')
+                          : t('common.player2')}
                     </button>
                   ))}
                 </div>
@@ -156,7 +229,7 @@ export function SettingsModal({ onRestartMatch, onResetAllStats }: SettingsModal
                   className="flex w-full items-center justify-center gap-2 rounded-xl border border-amber-400/40 bg-amber-500/12 px-3.5 py-2 text-xs font-bold uppercase tracking-wider text-amber-300 hover:bg-amber-500/20 transition-colors cursor-pointer"
                 >
                   <RotateCcw className="h-3.5 w-3.5" />
-                  Apply Rules & Restart Match
+                  {t('settings.applyRulesRestartButton')}
                 </button>
               )}
             </div>
@@ -166,7 +239,7 @@ export function SettingsModal({ onRestartMatch, onResetAllStats }: SettingsModal
           {!(screen === 'playing' && matchConfig.opponentType === 'online') && (
             <div className="space-y-2.5">
               <span className="block text-xs font-semibold uppercase tracking-wider text-slate-400">
-                Opponent & AI Settings
+                {t('settings.opponentAiSectionTitle')}
               </span>
 
               {/* Opponent Type: Human / AI */}
@@ -184,7 +257,7 @@ export function SettingsModal({ onRestartMatch, onResetAllStats }: SettingsModal
                   }`}
                 >
                   <Users className="h-3.5 w-3.5" />
-                  Human (Local PvP)
+                  {t('menu.modeLocal')}
                 </button>
                 <button
                   type="button"
@@ -199,21 +272,22 @@ export function SettingsModal({ onRestartMatch, onResetAllStats }: SettingsModal
                   }`}
                 >
                   <Cpu className="h-3.5 w-3.5" />
-                  AI Opponent
+                  {t('settings.aiSettingsTitle')}
                 </button>
               </div>
 
               {/* AI Difficulty */}
               <div>
                 <div className="flex items-center justify-between mb-1.5">
-                  <span className="text-[11px] font-semibold text-slate-300">AI Difficulty</span>
-                  <span className="text-[10px] text-amber-300">
-                    {AI_DIFFICULTY_PROFILES[matchConfig.aiDifficulty].label}
+                  <span className="text-[11px] font-semibold text-slate-300">
+                    {t('settings.aiDifficultyTitle')}
                   </span>
+                  <span className="text-[10px] text-amber-300">{activeAi.label}</span>
                 </div>
                 <div className="grid grid-cols-4 gap-1.5">
                   {(['beginner', 'intermediate', 'pro', 'legend'] as AiDifficulty[]).map((lvl) => {
                     const active = matchConfig.aiDifficulty === lvl;
+                    const prof = localizeAiDifficulty(lvl, lang);
                     return (
                       <button
                         key={lvl}
@@ -228,25 +302,25 @@ export function SettingsModal({ onRestartMatch, onResetAllStats }: SettingsModal
                             : 'border-white/10 bg-white/5 text-slate-300 hover:bg-white/10'
                         }`}
                       >
-                        {AI_DIFFICULTY_PROFILES[lvl].label}
+                        {prof.label}
                       </button>
                     );
                   })}
                 </div>
-                <p className="mt-1 text-[10px] text-slate-400">
-                  {AI_DIFFICULTY_PROFILES[matchConfig.aiDifficulty].tagline}
-                </p>
+                <p className="mt-1 text-[10px] text-slate-400">{activeAi.tagline}</p>
               </div>
 
               {/* AI Thinking Time */}
               <div className="flex items-center justify-between rounded-xl border border-white/10 bg-white/5 px-3.5 py-2">
-                <span className="text-xs font-semibold text-slate-300">AI Thinking Time</span>
+                <span className="text-xs font-semibold text-slate-300">
+                  {t('settings.aiThinkingSpeedTitle')}
+                </span>
                 <div className="flex items-center gap-1">
                   {(
                     [
-                      { id: 'fast', label: 'Fast' },
-                      { id: 'normal', label: 'Normal' },
-                      { id: 'realistic', label: 'Realistic' },
+                      { id: 'fast', label: t('settings.aiSpeedFast') },
+                      { id: 'normal', label: t('settings.aiSpeedNormal') },
+                      { id: 'realistic', label: t('settings.aiSpeedDeliberate') },
                     ] as Array<{ id: AiThinkingSpeed; label: string }>
                   ).map((opt) => (
                     <button
@@ -268,11 +342,13 @@ export function SettingsModal({ onRestartMatch, onResetAllStats }: SettingsModal
                 </div>
               </div>
 
-              <label className="flex items-center justify-between rounded-xl border border-white/10 bg-white/5 px-3.5 py-2.5 cursor-pointer">
+              <label className="flex items-center justify-between gap-2 rounded-xl border border-white/10 bg-white/5 px-3.5 py-2.5 cursor-pointer">
                 <div>
-                  <span className="block text-sm text-slate-200">AI Aiming Guide</span>
+                  <span className="block text-sm text-slate-200">
+                    {t('settings.aiAimGuideLabel')}
+                  </span>
                   <span className="block text-[11px] text-slate-400">
-                    Show predicted shot path while AI lines up
+                    {t('settings.aiAimGuideDesc')}
                   </span>
                 </div>
                 <input
@@ -281,7 +357,7 @@ export function SettingsModal({ onRestartMatch, onResetAllStats }: SettingsModal
                   onChange={(e) =>
                     updateMatchConfig({ showAiAimGuide: e.target.checked })
                   }
-                  className="h-4 w-4 accent-amber-500 cursor-pointer shrink-0 ml-2"
+                  className="h-4 w-4 accent-amber-500 cursor-pointer shrink-0"
                 />
               </label>
             </div>
@@ -290,7 +366,7 @@ export function SettingsModal({ onRestartMatch, onResetAllStats }: SettingsModal
           {/* Felt Theme */}
           <div>
             <span className="block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-2">
-              Billiards Cloth Finish
+              {t('settings.tableFeltLabel')}
             </span>
             <div className="grid grid-cols-3 gap-2">
               {(Object.keys(FELT_PALETTES) as FeltTheme[]).map((key) => {
@@ -315,7 +391,7 @@ export function SettingsModal({ onRestartMatch, onResetAllStats }: SettingsModal
                       style={{ backgroundColor: palette.base }}
                     />
                     <span className="text-[11px] font-medium leading-tight">
-                      {palette.label.replace(' ', '\n')}
+                      {getFeltLabel(key)}
                     </span>
                   </button>
                 );
@@ -328,15 +404,16 @@ export function SettingsModal({ onRestartMatch, onResetAllStats }: SettingsModal
             <div className="flex items-center justify-between gap-2">
               <span className="inline-flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-slate-400">
                 <Sparkles className="h-3.5 w-3.5 text-amber-400" />
-                Graphics Quality
+                {t('settings.graphicsQualityTitle')}
               </span>
               <span className="text-[10px] text-slate-400">
-                Recommended: {GRAPHICS_QUALITY_PROFILES[autoRecommendedQuality].label}
+                {t('settings.graphicsRecommendedFormat', {
+                  tier: getGraphicsShortLabel(autoRecommendedQuality),
+                })}
               </span>
             </div>
             <div className="grid grid-cols-3 gap-2">
               {(['low', 'medium', 'high'] as GraphicsQuality[]).map((tier) => {
-                const profile = GRAPHICS_QUALITY_PROFILES[tier];
                 const active = settings.graphicsQuality === tier;
                 const isRecommended = autoRecommendedQuality === tier;
                 return (
@@ -357,10 +434,10 @@ export function SettingsModal({ onRestartMatch, onResetAllStats }: SettingsModal
                         : 'border-white/10 bg-white/5 text-slate-300 hover:bg-white/10'
                     }`}
                   >
-                    <span className="text-xs font-bold">{profile.label}</span>
+                    <span className="text-xs font-bold">{getGraphicsShortLabel(tier)}</span>
                     {isRecommended && (
                       <span className="mt-0.5 text-[9px] font-semibold uppercase tracking-wider text-amber-300">
-                        Recommended
+                        {t('settings.graphicsRecommendedBadge')}
                       </span>
                     )}
                   </button>
@@ -368,7 +445,9 @@ export function SettingsModal({ onRestartMatch, onResetAllStats }: SettingsModal
               })}
             </div>
             <p className="text-[11px] text-slate-400">
-              {GRAPHICS_QUALITY_PROFILES[settings.graphicsQuality].description}. Physics & rules remain identical across presets.
+              {t('settings.graphicsPhysicsNote', {
+                desc: getGraphicsDesc(settings.graphicsQuality),
+              })}
             </p>
           </div>
 
@@ -376,7 +455,7 @@ export function SettingsModal({ onRestartMatch, onResetAllStats }: SettingsModal
           <div className="space-y-3 rounded-xl border border-white/10 bg-white/[0.03] p-3.5" data-testid="audio-controls-section">
             <div className="flex items-center justify-between gap-2">
               <span className="text-xs font-semibold uppercase tracking-wider text-slate-400">
-                Audio & Lounge Mix
+                {t('settings.audioSectionTitle')}
               </span>
               <button
                 type="button"
@@ -389,12 +468,12 @@ export function SettingsModal({ onRestartMatch, onResetAllStats }: SettingsModal
                 {soundEnabled ? (
                   <>
                     <Volume2 className="h-3.5 w-3.5 text-amber-400" />
-                    Master On
+                    {t('settings.masterOn')}
                   </>
                 ) : (
                   <>
                     <VolumeX className="h-3.5 w-3.5 text-slate-400" />
-                    Master Muted
+                    {t('settings.masterMuted')}
                   </>
                 )}
               </button>
@@ -403,14 +482,14 @@ export function SettingsModal({ onRestartMatch, onResetAllStats }: SettingsModal
             {/* Master Volume */}
             <div className="space-y-1">
               <div className="flex items-center justify-between text-[11px]">
-                <span className="text-slate-300 font-medium">Master Volume</span>
-                <span className="font-mono tabular-nums text-amber-300">
+                <span className="text-slate-300 font-medium">{t('settings.masterVolume')}</span>
+                <span dir="ltr" className="font-mono tabular-nums text-amber-300">
                   {Math.round(soundVolume * 100)}%
                 </span>
               </div>
               <input
                 type="range"
-                aria-label="Master Volume"
+                aria-label={t('settings.masterVolume')}
                 min={0}
                 max={1}
                 step={0.05}
@@ -427,10 +506,10 @@ export function SettingsModal({ onRestartMatch, onResetAllStats }: SettingsModal
             {/* SFX Volume & Mute */}
             <div className="space-y-1 pt-1 border-t border-white/10">
               <div className="flex items-center justify-between text-[11px]">
-                <span className="text-slate-300 font-medium">Table SFX (Balls, Cue, Pockets)</span>
+                <span className="text-slate-300 font-medium">{t('settings.sfxVolumeLabel')}</span>
                 <div className="flex items-center gap-2">
                   <span className="font-mono tabular-nums text-slate-300">
-                    {sfxMuted ? 'Muted' : `${Math.round(sfxVolume * 100)}%`}
+                    {sfxMuted ? t('settings.mutedLabel') : `${Math.round(sfxVolume * 100)}%`}
                   </span>
                   <button
                     type="button"
@@ -440,13 +519,13 @@ export function SettingsModal({ onRestartMatch, onResetAllStats }: SettingsModal
                     }}
                     className="rounded border border-white/10 bg-white/5 px-2 py-0.5 text-[10px] font-semibold text-slate-200 hover:bg-white/10 cursor-pointer"
                   >
-                    {sfxMuted ? 'Unmute' : 'Mute'}
+                    {sfxMuted ? t('settings.unmuteShort') : t('settings.muteShort')}
                   </button>
                 </div>
               </div>
               <input
                 type="range"
-                aria-label="SFX Volume"
+                aria-label={t('settings.sfxVolume')}
                 min={0}
                 max={1}
                 step={0.05}
@@ -465,11 +544,11 @@ export function SettingsModal({ onRestartMatch, onResetAllStats }: SettingsModal
               <div className="flex items-center justify-between text-[11px]">
                 <span className="inline-flex items-center gap-1 text-slate-300 font-medium">
                   <Music className="h-3 w-3 text-amber-300" />
-                  Lounge Ambience
+                  {t('settings.musicVolumeLabel')}
                 </span>
                 <div className="flex items-center gap-2">
                   <span className="font-mono tabular-nums text-slate-300">
-                    {musicMuted ? 'Muted' : `${Math.round(musicVolume * 100)}%`}
+                    {musicMuted ? t('settings.mutedLabel') : `${Math.round(musicVolume * 100)}%`}
                   </span>
                   <button
                     type="button"
@@ -479,13 +558,13 @@ export function SettingsModal({ onRestartMatch, onResetAllStats }: SettingsModal
                     }}
                     className="rounded border border-white/10 bg-white/5 px-2 py-0.5 text-[10px] font-semibold text-slate-200 hover:bg-white/10 cursor-pointer"
                   >
-                    {musicMuted ? 'Unmute' : 'Mute'}
+                    {musicMuted ? t('settings.unmuteShort') : t('settings.muteShort')}
                   </button>
                 </div>
               </div>
               <input
                 type="range"
-                aria-label="Music Volume"
+                aria-label={t('settings.musicVolume')}
                 min={0}
                 max={1}
                 step={0.05}
@@ -504,15 +583,15 @@ export function SettingsModal({ onRestartMatch, onResetAllStats }: SettingsModal
           <div className="space-y-2">
             <div className="flex items-center justify-between">
               <span className="text-xs font-semibold uppercase tracking-wider text-slate-400">
-                Camera Sensitivity
+                {t('settings.cameraSensitivityLabel')}
               </span>
-              <span className="text-xs font-mono tabular-nums text-amber-400">
+              <span dir="ltr" className="text-xs font-mono tabular-nums text-amber-400">
                 {settings.cameraSensitivity.toFixed(1)}x
               </span>
             </div>
             <input
               type="range"
-              aria-label="Camera Sensitivity"
+              aria-label={t('settings.cameraSensitivityLabel')}
               min={0.4}
               max={2.0}
               step={0.1}
@@ -527,7 +606,7 @@ export function SettingsModal({ onRestartMatch, onResetAllStats }: SettingsModal
           {/* Visual & Diagnostics Toggles */}
           <div className="grid grid-cols-1 gap-2.5 pt-1">
             <label className="flex min-h-[44px] items-center justify-between rounded-xl border border-white/10 bg-white/5 px-3.5 py-2.5 cursor-pointer">
-              <span className="text-sm text-slate-200">Dynamic Table & Ball Shadows</span>
+              <span className="text-sm text-slate-200">{t('settings.dynamicShadowsLabel')}</span>
               <input
                 type="checkbox"
                 checked={settings.shadowsEnabled}
@@ -536,7 +615,7 @@ export function SettingsModal({ onRestartMatch, onResetAllStats }: SettingsModal
               />
             </label>
             <label className="flex min-h-[44px] items-center justify-between rounded-xl border border-white/10 bg-white/5 px-3.5 py-2.5 cursor-pointer">
-              <span className="text-sm text-slate-200">Cue Aim Trajectory Guide</span>
+              <span className="text-sm text-slate-200">{t('settings.aimGuideLabel')}</span>
               <input
                 type="checkbox"
                 checked={settings.showAimGuide}
@@ -545,7 +624,7 @@ export function SettingsModal({ onRestartMatch, onResetAllStats }: SettingsModal
               />
             </label>
             <label className="flex min-h-[44px] items-center justify-between rounded-xl border border-white/10 bg-white/5 px-3.5 py-2.5 cursor-pointer">
-              <span className="text-sm text-slate-200">Show FPS Indicator</span>
+              <span className="text-sm text-slate-200">{t('settings.showFpsLabel')}</span>
               <input
                 type="checkbox"
                 checked={settings.showFps}
@@ -553,18 +632,20 @@ export function SettingsModal({ onRestartMatch, onResetAllStats }: SettingsModal
                 className="h-4 w-4 accent-amber-500 cursor-pointer"
               />
             </label>
-            <label className="flex min-h-[44px] items-center justify-between rounded-xl border border-white/10 bg-white/5 px-3.5 py-2.5 cursor-pointer">
+            <label className="flex min-h-[44px] items-center justify-between gap-2 rounded-xl border border-white/10 bg-white/5 px-3.5 py-2.5 cursor-pointer">
               <div>
-                <span className="block text-sm text-slate-200">Performance Diagnostics Overlay</span>
+                <span className="block text-sm text-slate-200">
+                  {t('settings.perfOverlayLabel')}
+                </span>
                 <span className="block text-[11px] text-slate-400">
-                  Shows FPS, frame ms, draw calls, triangles & VFX count
+                  {t('settings.perfOverlayDesc')}
                 </span>
               </div>
               <input
                 type="checkbox"
                 checked={settings.showDiagnostics}
                 onChange={(e) => updateSettings({ showDiagnostics: e.target.checked })}
-                className="h-4 w-4 accent-amber-500 cursor-pointer shrink-0 ml-2"
+                className="h-4 w-4 accent-amber-500 cursor-pointer shrink-0"
               />
             </label>
           </div>
@@ -573,7 +654,7 @@ export function SettingsModal({ onRestartMatch, onResetAllStats }: SettingsModal
           <div className="rounded-xl border border-white/10 bg-black/30 p-3">
             <div className="flex items-center justify-between">
               <span className="text-xs font-semibold uppercase tracking-wider text-slate-400">
-                Career Statistics
+                {t('settings.careerStatsTitle')}
               </span>
               <button
                 type="button"
@@ -584,37 +665,48 @@ export function SettingsModal({ onRestartMatch, onResetAllStats }: SettingsModal
                 className="inline-flex items-center gap-1 text-[11px] font-semibold text-slate-400 hover:text-rose-400 cursor-pointer"
               >
                 <Trash2 className="h-3 w-3" />
-                Reset
+                {t('settings.careerResetBtn')}
               </button>
             </div>
             <div className="mt-2 grid grid-cols-3 gap-2 text-center font-mono tabular-nums">
               <div>
-                <div className="text-xs font-bold text-white">{matchStats.totalShots}</div>
-                <div className="text-[10px] text-slate-400">Shots</div>
+                <div className="text-xs font-bold text-white">
+                  {formatNumber(matchStats.totalShots)}
+                </div>
+                <div className="text-[10px] text-slate-400">{t('hud.shotsLabel')}</div>
               </div>
               <div>
-                <div className="text-xs font-bold text-white">{matchStats.ballsPocketed}</div>
-                <div className="text-[10px] text-slate-400">Pocketed</div>
+                <div className="text-xs font-bold text-white">
+                  {formatNumber(matchStats.ballsPocketed)}
+                </div>
+                <div className="text-[10px] text-slate-400">{t('matchEnd.ballsPocketedLabel')}</div>
               </div>
               <div>
-                <div className="text-xs font-bold text-amber-300">{matchStats.successfulBreaks}</div>
-                <div className="text-[10px] text-slate-400">Breaks</div>
+                <div className="text-xs font-bold text-amber-300">
+                  {formatNumber(matchStats.successfulBreaks)}
+                </div>
+                <div className="text-[10px] text-slate-400">{t('settings.statBreaks')}</div>
               </div>
               <div>
-                <div className="text-xs font-bold text-rose-400">{matchStats.fouls}</div>
-                <div className="text-[10px] text-slate-400">Fouls</div>
+                <div className="text-xs font-bold text-rose-400">
+                  {formatNumber(matchStats.fouls)}
+                </div>
+                <div className="text-[10px] text-slate-400">{t('hud.foulsLabel')}</div>
               </div>
               <div>
                 <div className="text-xs font-bold text-emerald-400">
-                  {matchStats.wins}W–{matchStats.losses}L
+                  {t('menu.statsWinsLosses', {
+                    wins: formatNumber(matchStats.wins),
+                    losses: formatNumber(matchStats.losses),
+                  })}
                 </div>
-                <div className="text-[10px] text-slate-400">Matches</div>
+                <div className="text-[10px] text-slate-400">{t('settings.statMatches')}</div>
               </div>
               <div>
                 <div className="text-xs font-bold text-white">
                   {computeAverageBallsPerTurn(matchStats).toFixed(2)}
                 </div>
-                <div className="text-[10px] text-slate-400">Avg/Turn</div>
+                <div className="text-[10px] text-slate-400">{t('settings.statAvgTurn')}</div>
               </div>
             </div>
           </div>
@@ -626,7 +718,7 @@ export function SettingsModal({ onRestartMatch, onResetAllStats }: SettingsModal
             onClick={close}
             className="rounded-xl bg-amber-500 px-5 py-2 text-sm font-bold text-slate-950 hover:bg-amber-400 transition-colors cursor-pointer"
           >
-            Done
+            {t('settings.doneButton')}
           </button>
         </div>
       </div>

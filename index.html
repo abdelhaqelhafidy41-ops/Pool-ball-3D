@@ -1,14 +1,33 @@
 <!doctype html>
-<html lang="en">
+<html lang="ar" dir="rtl">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-    <title>ULTIMATE POOL 3D</title>
-    <meta name="description" content="A realistic 3D American pool billiards game built with Three.js, Rapier3D physics, and React." />
-    <meta property="og:title" content="ULTIMATE POOL 3D" />
-    <meta property="og:description" content="A realistic 3D American pool billiards game built with Three.js, Rapier3D physics, and React." />
+    <title>البلياردو ثلاثي الأبعاد — ULTIMATE POOL 3D</title>
+    <meta name="description" content="لعبة بلياردو ثلاثية الأبعاد واقعية بفيزياء دقيقة ودعم كامل للعب أونلاين والبطولات والدوريات." />
+    <meta property="og:title" content="البلياردو ثلاثي الأبعاد — ULTIMATE POOL 3D" />
+    <meta property="og:description" content="لعبة بلياردو ثلاثية الأبعاد واقعية بفيزياء دقيقة ودعم كامل للعب أونلاين والبطولات والدوريات." />
     <meta property="og:type" content="website" />
     <meta name="twitter:card" content="summary_large_image" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700;800;900&family=Tajawal:wght@400;500;700;800&display=swap" rel="stylesheet" />
+    <script>
+      (function () {
+        try {
+          var lang = localStorage.getItem('ultimate_pool_3d_language_v1');
+          var resolved = lang === 'en' ? 'en' : 'ar';
+          document.documentElement.lang = resolved;
+          document.documentElement.dir = resolved === 'ar' ? 'rtl' : 'ltr';
+          if (resolved === 'en') {
+            document.title = 'ULTIMATE POOL 3D';
+          }
+        } catch (e) {
+          document.documentElement.lang = 'ar';
+          document.documentElement.dir = 'rtl';
+        }
+      })();
+    </script>
   </head>
   <body class="bg-[#090d11] text-slate-100 antialiased overflow-hidden select-none">
     <div id="root"></div>

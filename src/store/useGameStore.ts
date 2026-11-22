@@ -44,11 +44,13 @@ import {
   DEFAULT_PRIVACY_SETTINGS,
   type BlockedPlayerRecord,
   type ClubChallengeRecord,
+  type ClubChatMessageRecord,
   type ClubDetailPayload,
   type ClubInvitationRecord,
   type ClubLeaderboardEntry,
   type ClubLeaderboardScope,
   type ClubRecord,
+  type ClubTrophyRecord,
   type DirectMessageRecord,
   type FriendRecord,
   type FriendRequestRecord,
@@ -60,6 +62,14 @@ import {
   type SocialNotificationRecord,
   type SocialOverviewPayload,
 } from '../multiplayer/shared/social';
+import type {
+  ClubChampionshipDetailPayload,
+  ClubChampionshipRecord,
+  ClubTeamRecord,
+  TeamEloRankingsPayload,
+  TeamLeagueDetailPayload,
+  TeamLeagueRecord,
+} from '../multiplayer/shared/clubLeagues';
 import {
   COSMETIC_CATALOG,
   DEFAULT_EQUIPPED_COSMETICS,
@@ -94,6 +104,13 @@ import {
   sanitizeGraphicsQuality,
   type GraphicsQuality,
 } from '../game/utils/graphicsQuality';
+import {
+  applyDocumentLocale,
+  getInitialLanguage,
+  normalizeLanguage,
+  persistLanguage,
+  type AppLanguage,
+} from '../i18n/core';
 
 const PROFILE_STORAGE_KEY = 'ultimate_pool_3d_online_profile_v1';
 const COSMETICS_STORAGE_KEY = 'ultimate_pool_3d_cosmetics_v1';
@@ -335,6 +352,8 @@ export type StoreTab = 'store' | 'inventory' | 'daily' | 'ledger';
 export type StoreCategoryFilter = 'all' | CosmeticCategory;
 export type TournamentTab = 'discover' | 'bracket' | 'leaderboard' | 'career' | 'admin';
 export type BattlePassTab = 'pass' | 'daily' | 'weekly' | 'stats';
+export type ClubLeagueTab = 'club_hq' | 'teams' | 'leagues' | 'championships' | 'rankings';
+export type ClubLeagueLanguage = AppLanguage;
 
 export type ProgressionNotificationKind =
   | 'mission_completed'
@@ -409,6 +428,7 @@ export interface OnlineOpponentStatus {
 }
 
 export interface GameState {
+  language: AppLanguage;
   screen: GameScreen;
   settingsOpen: boolean;
   isLoading: boolean;
@@ -609,7 +629,24 @@ export interface GameState {
   lastAiBattlePassClaim: AiMatchProgressResponse | null;
   progressionNotifications: ProgressionNotificationItem[];
 
+  // Phase 16 Professional Club Championships & Team Leagues
+  clubLeagueModalOpen: boolean;
+  clubLeagueTab: ClubLeagueTab;
+  clubLeagueLanguage: ClubLeagueLanguage;
+  clubTeams: ClubTeamRecord[];
+  clubChatMessages: ClubChatMessageRecord[];
+  clubTrophies: ClubTrophyRecord[];
+  teamLeagues: TeamLeagueRecord[];
+  selectedLeagueId: string | null;
+  selectedLeagueDetail: TeamLeagueDetailPayload | null;
+  clubChampionships: ClubChampionshipRecord[];
+  selectedChampionshipId: string | null;
+  selectedChampionshipDetail: ClubChampionshipDetailPayload | null;
+  teamEloRankings: TeamEloRankingsPayload | null;
+  clubLeagueNotice: { type: 'ok' | 'err'; text: string } | null;
+
   // Actions
+  setLanguage: (language: AppLanguage) => void;
   setScreen: (screen: GameScreen) => void;
   setSettingsOpen: (open: boolean) => void;
   setLoading: (loading: boolean) => void;
@@ -819,6 +856,24 @@ export interface GameState {
     item: Omit<ProgressionNotificationItem, 'id' | 'createdAtMs'>,
   ) => void;
   dismissProgressionNotification: (id: string) => void;
+
+  // Phase 16 Club League & Team Championship Actions
+  openClubLeagueModal: (tab?: ClubLeagueTab) => void;
+  closeClubLeagueModal: () => void;
+  setClubLeagueTab: (tab: ClubLeagueTab) => void;
+  setClubLeagueLanguage: (lang: ClubLeagueLanguage) => void;
+  setClubTeams: (teams: ClubTeamRecord[]) => void;
+  setClubChatMessages: (messages: ClubChatMessageRecord[]) => void;
+  appendClubChatMessage: (message: ClubChatMessageRecord) => void;
+  setClubTrophies: (trophies: ClubTrophyRecord[]) => void;
+  setTeamLeagues: (leagues: TeamLeagueRecord[]) => void;
+  setSelectedLeagueId: (leagueId: string | null) => void;
+  setSelectedLeagueDetail: (detail: TeamLeagueDetailPayload | null) => void;
+  setClubChampionships: (championships: ClubChampionshipRecord[]) => void;
+  setSelectedChampionshipId: (championshipId: string | null) => void;
+  setSelectedChampionshipDetail: (detail: ClubChampionshipDetailPayload | null) => void;
+  setTeamEloRankings: (rankings: TeamEloRankingsPayload | null) => void;
+  setClubLeagueNotice: (notice: { type: 'ok' | 'err'; text: string } | null) => void;
 }
 
 export function canLocalPlayerAct(state: GameState): boolean {
@@ -853,8 +908,10 @@ function clampCueSpin(x: number, y: number): CueSpin {
 const INITIAL_RECOMMENDED_QUALITY = detectRecommendedQuality();
 const INITIAL_AUDIO_PREFS = loadSavedAudioPrefs();
 const INITIAL_GRAPHICS_PREFS = loadSavedGraphicsPrefs(INITIAL_RECOMMENDED_QUALITY);
+const INITIAL_LANGUAGE = getInitialLanguage();
 
 export const useGameStore = create<GameState>((set) => ({
+  language: INITIAL_LANGUAGE,
   screen: 'menu',
   settingsOpen: false,
   isLoading: true,
@@ -1068,6 +1125,27 @@ export const useGameStore = create<GameState>((set) => ({
   lastAiBattlePassClaim: null,
   progressionNotifications: [],
 
+  clubLeagueModalOpen: false,
+  clubLeagueTab: 'club_hq',
+  clubLeagueLanguage: INITIAL_LANGUAGE,
+  clubTeams: [],
+  clubChatMessages: [],
+  clubTrophies: [],
+  teamLeagues: [],
+  selectedLeagueId: null,
+  selectedLeagueDetail: null,
+  clubChampionships: [],
+  selectedChampionshipId: null,
+  selectedChampionshipDetail: null,
+  teamEloRankings: null,
+  clubLeagueNotice: null,
+
+  setLanguage: (nextLang) => {
+    const safe = normalizeLanguage(nextLang);
+    persistLanguage(safe);
+    applyDocumentLocale(safe);
+    set({ language: safe, clubLeagueLanguage: safe });
+  },
   setScreen: (screen) => set({ screen }),
   setSettingsOpen: (settingsOpen) => set({ settingsOpen }),
   setLoading: (isLoading) => set({ isLoading }),
@@ -1987,4 +2065,73 @@ export const useGameStore = create<GameState>((set) => ({
     set((state) => ({
       progressionNotifications: state.progressionNotifications.filter((n) => n.id !== id),
     })),
+
+  openClubLeagueModal: (tab) =>
+    set((state) => ({
+      clubLeagueModalOpen: true,
+      clubLeagueTab: tab ?? state.clubLeagueTab,
+      clubLeagueNotice: null,
+    })),
+  closeClubLeagueModal: () => set({ clubLeagueModalOpen: false, clubLeagueNotice: null }),
+  setClubLeagueTab: (clubLeagueTab) => set({ clubLeagueTab, clubLeagueNotice: null }),
+  setClubLeagueLanguage: (clubLeagueLanguage) => {
+    const safe = normalizeLanguage(clubLeagueLanguage);
+    persistLanguage(safe);
+    applyDocumentLocale(safe);
+    set({ language: safe, clubLeagueLanguage: safe });
+  },
+  setClubTeams: (clubTeams) => set({ clubTeams }),
+  setClubChatMessages: (clubChatMessages) => set({ clubChatMessages }),
+  appendClubChatMessage: (message) =>
+    set((state) => {
+      if (state.clubChatMessages.some((m) => m.messageId === message.messageId)) {
+        return state;
+      }
+      return {
+        clubChatMessages: [...state.clubChatMessages, message].slice(-80),
+      };
+    }),
+  setClubTrophies: (clubTrophies) => set({ clubTrophies }),
+  setTeamLeagues: (teamLeagues) => set({ teamLeagues }),
+  setSelectedLeagueId: (selectedLeagueId) => set({ selectedLeagueId }),
+  setSelectedLeagueDetail: (selectedLeagueDetail) =>
+    set((state) => {
+      if (!selectedLeagueDetail) return { selectedLeagueDetail: null };
+      const idx = state.teamLeagues.findIndex(
+        (l) => l.leagueId === selectedLeagueDetail.league.leagueId,
+      );
+      const nextLeagues =
+        idx >= 0
+          ? state.teamLeagues.map((l, i) =>
+              i === idx ? selectedLeagueDetail.league : l,
+            )
+          : [selectedLeagueDetail.league, ...state.teamLeagues];
+      return {
+        selectedLeagueDetail,
+        selectedLeagueId: selectedLeagueDetail.league.leagueId,
+        teamLeagues: nextLeagues,
+      };
+    }),
+  setClubChampionships: (clubChampionships) => set({ clubChampionships }),
+  setSelectedChampionshipId: (selectedChampionshipId) => set({ selectedChampionshipId }),
+  setSelectedChampionshipDetail: (selectedChampionshipDetail) =>
+    set((state) => {
+      if (!selectedChampionshipDetail) return { selectedChampionshipDetail: null };
+      const idx = state.clubChampionships.findIndex(
+        (c) => c.championshipId === selectedChampionshipDetail.championship.championshipId,
+      );
+      const nextList =
+        idx >= 0
+          ? state.clubChampionships.map((c, i) =>
+              i === idx ? selectedChampionshipDetail.championship : c,
+            )
+          : [selectedChampionshipDetail.championship, ...state.clubChampionships];
+      return {
+        selectedChampionshipDetail,
+        selectedChampionshipId: selectedChampionshipDetail.championship.championshipId,
+        clubChampionships: nextList,
+      };
+    }),
+  setTeamEloRankings: (teamEloRankings) => set({ teamEloRankings }),
+  setClubLeagueNotice: (clubLeagueNotice) => set({ clubLeagueNotice }),
 }));

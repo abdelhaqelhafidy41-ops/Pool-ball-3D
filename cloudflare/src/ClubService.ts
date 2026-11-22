@@ -2,11 +2,17 @@ import type { RuleProfileId } from '../../src/game/rules/types';
 import { isValidPlayerIdFormat, sanitizeAvatarId } from '../../src/multiplayer/shared/authCrypto';
 import type { MultiplayerErrorCode } from '../../src/multiplayer/shared/protocol';
 import {
+  calculateClubLevelFromXp,
+  CLUB_ROLE_RANK,
+  isClubOfficerRole,
+  normalizeClubRole,
+  sanitizeChatText,
   sanitizeClubText,
   SOCIAL_LIMITS,
   type ClubActivityRecord,
   type ClubChallengeRecord,
   type ClubChallengeStatus,
+  type ClubChatMessageRecord,
   type ClubDetailPayload,
   type ClubEmblemIcon,
   type ClubInvitationRecord,
@@ -17,6 +23,7 @@ import {
   type ClubMemberRecord,
   type ClubRecord,
   type ClubRole,
+  type ClubTrophyRecord,
   type PlayerClubBadgeSummary,
   type PresenceStatus,
 } from '../../src/multiplayer/shared/social';
@@ -66,6 +73,14 @@ const CLUB_SCHEMA_STATEMENTS = [
     member_count INTEGER NOT NULL DEFAULT 1,
     challenge_wins INTEGER NOT NULL DEFAULT 0,
     club_rating INTEGER NOT NULL DEFAULT 1200,
+    region TEXT NOT NULL DEFAULT 'GLOBAL',
+    max_members INTEGER NOT NULL DEFAULT 50,
+    level INTEGER NOT NULL DEFAULT 1,
+    xp INTEGER NOT NULL DEFAULT 0,
+    announcement TEXT NOT NULL DEFAULT '',
+    announcement_updated_at_ms INTEGER,
+    league_titles INTEGER NOT NULL DEFAULT 0,
+    championship_titles INTEGER NOT NULL DEFAULT 0,
     created_at_ms INTEGER NOT NULL,
     updated_at_ms INTEGER NOT NULL
   )`,
@@ -132,6 +147,29 @@ const CLUB_SCHEMA_STATEMENTS = [
     summary TEXT NOT NULL,
     created_at_ms INTEGER NOT NULL
   )`,
+  `CREATE TABLE IF NOT EXISTS club_chat_messages (
+    message_id TEXT PRIMARY KEY,
+    club_id TEXT NOT NULL,
+    sender_id TEXT NOT NULL,
+    sender_name TEXT NOT NULL,
+    sender_avatar TEXT NOT NULL,
+    sender_role TEXT NOT NULL,
+    body TEXT NOT NULL,
+    created_at_ms INTEGER NOT NULL
+  )`,
+  `CREATE TABLE IF NOT EXISTS club_trophies (
+    trophy_id TEXT PRIMARY KEY,
+    club_id TEXT NOT NULL,
+    team_id TEXT,
+    team_name TEXT,
+    competition_kind TEXT NOT NULL,
+    competition_id TEXT NOT NULL,
+    title TEXT NOT NULL,
+    tier TEXT NOT NULL DEFAULT 'champion',
+    season_label TEXT NOT NULL DEFAULT 'Season 1',
+    awarded_at_ms INTEGER NOT NULL,
+    UNIQUE(club_id, competition_kind, competition_id, tier)
+  )`,
   `CREATE INDEX IF NOT EXISTS idx_club_members_club ON club_members (club_id, role, joined_at_ms ASC)`,
   `CREATE INDEX IF NOT EXISTS idx_club_members_player ON club_members (player_id)`,
   `CREATE INDEX IF NOT EXISTS idx_club_req_club ON club_join_requests (club_id, status, created_at_ms DESC)`,
@@ -140,6 +178,19 @@ const CLUB_SCHEMA_STATEMENTS = [
   `CREATE INDEX IF NOT EXISTS idx_club_chal_clubs ON club_challenges (challenger_club_id, target_club_id, status)`,
   `CREATE INDEX IF NOT EXISTS idx_club_chal_status ON club_challenges (status, expires_at_ms)`,
   `CREATE INDEX IF NOT EXISTS idx_club_activity_club ON club_activity_logs (club_id, created_at_ms DESC)`,
+  `CREATE INDEX IF NOT EXISTS idx_club_chat_club ON club_chat_messages (club_id, created_at_ms DESC)`,
+  `CREATE INDEX IF NOT EXISTS idx_club_trophies_club ON club_trophies (club_id, awarded_at_ms DESC)`,
+];
+
+const CLUB_ALTER_STATEMENTS = [
+  `ALTER TABLE clubs ADD COLUMN region TEXT NOT NULL DEFAULT 'GLOBAL'`,
+  `ALTER TABLE clubs ADD COLUMN max_members INTEGER NOT NULL DEFAULT 50`,
+  `ALTER TABLE clubs ADD COLUMN level INTEGER NOT NULL DEFAULT 1`,
+  `ALTER TABLE clubs ADD COLUMN xp INTEGER NOT NULL DEFAULT 0`,
+  `ALTER TABLE clubs ADD COLUMN announcement TEXT NOT NULL DEFAULT ''`,
+  `ALTER TABLE clubs ADD COLUMN announcement_updated_at_ms INTEGER`,
+  `ALTER TABLE clubs ADD COLUMN league_titles INTEGER NOT NULL DEFAULT 0`,
+  `ALTER TABLE clubs ADD COLUMN championship_titles INTEGER NOT NULL DEFAULT 0`,
 ];
 
 function sanitizeColor(raw: unknown): string {
@@ -160,13 +211,28 @@ function sanitizeJoinMode(raw: unknown): ClubJoinMode {
   return raw === 'approval' ? 'approval' : 'public';
 }
 
+function sanitizeRegion(raw: unknown): string {
+  if (typeof raw !== 'string') return 'GLOBAL';
+  const cleaned = raw.trim().toUpperCase().replace(/[^A-Z0-9_-]/g, '').slice(0, 10);
+  return cleaned || 'GLOBAL';
+}
+
+function sanitizeMaxMembers(raw: unknown): number {
+  const num = Number(raw);
+  if (!Number.isFinite(num)) return SOCIAL_LIMITS.defaultClubCapacity;
+  return Math.max(
+    SOCIAL_LIMITS.minClubCapacity,
+    Math.min(SOCIAL_LIMITS.maxClubMembers, Math.floor(num)),
+  );
+}
+
 function sanitizeRole(raw: unknown): ClubRole {
-  if (raw === 'owner' || raw === 'admin') return raw;
-  return 'member';
+  return normalizeClubRole(raw);
 }
 
 export class ClubService {
   private static readonly bootstrappedDbs = new WeakSet<object>();
+  private static readonly clubChatCooldowns = new Map<string, number>();
 
   constructor(private readonly db: ProgressionSqlDb | D1Database | undefined) {}
 
@@ -180,6 +246,13 @@ export class ClubService {
       await new SocialService(this.db).ensureSchema();
       for (const stmt of CLUB_SCHEMA_STATEMENTS) {
         await db.prepare(stmt).run();
+      }
+      for (const stmt of CLUB_ALTER_STATEMENTS) {
+        try {
+          await db.prepare(stmt).run();
+        } catch {
+          // Column already exists
+        }
       }
       ClubService.bootstrappedDbs.add(this.db);
     }
@@ -307,6 +380,9 @@ export class ClubService {
       seasonalWins = 0;
     }
 
+    const xpCalc = calculateClubLevelFromXp(Number(row.xp ?? 0));
+    const maxMembers = sanitizeMaxMembers(row.max_members ?? SOCIAL_LIMITS.defaultClubCapacity);
+
     return {
       clubId,
       name: String(row.name),
@@ -316,6 +392,19 @@ export class ClubService {
       emblemIcon: sanitizeIcon(row.emblem_icon),
       joinMode: sanitizeJoinMode(row.join_mode),
       ownerId: String(row.owner_id),
+      region: sanitizeRegion(row.region),
+      maxMembers,
+      level: xpCalc.level,
+      xp: xpCalc.xp,
+      xpIntoLevel: xpCalc.xpIntoLevel,
+      xpForNextLevel: xpCalc.xpForNextLevel,
+      announcement: String(row.announcement ?? ''),
+      announcementUpdatedAtMs:
+        row.announcement_updated_at_ms !== null && row.announcement_updated_at_ms !== undefined
+          ? Number(row.announcement_updated_at_ms)
+          : null,
+      leagueTitles: Number(row.league_titles ?? 0),
+      championshipTitles: Number(row.championship_titles ?? 0),
       memberCount: Number(totals?.member_count ?? row.member_count ?? 0),
       totalWins: Number(totals?.total_wins ?? 0),
       totalMatches: Number(totals?.total_matches ?? 0),
@@ -384,7 +473,7 @@ export class ClubService {
     const db = await this.ensureSchema();
     const rows = await db
       .prepare(
-        `SELECT player_id FROM club_members WHERE club_id = ? AND role IN ('owner', 'admin')`,
+        `SELECT player_id FROM club_members WHERE club_id = ? AND role IN ('owner', 'president', 'vice_president', 'admin')`,
       )
       .bind(clubId)
       .all<{ player_id: string }>();
@@ -409,6 +498,8 @@ export class ClubService {
       emblemColor?: unknown;
       emblemIcon?: unknown;
       joinMode?: unknown;
+      region?: unknown;
+      maxMembers?: unknown;
     },
   ): Promise<{ ok: true; detail: ClubDetailPayload } | ClubServiceError> {
     const db = await this.ensureSchema();
@@ -475,6 +566,8 @@ export class ClubService {
     const emblemColor = sanitizeColor(input.emblemColor);
     const emblemIcon = sanitizeIcon(input.emblemIcon);
     const joinMode = sanitizeJoinMode(input.joinMode);
+    const region = sanitizeRegion(input.region);
+    const maxMembers = sanitizeMaxMembers(input.maxMembers);
     const initialRating = Math.round(Number(creatorRow.elo ?? 1200));
 
     await db
@@ -482,8 +575,9 @@ export class ClubService {
         `INSERT INTO clubs (
           club_id, name, name_lower, tag, tag_lower, description,
           emblem_color, emblem_icon, join_mode, owner_id,
+          region, max_members, level, xp, announcement,
           member_count, challenge_wins, club_rating, created_at_ms, updated_at_ms
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0, ?, ?, ?)`,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0, '', 1, 0, ?, ?, ?)`,
       )
       .bind(
         clubId,
@@ -496,6 +590,8 @@ export class ClubService {
         emblemIcon,
         joinMode,
         creatorId,
+        region,
+        maxMembers,
         initialRating,
         now,
         now,
@@ -532,6 +628,9 @@ export class ClubService {
       emblemColor?: unknown;
       emblemIcon?: unknown;
       joinMode?: unknown;
+      region?: unknown;
+      maxMembers?: unknown;
+      announcement?: unknown;
     },
   ): Promise<{ ok: true; detail: ClubDetailPayload } | ClubServiceError> {
     const db = await this.ensureSchema();
@@ -539,12 +638,13 @@ export class ClubService {
       .prepare('SELECT role FROM club_members WHERE club_id = ? AND player_id = ? LIMIT 1')
       .bind(clubId, actorId)
       .first<{ role: string }>();
-    if (!membership || (membership.role !== 'owner' && membership.role !== 'admin')) {
+    const actorRole = membership ? sanitizeRole(membership.role) : null;
+    if (!isClubOfficerRole(actorRole)) {
       return {
         ok: false,
         status: 403,
         code: 'UNAUTHORIZED',
-        message: 'Only club owners or admins can update club settings.',
+        message: 'Only club officers can update club settings.',
       };
     }
 
@@ -572,15 +672,58 @@ export class ClubService {
       input.joinMode !== undefined
         ? sanitizeJoinMode(input.joinMode)
         : sanitizeJoinMode(existing.join_mode);
-
+    const nextRegion =
+      input.region !== undefined
+        ? sanitizeRegion(input.region)
+        : sanitizeRegion(existing.region);
+    let nextMaxMembers = sanitizeMaxMembers(existing.max_members);
+    if (input.maxMembers !== undefined) {
+      const requestedCap = sanitizeMaxMembers(input.maxMembers);
+      const countRow = await db
+        .prepare('SELECT COUNT(*) AS c FROM club_members WHERE club_id = ?')
+        .bind(clubId)
+        .first<{ c: number }>();
+      if (requestedCap < Number(countRow?.c ?? 0)) {
+        return {
+          ok: false,
+          status: 400,
+          code: 'INVALID_INPUT',
+          message: 'Club capacity cannot be lower than current member count.',
+        };
+      }
+      nextMaxMembers = requestedCap;
+    }
     const now = Date.now();
+    const nextAnnouncement =
+      input.announcement !== undefined
+        ? sanitizeClubText(input.announcement, SOCIAL_LIMITS.clubAnnouncementMaxLength)
+        : String(existing.announcement ?? '');
+    const nextAnnouncementTs =
+      input.announcement !== undefined
+        ? now
+        : existing.announcement_updated_at_ms !== null && existing.announcement_updated_at_ms !== undefined
+          ? Number(existing.announcement_updated_at_ms)
+          : null;
+
     await db
       .prepare(
         `UPDATE clubs
-         SET description = ?, emblem_color = ?, emblem_icon = ?, join_mode = ?, updated_at_ms = ?
+         SET description = ?, emblem_color = ?, emblem_icon = ?, join_mode = ?,
+             region = ?, max_members = ?, announcement = ?, announcement_updated_at_ms = ?, updated_at_ms = ?
          WHERE club_id = ?`,
       )
-      .bind(nextDesc, nextColor, nextIcon, nextJoinMode, now, clubId)
+      .bind(
+        nextDesc,
+        nextColor,
+        nextIcon,
+        nextJoinMode,
+        nextRegion,
+        nextMaxMembers,
+        nextAnnouncement,
+        nextAnnouncementTs,
+        now,
+        clubId,
+      )
       .run();
 
     const actor = await this.getPlayerRow(db, actorId);
@@ -589,8 +732,10 @@ export class ClubService {
       clubId,
       actorId,
       actor ? String(actor.display_name) : 'Officer',
-      'club_updated',
-      `${actor ? String(actor.display_name) : 'An officer'} updated club settings.`,
+      input.announcement !== undefined ? 'announcement_posted' : 'club_updated',
+      input.announcement !== undefined
+        ? `${actor ? String(actor.display_name) : 'An officer'} updated the club bulletin.`
+        : `${actor ? String(actor.display_name) : 'An officer'} updated club settings.`,
       now,
     );
 
@@ -663,7 +808,14 @@ export class ClubService {
          JOIN players p ON p.player_id = cm.player_id
          LEFT JOIN player_presence pr ON pr.player_id = cm.player_id
          WHERE cm.club_id = ?
-         ORDER BY CASE cm.role WHEN 'owner' THEN 0 WHEN 'admin' THEN 1 ELSE 2 END, p.elo DESC`,
+         ORDER BY CASE cm.role
+                    WHEN 'owner' THEN 0
+                    WHEN 'president' THEN 1
+                    WHEN 'vice_president' THEN 2
+                    WHEN 'admin' THEN 2
+                    WHEN 'captain' THEN 3
+                    ELSE 4
+                  END, p.elo DESC`,
       )
       .bind(club.clubId)
       .all<Record<string, unknown>>();
@@ -701,7 +853,7 @@ export class ClubService {
       : null;
 
     let joinRequests: ClubJoinRequestRecord[] = [];
-    if (viewerMembership === 'owner' || viewerMembership === 'admin') {
+    if (isClubOfficerRole(viewerMembership)) {
       const reqRows = await db
         .prepare(
           `SELECT r.*, p.username, p.display_name, p.avatar_id, p.elo, p.level
@@ -755,6 +907,8 @@ export class ClubService {
     }));
 
     const challenges = await this.getChallengesForClub(club.clubId);
+    const trophies = await this.getClubTrophies(club.clubId);
+    const chatMessages = viewerMembership ? await this.getClubChatMessages(club.clubId, 50) : [];
 
     return {
       club,
@@ -762,6 +916,8 @@ export class ClubService {
       recentActivity,
       joinRequests,
       challenges,
+      trophies,
+      chatMessages,
       viewerRole: viewerMembership,
       viewerHasPendingRequest,
     };
@@ -802,16 +958,17 @@ export class ClubService {
       return { ok: false, status: 404, code: 'NOT_FOUND', message: 'Club not found.' };
     }
 
+    const clubCap = sanitizeMaxMembers(clubRow.max_members ?? SOCIAL_LIMITS.defaultClubCapacity);
     const countRow = await db
       .prepare('SELECT COUNT(*) AS c FROM club_members WHERE club_id = ?')
       .bind(clubId)
       .first<{ c: number }>();
-    if (Number(countRow?.c ?? 0) >= SOCIAL_LIMITS.maxClubMembers) {
+    if (Number(countRow?.c ?? 0) >= clubCap) {
       return {
         ok: false,
         status: 409,
         code: 'CLUB_ERROR',
-        message: `This club has reached its maximum capacity (${SOCIAL_LIMITS.maxClubMembers} members).`,
+        message: `This club has reached its maximum capacity (${clubCap} members).`,
       };
     }
 
@@ -892,12 +1049,12 @@ export class ClubService {
       .prepare('SELECT role FROM club_members WHERE club_id = ? AND player_id = ? LIMIT 1')
       .bind(clubId, actorId)
       .first<{ role: string }>();
-    if (!actorMembership || (actorMembership.role !== 'owner' && actorMembership.role !== 'admin')) {
+    if (!actorMembership || !isClubOfficerRole(sanitizeRole(actorMembership.role))) {
       return {
         ok: false,
         status: 403,
         code: 'UNAUTHORIZED',
-        message: 'Only club owners or admins can review join requests.',
+        message: 'Only club officers can review join requests.',
       };
     }
 
@@ -947,11 +1104,16 @@ export class ClubService {
       };
     }
 
+    const clubMeta = await db
+      .prepare('SELECT max_members FROM clubs WHERE club_id = ? LIMIT 1')
+      .bind(clubId)
+      .first<{ max_members: number | null }>();
+    const clubCap = sanitizeMaxMembers(clubMeta?.max_members ?? SOCIAL_LIMITS.defaultClubCapacity);
     const countRow = await db
       .prepare('SELECT COUNT(*) AS c FROM club_members WHERE club_id = ?')
       .bind(clubId)
       .first<{ c: number }>();
-    if (Number(countRow?.c ?? 0) >= SOCIAL_LIMITS.maxClubMembers) {
+    if (Number(countRow?.c ?? 0) >= clubCap) {
       return {
         ok: false,
         status: 409,
@@ -1020,12 +1182,12 @@ export class ClubService {
       .prepare('SELECT role FROM club_members WHERE club_id = ? AND player_id = ? LIMIT 1')
       .bind(clubId, actorId)
       .first<{ role: string }>();
-    if (!membership || (membership.role !== 'owner' && membership.role !== 'admin')) {
+    if (!membership || !isClubOfficerRole(sanitizeRole(membership.role))) {
       return {
         ok: false,
         status: 403,
         code: 'UNAUTHORIZED',
-        message: 'Only club owners or admins can send club invitations.',
+        message: 'Only club officers can send club invitations.',
       };
     }
 
@@ -1179,11 +1341,16 @@ export class ClubService {
       };
     }
 
+    const clubMeta = await db
+      .prepare('SELECT max_members FROM clubs WHERE club_id = ? LIMIT 1')
+      .bind(clubId)
+      .first<{ max_members: number | null }>();
+    const clubCap = sanitizeMaxMembers(clubMeta?.max_members ?? SOCIAL_LIMITS.defaultClubCapacity);
     const countRow = await db
       .prepare('SELECT COUNT(*) AS c FROM club_members WHERE club_id = ?')
       .bind(clubId)
       .first<{ c: number }>();
-    if (Number(countRow?.c ?? 0) >= SOCIAL_LIMITS.maxClubMembers) {
+    if (Number(countRow?.c ?? 0) >= clubCap) {
       return { ok: false, status: 409, code: 'CLUB_ERROR', message: 'This club is currently full.' };
     }
 
@@ -1340,25 +1507,59 @@ export class ClubService {
         .first<{ role: string }>(),
     ]);
 
-    if (!actorMem || actorMem.role !== 'owner') {
+    if (!actorMem) {
       return {
         ok: false,
         status: 403,
         code: 'UNAUTHORIZED',
-        message: 'Only the club owner can promote, demote, or transfer ownership.',
+        message: 'You are not a member of this club.',
+      };
+    }
+    const actorRole = sanitizeRole(actorMem.role);
+    if (actorRole !== 'owner' && actorRole !== 'president') {
+      return {
+        ok: false,
+        status: 403,
+        code: 'UNAUTHORIZED',
+        message: 'Only the club owner or president can promote or demote members.',
       };
     }
     if (!targetMem) {
       return { ok: false, status: 404, code: 'NOT_FOUND', message: 'Target member not found.' };
     }
 
+    const targetCurrentRole = sanitizeRole(targetMem.role);
+    const safeNextRole = sanitizeRole(nextRole);
+
+    if (safeNextRole === 'owner' && actorRole !== 'owner') {
+      return {
+        ok: false,
+        status: 403,
+        code: 'UNAUTHORIZED',
+        message: 'Only the current owner can transfer club ownership.',
+      };
+    }
+
+    if (
+      actorRole === 'president' &&
+      (CLUB_ROLE_RANK[targetCurrentRole] >= CLUB_ROLE_RANK['president'] ||
+        CLUB_ROLE_RANK[safeNextRole] >= CLUB_ROLE_RANK['president'])
+    ) {
+      return {
+        ok: false,
+        status: 403,
+        code: 'UNAUTHORIZED',
+        message: 'Presidents cannot alter Owners or assign President rank.',
+      };
+    }
+
     const now = Date.now();
     const targetRow = await this.getPlayerRow(db, targetPlayerId);
     const targetName = targetRow ? String(targetRow.display_name) : 'Member';
 
-    if (nextRole === 'owner') {
+    if (safeNextRole === 'owner') {
       await db
-        .prepare(`UPDATE club_members SET role = 'admin', updated_at_ms = ? WHERE club_id = ? AND player_id = ?`)
+        .prepare(`UPDATE club_members SET role = 'president', updated_at_ms = ? WHERE club_id = ? AND player_id = ?`)
         .bind(now, clubId, actorId)
         .run();
       await db
@@ -1376,10 +1577,9 @@ export class ClubService {
         now,
       );
     } else {
-      const safeRole: ClubRole = nextRole === 'admin' ? 'admin' : 'member';
       await db
         .prepare(`UPDATE club_members SET role = ?, updated_at_ms = ? WHERE club_id = ? AND player_id = ?`)
-        .bind(safeRole, now, clubId, targetPlayerId)
+        .bind(safeNextRole, now, clubId, targetPlayerId)
         .run();
       await this.logActivity(
         db,
@@ -1387,7 +1587,7 @@ export class ClubService {
         actorId,
         targetName,
         'role_updated',
-        `${targetName} was ${safeRole === 'admin' ? 'promoted to Admin' : 'set to Member'}.`,
+        `${targetName} role updated to ${safeNextRole.replace('_', ' ')}.`,
         now,
       );
     }
@@ -1428,13 +1628,15 @@ export class ClubService {
         .first<{ role: string }>(),
     ]);
 
-    if (!actorMem || (actorMem.role !== 'owner' && actorMem.role !== 'admin')) {
+    const actorRole = actorMem ? sanitizeRole(actorMem.role) : null;
+    if (!actorRole || !isClubOfficerRole(actorRole)) {
       return { ok: false, status: 403, code: 'UNAUTHORIZED', message: 'Insufficient club permissions.' };
     }
     if (!targetMem) {
       return { ok: false, status: 404, code: 'NOT_FOUND', message: 'Member not found.' };
     }
-    if (targetMem.role === 'owner' || (actorMem.role === 'admin' && targetMem.role === 'admin')) {
+    const targetRole = sanitizeRole(targetMem.role);
+    if (targetRole === 'owner' || CLUB_ROLE_RANK[actorRole] <= CLUB_ROLE_RANK[targetRole]) {
       return {
         ok: false,
         status: 403,
@@ -1461,6 +1663,257 @@ export class ClubService {
     );
     const detail = (await this.getClubDetail(clubId, actorId))!;
     return { ok: true, detail };
+  }
+
+  public async awardClubXp(
+    clubId: string,
+    xpDelta: number,
+    summary?: string,
+  ): Promise<{ level: number; xp: number; leveledUp: boolean } | null>;
+  public async awardClubXp(input: {
+    clubId: string;
+    xpAmount: number;
+    actorId?: string | null;
+    eventType?: string;
+    summary?: string;
+  }): Promise<{ level: number; xp: number; leveledUp: boolean } | null>;
+  public async awardClubXp(
+    clubIdOrInput:
+      | string
+      | {
+          clubId: string;
+          xpAmount: number;
+          actorId?: string | null;
+          eventType?: string;
+          summary?: string;
+        },
+    xpDeltaArg?: number,
+    summaryArg?: string,
+  ): Promise<{ level: number; xp: number; leveledUp: boolean } | null> {
+    const clubId = typeof clubIdOrInput === 'string' ? clubIdOrInput : clubIdOrInput.clubId;
+    const xpDelta =
+      typeof clubIdOrInput === 'string' ? (xpDeltaArg ?? 0) : clubIdOrInput.xpAmount;
+    const summary = typeof clubIdOrInput === 'string' ? summaryArg : clubIdOrInput.summary;
+    const actorId = typeof clubIdOrInput === 'string' ? null : (clubIdOrInput.actorId ?? null);
+    const eventType =
+      typeof clubIdOrInput === 'string' ? 'club_xp' : (clubIdOrInput.eventType ?? 'club_xp');
+
+    const db = await this.ensureSchema();
+    const row = await db
+      .prepare('SELECT xp, level FROM clubs WHERE club_id = ? LIMIT 1')
+      .bind(clubId)
+      .first<{ xp: number | null; level: number | null }>();
+    if (!row) return null;
+    const prevLevel = Number(row.level ?? 1);
+    const nextXp = Math.max(0, Number(row.xp ?? 0) + Math.max(0, Math.round(xpDelta)));
+    const calc = calculateClubLevelFromXp(nextXp);
+    const now = Date.now();
+    await db
+      .prepare('UPDATE clubs SET xp = ?, level = ?, updated_at_ms = ? WHERE club_id = ?')
+      .bind(calc.xp, calc.level, now, clubId)
+      .run();
+    if (summary) {
+      await this.logActivity(db, clubId, actorId, null, eventType, summary, now);
+    }
+    return {
+      level: calc.level,
+      xp: calc.xp,
+      leveledUp: calc.level > prevLevel,
+    };
+  }
+
+  public async awardClubTrophy(params: {
+    clubId: string;
+    teamId?: string | null;
+    teamName?: string | null;
+    competitionKind: 'league' | 'club_championship' | 'challenge';
+    competitionId: string;
+    title: string;
+    tier: 'champion' | 'runner_up' | 'promoted' | 'milestone';
+    seasonLabel?: string;
+  }): Promise<ClubTrophyRecord | null> {
+    const db = await this.ensureSchema();
+    const now = Date.now();
+    const trophyId = `ctrophy_${crypto.randomUUID().replace(/-/g, '').slice(0, 14)}`;
+    const seasonLabel = sanitizeClubText(params.seasonLabel ?? 'Season 1', 24) || 'Season 1';
+    const title = sanitizeClubText(params.title, 64) || 'Club Honor';
+    await db
+      .prepare(
+        `INSERT OR IGNORE INTO club_trophies (
+          trophy_id, club_id, team_id, team_name, competition_kind, competition_id,
+          title, tier, season_label, awarded_at_ms
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .bind(
+        trophyId,
+        params.clubId,
+        params.teamId ?? null,
+        params.teamName ?? null,
+        params.competitionKind,
+        params.competitionId,
+        title,
+        params.tier,
+        seasonLabel,
+        now,
+      )
+      .run();
+
+    const row = await db
+      .prepare(
+        `SELECT * FROM club_trophies
+         WHERE club_id = ? AND competition_kind = ? AND competition_id = ? AND tier = ?
+         LIMIT 1`,
+      )
+      .bind(params.clubId, params.competitionKind, params.competitionId, params.tier)
+      .first<Record<string, unknown>>();
+    if (!row) return null;
+    return {
+      trophyId: String(row.trophy_id),
+      clubId: String(row.club_id),
+      teamId: row.team_id ? String(row.team_id) : null,
+      teamName: row.team_name ? String(row.team_name) : null,
+      competitionKind:
+        row.competition_kind === 'league'
+          ? 'league'
+          : row.competition_kind === 'challenge'
+            ? 'challenge'
+            : 'club_championship',
+      competitionId: String(row.competition_id),
+      title: String(row.title),
+      tier:
+        row.tier === 'runner_up' || row.tier === 'promoted' || row.tier === 'milestone'
+          ? row.tier
+          : 'champion',
+      seasonLabel: String(row.season_label ?? 'Season 1'),
+      awardedAtMs: Number(row.awarded_at_ms),
+    };
+  }
+
+  public async getClubChatMessages(clubId: string, limit = 50): Promise<ClubChatMessageRecord[]> {
+    const db = await this.ensureSchema();
+    const safeLimit = Math.max(1, Math.min(100, Math.floor(limit)));
+    const rows = await db
+      .prepare(
+        `SELECT * FROM club_chat_messages WHERE club_id = ? ORDER BY created_at_ms DESC LIMIT ?`,
+      )
+      .bind(clubId, safeLimit)
+      .all<Record<string, unknown>>();
+    return (rows.results ?? []).reverse().map((r) => ({
+      messageId: String(r.message_id),
+      clubId: String(r.club_id),
+      senderId: String(r.sender_id),
+      senderName: String(r.sender_name),
+      senderAvatar: sanitizeAvatarId(r.sender_avatar),
+      senderRole: sanitizeRole(r.sender_role),
+      body: String(r.body),
+      createdAtMs: Number(r.created_at_ms),
+    }));
+  }
+
+  public async sendClubChatMessage(
+    senderId: string,
+    clubId: string,
+    rawBody: unknown,
+  ): Promise<{ ok: true; message: ClubChatMessageRecord } | ClubServiceError> {
+    const db = await this.ensureSchema();
+    const mem = await db
+      .prepare('SELECT role FROM club_members WHERE club_id = ? AND player_id = ? LIMIT 1')
+      .bind(clubId, senderId)
+      .first<{ role: string }>();
+    if (!mem) {
+      return { ok: false, status: 403, code: 'UNAUTHORIZED', message: 'Join this club to send chat messages.' };
+    }
+
+    const sanitized = sanitizeChatText(rawBody, SOCIAL_LIMITS.clubChatMaxLength);
+    if (!sanitized.ok) {
+      return { ok: false, status: 400, code: sanitized.code, message: sanitized.message };
+    }
+
+    const now = Date.now();
+    const cooldownKey = `${clubId}:${senderId}`;
+    const lastAt = ClubService.clubChatCooldowns.get(cooldownKey) ?? 0;
+    if (now - lastAt < SOCIAL_LIMITS.chatMinIntervalMs) {
+      return {
+        ok: false,
+        status: 429,
+        code: 'RATE_LIMITED',
+        message: 'Slow down slightly before sending another club message.',
+      };
+    }
+    ClubService.clubChatCooldowns.set(cooldownKey, now);
+
+    const playerRow = await this.getPlayerRow(db, senderId);
+    const messageId = `cmsg_${crypto.randomUUID().replace(/-/g, '').slice(0, 14)}`;
+    const role = sanitizeRole(mem.role);
+    const senderName = playerRow ? String(playerRow.display_name) : 'Member';
+    const senderAvatar = sanitizeAvatarId(playerRow?.avatar_id);
+
+    await db
+      .prepare(
+        `INSERT INTO club_chat_messages (
+          message_id, club_id, sender_id, sender_name, sender_avatar, sender_role, body, created_at_ms
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .bind(messageId, clubId, senderId, senderName, senderAvatar, role, sanitized.text, now)
+      .run();
+
+    await db
+      .prepare(
+        `DELETE FROM club_chat_messages
+         WHERE club_id = ?
+           AND message_id NOT IN (
+             SELECT message_id FROM club_chat_messages
+             WHERE club_id = ?
+             ORDER BY created_at_ms DESC
+             LIMIT 100
+           )`,
+      )
+      .bind(clubId, clubId)
+      .run();
+
+    return {
+      ok: true,
+      message: {
+        messageId,
+        clubId,
+        senderId,
+        senderName,
+        senderAvatar,
+        senderRole: role,
+        body: sanitized.text,
+        createdAtMs: now,
+      },
+    };
+  }
+
+  public async getClubTrophies(clubId: string, limit = 30): Promise<ClubTrophyRecord[]> {
+    const db = await this.ensureSchema();
+    const rows = await db
+      .prepare(
+        `SELECT * FROM club_trophies WHERE club_id = ? ORDER BY awarded_at_ms DESC LIMIT ?`,
+      )
+      .bind(clubId, Math.max(1, Math.min(50, limit)))
+      .all<Record<string, unknown>>();
+    return (rows.results ?? []).map((r) => ({
+      trophyId: String(r.trophy_id),
+      clubId: String(r.club_id),
+      teamId: r.team_id ? String(r.team_id) : null,
+      teamName: r.team_name ? String(r.team_name) : null,
+      competitionKind:
+        r.competition_kind === 'league'
+          ? 'league'
+          : r.competition_kind === 'challenge'
+            ? 'challenge'
+            : 'club_championship',
+      competitionId: String(r.competition_id),
+      title: String(r.title),
+      tier:
+        r.tier === 'runner_up' || r.tier === 'promoted' || r.tier === 'milestone'
+          ? r.tier
+          : 'champion',
+      seasonLabel: String(r.season_label ?? 'Season 1'),
+      awardedAtMs: Number(r.awarded_at_ms),
+    }));
   }
 
   public async getClubLeaderboard(params: {
@@ -1573,12 +2026,12 @@ export class ClubService {
       .prepare('SELECT role FROM club_members WHERE club_id = ? AND player_id = ? LIMIT 1')
       .bind(challengerClubId, actorId)
       .first<{ role: string }>();
-    if (!actorMem || (actorMem.role !== 'owner' && actorMem.role !== 'admin')) {
+    if (!actorMem || !isClubOfficerRole(sanitizeRole(actorMem.role))) {
       return {
         ok: false,
         status: 403,
         code: 'UNAUTHORIZED',
-        message: 'Only club owners or admins can issue club challenges.',
+        message: 'Only club officers can issue club challenges.',
       };
     }
 
@@ -1678,12 +2131,12 @@ export class ClubService {
       .bind(actorId)
       .first<{ club_id: string; role: string }>();
 
-    if (!actorClub || (actorClub.role !== 'owner' && actorClub.role !== 'admin')) {
+    if (!actorClub || !isClubOfficerRole(sanitizeRole(actorClub.role))) {
       return {
         ok: false,
         status: 403,
         code: 'UNAUTHORIZED',
-        message: 'Only club owners or admins can respond to club challenges.',
+        message: 'Only club officers can respond to club challenges.',
       };
     }
 
