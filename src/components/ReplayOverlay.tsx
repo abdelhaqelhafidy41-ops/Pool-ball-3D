@@ -27,18 +27,29 @@ import type {
 } from '../game/replay/types';
 import { BALL_DEFINITIONS } from '../game/utils/constants';
 import { soundEngine } from '../game/utils/SoundEngine';
+import {
+  localizeBallGroup,
+  localizeBallName,
+  localizeCollisionLabel,
+  localizeHighlight,
+  localizePlayerName,
+  localizeReplayVideoNotice,
+  localizeRuleProfile,
+  localizeShotResultLabel,
+  useTranslation,
+} from '../i18n';
 import { useGameStore } from '../store/useGameStore';
 import { describeCueSpin } from './CueBallSpinControl';
 
 const REPLAY_SPEEDS: ReplaySpeed[] = [0.25, 0.5, 1, 2, 4];
 
-const REPLAY_CAMERA_MODES: Array<{ id: ReplayCameraMode; label: string; title: string }> = [
-  { id: 'original', label: '3/4', title: 'Standard 3/4 table angle' },
-  { id: 'topDown', label: 'Top', title: 'Overhead tactical view' },
-  { id: 'free', label: 'Free', title: 'Free orbit & zoom camera' },
-  { id: 'cinematic', label: 'Cinema', title: 'Broadcast sweeping orbit' },
-  { id: 'ballFollow', label: 'Follow', title: 'Dynamic ball-follow camera' },
-  { id: 'shotFocused', label: 'Shot', title: 'Low-angle cue alignment camera' },
+const REPLAY_CAMERA_MODES: Array<{ id: ReplayCameraMode; labelKey: string; titleKey: string }> = [
+  { id: 'original', labelKey: 'replay.cam34', titleKey: 'replay.cam34Title' },
+  { id: 'topDown', labelKey: 'replay.camTop', titleKey: 'replay.camTopTitle' },
+  { id: 'free', labelKey: 'replay.camFreeShort', titleKey: 'replay.camFreeTitle' },
+  { id: 'cinematic', labelKey: 'replay.camCinema', titleKey: 'replay.camCinemaTitle' },
+  { id: 'ballFollow', labelKey: 'replay.camFollow', titleKey: 'replay.camFollowTitle' },
+  { id: 'shotFocused', labelKey: 'replay.camShot', titleKey: 'replay.camShotTitle' },
 ];
 
 export interface ReplayOverlayProps {
@@ -73,24 +84,24 @@ function formatClock(sec: number): string {
   return `${m}:${s.toString().padStart(2, '0')}`;
 }
 
-function formatHighlightCategoryLabel(cat: ReplayHighlightCategory): string {
+function getHighlightCategoryKey(cat: ReplayHighlightCategory): string {
   switch (cat) {
     case 'break':
-      return 'Break';
+      return 'replay.catBreak';
     case 'long_pocket':
-      return 'Long Pot';
+      return 'replay.catLongPot';
     case 'multi_pocket':
-      return 'Multi-Ball';
+      return 'replay.catMultiBall';
     case 'bank_or_combo':
-      return 'Bank / Carom';
+      return 'replay.catBankCarom';
     case 'defensive':
-      return 'Safety';
+      return 'replay.catSafety';
     case 'foul':
-      return 'Foul';
+      return 'replay.catFoul';
     case 'eight_ball':
-      return '8-Ball';
+      return 'replay.catEightBall';
     case 'winning_moment':
-      return 'Victory';
+      return 'replay.catVictory';
   }
 }
 
@@ -111,6 +122,7 @@ function highlightBadgeClass(cat: ReplayHighlightCategory): string {
 }
 
 function MiniBallIcon({ num }: { num: number }) {
+  const { lang } = useTranslation();
   const def = BALL_DEFINITIONS[num];
   if (!def) return null;
   const isCue = num === 0;
@@ -118,7 +130,7 @@ function MiniBallIcon({ num }: { num: number }) {
 
   return (
     <span
-      title={def.name}
+      title={localizeBallName(num, lang)}
       className="inline-flex h-5 w-5 items-center justify-center rounded-full text-[10px] font-extrabold shrink-0"
       style={{
         backgroundColor: isCue
@@ -162,6 +174,7 @@ export function ReplayOverlay({
   onStartVideoRecording,
   onStopVideoRecording,
 }: ReplayOverlayProps) {
+  const { t, lang } = useTranslation();
   const screen = useGameStore((s) => s.screen);
   const replayActive = useGameStore((s) => s.replayActive);
   const replayMode = useGameStore((s) => s.replayMode);
@@ -230,9 +243,13 @@ export function ReplayOverlay({
       : replayDurationSec || currentShot.durationSec,
   );
   const progressPct = Math.max(0, Math.min(100, (timelineValue / timelineMax) * 100));
-  const spinLabel = describeCueSpin(currentShot.spin.x, currentShot.spin.y);
+  const spinLabel = describeCueSpin(currentShot.spin.x, currentShot.spin.y, lang);
   const spinDotLeft = 50 + currentShot.spin.x * 50;
   const spinDotTop = 50 - currentShot.spin.y * 50;
+  const currentShooterName = localizePlayerName(currentShot.shooterName, currentShot.shooter, lang);
+  const localizedCollision = localizeCollisionLabel(replayActiveCollisionLabel, lang);
+  const localizedVideoNotice = localizeReplayVideoNotice(replayVideoNotice, lang);
+  const localizedResultLabel = localizeShotResultLabel(currentShot.resultLabel, lang);
 
   const handlePrev = () => {
     soundEngine.playUiClick();
@@ -269,18 +286,20 @@ export function ReplayOverlay({
               data-testid="replay-prev-shot-btn"
               disabled={!hasPrevShot}
               onClick={handlePrev}
-              title="Previous shot"
-              aria-label="Previous recorded shot"
+              title={t('replay.prevShot')}
+              aria-label={t('replay.prevShotAria')}
               className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-white/10 bg-white/5 text-slate-200 hover:bg-white/10 disabled:opacity-35 cursor-pointer"
             >
               <ChevronLeft className="h-4 w-4" />
             </button>
             <div className="px-1.5 text-center">
               <div className="text-[11px] font-extrabold tracking-wide text-amber-400 whitespace-nowrap">
-                {isMatchMode ? 'MATCH REPLAY' : 'SHOT REPLAY'} #{currentShot.shotNumber}
+                {isMatchMode
+                  ? t('replay.matchReplayHeader', { num: currentShot.shotNumber })
+                  : t('replay.shotReplayHeader', { num: currentShot.shotNumber })}
               </div>
               <div className="text-[10px] font-mono tabular-nums text-slate-300 whitespace-nowrap">
-                {currentShot.shooterName} · {displayShotOrder}/{displayShotTotal}
+                {currentShooterName} · <span dir="ltr">{displayShotOrder}/{displayShotTotal}</span>
               </div>
             </div>
             <button
@@ -288,8 +307,8 @@ export function ReplayOverlay({
               data-testid="replay-next-shot-btn"
               disabled={!hasNextShot}
               onClick={handleNext}
-              title="Next shot"
-              aria-label="Next recorded shot"
+              title={t('replay.nextShot')}
+              aria-label={t('replay.nextShotAria')}
               className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-white/10 bg-white/5 text-slate-200 hover:bg-white/10 disabled:opacity-35 cursor-pointer"
             >
               <ChevronRight className="h-4 w-4" />
@@ -301,7 +320,7 @@ export function ReplayOverlay({
           {/* 6 Independent Replay Camera Modes */}
           <div
             role="group"
-            aria-label="Replay camera mode"
+            aria-label={t('replay.cameraGroupAria')}
             className="flex flex-wrap items-center gap-0.5 rounded-lg border border-white/10 bg-black/40 p-0.5"
           >
             <Camera className="mx-1 h-3.5 w-3.5 text-amber-400 shrink-0 hidden sm:block" />
@@ -310,7 +329,7 @@ export function ReplayOverlay({
                 key={cam.id}
                 type="button"
                 data-testid={`replay-cam-${cam.id}`}
-                title={cam.title}
+                title={t(cam.titleKey)}
                 onClick={() => {
                   soundEngine.playUiClick();
                   onSetCameraMode?.(cam.id);
@@ -321,7 +340,7 @@ export function ReplayOverlay({
                     : 'text-slate-300 hover:text-white'
                 }`}
               >
-                {cam.label}
+                {t(cam.labelKey)}
               </button>
             ))}
           </div>
@@ -339,11 +358,11 @@ export function ReplayOverlay({
                   currentShot.shooter === 'player1' ? 'text-amber-300' : 'text-white'
                 }`}
               >
-                {replayMatchMeta.player1Name}
+                {localizePlayerName(replayMatchMeta.player1Name, 'player1', lang)}
               </span>
               {replayMatchMeta.player1Group && (
                 <span className="rounded border border-white/15 bg-white/5 px-1.5 py-0.5 text-[10px] font-bold uppercase text-slate-300">
-                  {replayMatchMeta.player1Group}
+                  {localizeBallGroup(replayMatchMeta.player1Group, lang)}
                 </span>
               )}
               <span className="font-mono font-extrabold tabular-nums text-amber-400">
@@ -352,7 +371,7 @@ export function ReplayOverlay({
             </div>
 
             <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
-              VS
+              {t('common.vs')}
             </span>
 
             <div className="flex items-center gap-2">
@@ -361,7 +380,7 @@ export function ReplayOverlay({
               </span>
               {replayMatchMeta.player2Group && (
                 <span className="rounded border border-white/15 bg-white/5 px-1.5 py-0.5 text-[10px] font-bold uppercase text-slate-300">
-                  {replayMatchMeta.player2Group}
+                  {localizeBallGroup(replayMatchMeta.player2Group, lang)}
                 </span>
               )}
               <span
@@ -369,26 +388,31 @@ export function ReplayOverlay({
                   currentShot.shooter === 'player2' ? 'text-amber-300' : 'text-white'
                 }`}
               >
-                {replayMatchMeta.player2Name}
+                {localizePlayerName(replayMatchMeta.player2Name, 'player2', lang)}
               </span>
             </div>
 
             <div className="h-4 w-px bg-white/10" />
 
             <span className="rounded border border-amber-400/35 bg-amber-500/12 px-1.5 py-0.5 text-[10px] font-bold uppercase text-amber-300 whitespace-nowrap">
-              {replayMatchMeta.matchType.toUpperCase()} · {replayMatchMeta.ruleProfileId.toUpperCase()}
+              {replayMatchMeta.matchType === 'ai'
+                ? t('replay.matchTypeAi')
+                : replayMatchMeta.matchType === 'online'
+                  ? t('replay.matchTypeOnline')
+                  : t('replay.matchTypeLocal')}{' '}
+              · {localizeRuleProfile(replayMatchMeta.ruleProfileId, lang, true)}
             </span>
           </div>
         )}
 
         {/* Live Collision Callout */}
-        {replayActiveCollisionLabel && (
+        {localizedCollision && (
           <div
             data-testid="replay-collision-callout"
             className="pointer-events-none flex items-center gap-2 rounded-xl border border-amber-400/60 bg-[#141d29]/95 px-3 py-1.5 text-xs font-bold text-amber-300 shadow-lg"
           >
             <Activity className="h-3.5 w-3.5 text-amber-400 shrink-0" />
-            <span className="whitespace-nowrap">{replayActiveCollisionLabel}</span>
+            <span className="whitespace-nowrap">{localizedCollision}</span>
           </div>
         )}
 
@@ -402,11 +426,11 @@ export function ReplayOverlay({
                 soundEngine.playUiClick();
                 onExportJson();
               }}
-              title="Export full match replay JSON"
+              title={t('replay.exportJsonTooltip')}
               className="inline-flex h-9 items-center gap-1.5 rounded-xl border border-white/12 bg-[#0c1219]/95 px-2.5 text-xs font-semibold text-slate-200 hover:bg-white/10 cursor-pointer whitespace-nowrap shrink-0"
             >
               <Download className="h-3.5 w-3.5 text-amber-400" />
-              <span className="hidden sm:inline">Export</span>
+              <span className="hidden sm:inline">{t('replay.exportShort')}</span>
             </button>
           )}
 
@@ -417,10 +441,10 @@ export function ReplayOverlay({
               disabled={!videoSupported && !replayIsRecordingVideo}
               title={
                 !videoSupported
-                  ? 'Browser canvas video capture unavailable'
+                  ? t('replay.captureUnsupportedTooltip')
                   : replayIsRecordingVideo
-                    ? 'Stop & download viewport recording'
-                    : 'Record 3D viewport video'
+                    ? t('replay.captureStopTooltip')
+                    : t('replay.captureStartTooltip')
               }
               onClick={() => {
                 soundEngine.playUiClick();
@@ -439,12 +463,12 @@ export function ReplayOverlay({
               {replayIsRecordingVideo ? (
                 <>
                   <Square className="h-3 w-3 fill-rose-300 text-rose-300" />
-                  <span>Stop Rec</span>
+                  <span>{t('replay.stopRec')}</span>
                 </>
               ) : (
                 <>
                   <Video className="h-3.5 w-3.5 text-amber-400" />
-                  <span className="hidden sm:inline">Capture</span>
+                  <span className="hidden sm:inline">{t('replay.captureShort')}</span>
                 </>
               )}
             </button>
@@ -467,7 +491,7 @@ export function ReplayOverlay({
             ) : (
               <EyeOff className="h-3.5 w-3.5" />
             )}
-            <span className="hidden sm:inline">Trails</span>
+            <span className="hidden sm:inline">{t('replay.trailsShort')}</span>
           </button>
 
           <button
@@ -480,7 +504,7 @@ export function ReplayOverlay({
             className="inline-flex h-9 items-center gap-1.5 rounded-xl border border-rose-400/40 bg-[#1c1216]/95 px-3 text-xs font-bold text-rose-200 hover:bg-rose-500/20 transition-colors cursor-pointer whitespace-nowrap shrink-0"
           >
             <X className="h-4 w-4" />
-            <span>Exit Replay</span>
+            <span>{t('replay.exitReplay')}</span>
           </button>
         </div>
       </div>
@@ -499,7 +523,7 @@ export function ReplayOverlay({
                   : 'text-slate-300 hover:text-white'
               }`}
             >
-              Shot Info
+              {t('replay.shotInfoTab')}
             </button>
             {replayHighlights.length > 0 && (
               <button
@@ -513,7 +537,7 @@ export function ReplayOverlay({
                 }`}
               >
                 <Flame className="h-3 w-3" />
-                <span>Highlights ({replayHighlights.length})</span>
+                <span>{t('replay.highlightsCount', { count: replayHighlights.length })}</span>
               </button>
             )}
             {isMatchMode && chronoShots.length > 1 && (
@@ -527,7 +551,7 @@ export function ReplayOverlay({
                     : 'text-slate-300 hover:text-white'
                 }`}
               >
-                Shots ({chronoShots.length})
+                {t('replay.shotsCountTab', { count: chronoShots.length })}
               </button>
             )}
           </div>
@@ -537,7 +561,7 @@ export function ReplayOverlay({
             onClick={() => setAnalysisCollapsed((v) => !v)}
             className="text-[11px] font-semibold text-slate-400 hover:text-white cursor-pointer whitespace-nowrap"
           >
-            {analysisCollapsed ? 'Open' : 'Hide'}
+            {analysisCollapsed ? t('replay.openLabel') : t('replay.hideLabel')}
           </button>
         </div>
 
@@ -549,17 +573,19 @@ export function ReplayOverlay({
                   currentShot.isFoul ? 'text-rose-300' : 'text-white'
                 }`}
               >
-                {currentShot.resultLabel}
+                {localizedResultLabel}
               </div>
               <div className="mt-0.5 text-[11px] font-mono tabular-nums text-slate-400">
-                {currentShot.durationSec.toFixed(2)}s · Power {Math.round(currentShot.power * 100)}%
-                {currentShot.isBreakShot ? ' · Break' : ''}
+                <span dir="ltr">{currentShot.durationSec.toFixed(2)}s</span> ·{' '}
+                {t('replay.powerPct', { pct: Math.round(currentShot.power * 100) })}
+                {currentShot.isBreakShot ? t('replay.breakSuffix') : ''}
               </div>
             </div>
 
             <div className="flex items-center gap-3">
               <div
-                title={`Spin: ${spinLabel}`}
+                title={t('replay.spinTooltip', { spin: spinLabel })}
+                dir="ltr"
                 className="relative h-10 w-10 shrink-0 rounded-full border border-white/20"
                 style={{
                   background:
@@ -577,17 +603,17 @@ export function ReplayOverlay({
               <div className="min-w-0 flex-1">
                 <div className="text-[11px] font-bold text-white truncate">{spinLabel}</div>
                 <div className="mt-0.5 text-[11px] font-mono tabular-nums text-slate-400">
-                  {cueHits} Cue · {ballHits} Ball · {railHits} Rail
+                  {t('replay.collisionsCountSummary', { cue: cueHits, ball: ballHits, rail: railHits })}
                 </div>
                 <div className="text-[10px] text-slate-400">
-                  {currentShot.trajectoriesCount} ball paths tracked
+                  {t('replay.ballPathsTracked', { count: currentShot.trajectoriesCount })}
                 </div>
               </div>
             </div>
 
             <div className="flex items-center justify-between gap-2 border-t border-white/10 pt-2">
               <span className="text-[11px] font-semibold text-slate-400 shrink-0">
-                Pocketed
+                {t('replay.pocketedLabel')}
               </span>
               {currentShot.pocketedBalls.length > 0 ? (
                 <div className="flex flex-wrap items-center justify-end gap-1">
@@ -596,7 +622,7 @@ export function ReplayOverlay({
                   ))}
                 </div>
               ) : (
-                <span className="text-[11px] text-slate-500">None</span>
+                <span className="text-[11px] text-slate-500">{t('common.none')}</span>
               )}
             </div>
 
@@ -612,7 +638,7 @@ export function ReplayOverlay({
               >
                 <Crosshair className="h-3.5 w-3.5" />
                 <span>
-                  Slow-Mo Impact ({currentShot.firstImpactTimeSec.toFixed(2)}s @ 0.25x)
+                  {t('replay.slowMoImpactBtn', { sec: currentShot.firstImpactTimeSec.toFixed(2) })}
                 </span>
               </button>
             )}
@@ -621,33 +647,36 @@ export function ReplayOverlay({
 
         {!analysisCollapsed && drawerTab === 'highlights' && (
           <div className="mt-2.5 space-y-1.5 max-h-[240px] overflow-y-auto pr-0.5">
-            {replayHighlights.map((hl) => (
-              <button
-                key={hl.id}
-                type="button"
-                data-testid={`replay-highlight-${hl.id}`}
-                onClick={() => {
-                  soundEngine.playUiClick();
-                  onJumpToHighlight?.(hl.id);
-                }}
-                className="w-full rounded-lg border border-white/10 bg-white/[0.03] px-2.5 py-2 text-left hover:border-amber-400/45 hover:bg-amber-500/10 transition-colors cursor-pointer"
-              >
-                <div className="flex items-center justify-between gap-2">
-                  <span
-                    className={`rounded border px-1.5 py-0.5 text-[9px] font-bold uppercase ${highlightBadgeClass(hl.category)}`}
-                  >
-                    {formatHighlightCategoryLabel(hl.category)}
-                  </span>
-                  <span className="font-mono text-[10px] tabular-nums text-amber-300">
-                    Shot #{hl.shotNumber} · {formatClock(hl.matchTimeSec)}
-                  </span>
-                </div>
-                <div className="mt-1 text-[11px] font-bold text-white">{hl.title}</div>
-                <div className="mt-0.5 text-[10px] leading-snug text-slate-400">
-                  {hl.description}
-                </div>
-              </button>
-            ))}
+            {replayHighlights.map((hl) => {
+              const locHl = localizeHighlight(hl, lang);
+              return (
+                <button
+                  key={hl.id}
+                  type="button"
+                  data-testid={`replay-highlight-${hl.id}`}
+                  onClick={() => {
+                    soundEngine.playUiClick();
+                    onJumpToHighlight?.(hl.id);
+                  }}
+                  className="w-full rounded-lg border border-white/10 bg-white/[0.03] px-2.5 py-2 text-start hover:border-amber-400/45 hover:bg-amber-500/10 transition-colors cursor-pointer"
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span
+                      className={`rounded border px-1.5 py-0.5 text-[9px] font-bold uppercase ${highlightBadgeClass(hl.category)}`}
+                    >
+                      {t(getHighlightCategoryKey(hl.category))}
+                    </span>
+                    <span className="font-mono text-[10px] tabular-nums text-amber-300">
+                      {t('replay.shotNumberLabel', { num: hl.shotNumber })} · {formatClock(hl.matchTimeSec)}
+                    </span>
+                  </div>
+                  <div className="mt-1 text-[11px] font-bold text-white">{locHl.title}</div>
+                  <div className="mt-0.5 text-[10px] leading-snug text-slate-400">
+                    {locHl.description}
+                  </div>
+                </button>
+              );
+            })}
           </div>
         )}
 
@@ -664,16 +693,17 @@ export function ReplayOverlay({
                     soundEngine.playUiClick();
                     onSelectShot(s.id);
                   }}
-                  className={`flex w-full items-center justify-between gap-2 rounded-lg border px-2.5 py-1.5 text-left text-[11px] cursor-pointer ${
+                  className={`flex w-full items-center justify-between gap-2 rounded-lg border px-2.5 py-1.5 text-start text-[11px] cursor-pointer ${
                     active
                       ? 'border-amber-400/60 bg-amber-500/18 text-white'
                       : 'border-white/8 bg-white/[0.02] text-slate-300 hover:bg-white/8'
                   }`}
                 >
                   <span className="min-w-0 truncate font-semibold">
-                    #{s.shotNumber} {s.shooterName} — {s.resultLabel}
+                    #{s.shotNumber} {localizePlayerName(s.shooterName, s.shooter, lang)} —{' '}
+                    {localizeShotResultLabel(s.resultLabel, lang)}
                   </span>
-                  <span className="font-mono text-[10px] tabular-nums text-slate-400 shrink-0">
+                  <span className="font-mono text-[10px] tabular-nums text-slate-400 shrink-0" dir="ltr">
                     {formatClock(s.startMatchTimeSec)}
                   </span>
                 </button>
@@ -685,14 +715,14 @@ export function ReplayOverlay({
 
       {/* Bottom Transport & Timeline Control Dock */}
       <div className="pointer-events-auto mx-auto w-full max-w-4xl rounded-2xl border border-white/12 bg-[#0c1219]/95 px-3 py-2.5 sm:px-4 shadow-2xl">
-        {replayVideoNotice && (
+        {localizedVideoNotice && (
           <div className="mb-1 text-center text-[11px] font-semibold text-amber-300">
-            {replayVideoNotice}
+            {localizedVideoNotice}
           </div>
         )}
 
         {/* Timeline Scrubber with Highlight / Collision / Pocket Markers */}
-        <div className="relative flex items-center gap-3">
+        <div className="relative flex items-center gap-3" dir="ltr">
           <span className="w-12 text-[11px] font-mono tabular-nums text-amber-300 shrink-0">
             {isMatchMode ? formatClock(timelineValue) : `${timelineValue.toFixed(2)}s`}
           </span>
@@ -708,10 +738,11 @@ export function ReplayOverlay({
             {isMatchMode ? (
               replayHighlights.map((hl) => {
                 const leftPct = Math.max(0, Math.min(100, (hl.matchTimeSec / timelineMax) * 100));
+                const locHl = localizeHighlight(hl, lang);
                 return (
                   <span
                     key={hl.id}
-                    title={`${hl.title} (Shot #${hl.shotNumber})`}
+                    title={`${locHl.title} (${t('replay.shotNumberLabel', { num: hl.shotNumber })})`}
                     className={`pointer-events-none absolute top-1/2 -translate-x-1/2 -translate-y-1/2 rounded-full ${
                       hl.category === 'foul'
                         ? 'h-3 w-1.5 bg-rose-400'
@@ -731,7 +762,11 @@ export function ReplayOverlay({
                   return (
                     <span
                       key={col.id}
-                      title={`${col.kind === 'cue_ball' ? 'Cue Impact' : 'Ball Collision'} (${col.timeSec.toFixed(2)}s)`}
+                      title={
+                        col.kind === 'cue_ball'
+                          ? t('replay.cueImpactMarker', { sec: col.timeSec.toFixed(2) })
+                          : t('replay.ballCollisionMarker', { sec: col.timeSec.toFixed(2) })
+                      }
                       className={`pointer-events-none absolute top-1/2 -translate-x-1/2 -translate-y-1/2 rounded-full ${
                         col.kind === 'cue_ball'
                           ? 'h-3 w-1 bg-amber-300'
@@ -746,7 +781,10 @@ export function ReplayOverlay({
                   return (
                     <span
                       key={`pk-${p.ballNumber}`}
-                      title={`Pocketed #${p.ballNumber} (${p.timeSec.toFixed(2)}s)`}
+                      title={t('replay.pocketedMarker', {
+                        ball: p.ballNumber,
+                        sec: p.timeSec.toFixed(2),
+                      })}
                       className="pointer-events-none absolute top-1/2 h-3 w-1.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-emerald-400"
                       style={{ left: `${leftPct}%` }}
                     />
@@ -758,7 +796,7 @@ export function ReplayOverlay({
             <input
               type="range"
               data-testid="replay-timeline-slider"
-              aria-label="Replay timeline"
+              aria-label={t('replay.timelineAria')}
               min={0}
               max={timelineMax}
               step={0.01}
@@ -784,8 +822,8 @@ export function ReplayOverlay({
                   soundEngine.playUiClick();
                   onJumpToStart();
                 }}
-                title="Jump to beginning"
-                aria-label="Jump to beginning"
+                title={t('replay.jumpStartTooltip')}
+                aria-label={t('replay.jumpStartTooltip')}
                 className="inline-flex h-10 w-9 items-center justify-center rounded-xl border border-white/12 bg-white/5 text-slate-200 hover:bg-white/10 cursor-pointer shrink-0"
               >
                 <SkipBack className="h-4 w-4" />
@@ -799,18 +837,18 @@ export function ReplayOverlay({
                 soundEngine.playUiClick();
                 onTogglePlay();
               }}
-              aria-label={replayPlaying ? 'Pause Replay' : 'Play Replay'}
+              aria-label={replayPlaying ? t('replay.pauseAria') : t('replay.playAria')}
               className="inline-flex h-10 items-center gap-1.5 rounded-xl bg-amber-500 px-3.5 text-xs font-extrabold text-slate-950 hover:bg-amber-400 transition-colors cursor-pointer whitespace-nowrap shrink-0"
             >
               {replayPlaying ? (
                 <>
                   <Pause className="h-3.5 w-3.5" />
-                  <span>Pause</span>
+                  <span>{t('replay.pause')}</span>
                 </>
               ) : (
                 <>
                   <Play className="h-3.5 w-3.5" />
-                  <span>Play</span>
+                  <span>{t('replay.play')}</span>
                 </>
               )}
             </button>
@@ -822,11 +860,11 @@ export function ReplayOverlay({
                 soundEngine.playUiClick();
                 onRestart();
               }}
-              aria-label="Restart Replay"
+              aria-label={t('replay.restartAria')}
               className="inline-flex h-10 items-center gap-1.5 rounded-xl border border-white/12 bg-white/5 px-3 text-xs font-semibold text-slate-200 hover:bg-white/10 transition-colors cursor-pointer whitespace-nowrap shrink-0"
             >
               <RotateCcw className="h-3.5 w-3.5 text-amber-400" />
-              <span>Restart</span>
+              <span>{t('replay.restartShot')}</span>
             </button>
 
             {onJumpToEnd && (
@@ -837,8 +875,8 @@ export function ReplayOverlay({
                   soundEngine.playUiClick();
                   onJumpToEnd();
                 }}
-                title="Jump to end"
-                aria-label="Jump to end"
+                title={t('replay.jumpEndTooltip')}
+                aria-label={t('replay.jumpEndTooltip')}
                 className="inline-flex h-10 w-9 items-center justify-center rounded-xl border border-white/12 bg-white/5 text-slate-200 hover:bg-white/10 cursor-pointer shrink-0"
               >
                 <SkipForward className="h-4 w-4" />
@@ -854,7 +892,7 @@ export function ReplayOverlay({
                 soundEngine.playUiClick();
                 onToggleAutoSlowMo();
               }}
-              title="Automatically slow down to 0.25x during ball collisions"
+              title={t('replay.autoSlowMoTooltip')}
               className={`inline-flex h-10 items-center gap-1.5 rounded-xl border px-2.5 text-[11px] font-semibold transition-colors cursor-pointer whitespace-nowrap shrink-0 ${
                 replayAutoSlowMo
                   ? 'border-amber-400/60 bg-amber-500/20 text-amber-200'
@@ -862,12 +900,13 @@ export function ReplayOverlay({
               }`}
             >
               <Gauge className="h-3.5 w-3.5 text-amber-400" />
-              <span>Impact Slow-Mo</span>
+              <span>{t('replay.autoSlowMo')}</span>
             </button>
 
             <div
               role="group"
-              aria-label="Replay speed"
+              dir="ltr"
+              aria-label={t('replay.replaySpeedAria')}
               className="flex items-center rounded-xl border border-white/10 bg-black/40 p-0.5"
             >
               {REPLAY_SPEEDS.map((spd) => (

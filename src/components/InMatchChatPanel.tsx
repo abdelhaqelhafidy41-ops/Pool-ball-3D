@@ -1,14 +1,15 @@
 import { Ban, EyeOff, Flag, MessageSquare, Send, VolumeX, X } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { soundEngine } from '../game/utils/SoundEngine';
+import { getIntlLocale, localizeServerError, useTranslation, type AppLanguage } from '../i18n';
 import { multiplayerManager } from '../multiplayer/MultiplayerManager';
 import { socialClient } from '../multiplayer/SocialClient';
 import { SOCIAL_LIMITS, type SocialReportReason } from '../multiplayer/shared/social';
 import { useGameStore } from '../store/useGameStore';
 
-function formatClock(ms: number): string {
+function formatClock(ms: number, lang: AppLanguage): string {
   try {
-    return new Date(ms).toLocaleTimeString(undefined, {
+    return new Date(ms).toLocaleTimeString(getIntlLocale(lang), {
       hour: '2-digit',
       minute: '2-digit',
     });
@@ -18,6 +19,7 @@ function formatClock(ms: number): string {
 }
 
 export function InMatchChatPanel() {
+  const { t, lang } = useTranslation();
   const screen = useGameStore((s) => s.screen);
   const opponentType = useGameStore((s) => s.matchConfig.opponentType);
   const replayActive = useGameStore((s) => s.replayActive);
@@ -82,9 +84,9 @@ export function InMatchChatPanel() {
         onlineError.code === 'MESSAGE_TOO_LONG' ||
         onlineError.code === 'SPECTATOR_CHAT_DISABLED')
     ) {
-      setLocalError(onlineError.message);
+      setLocalError(localizeServerError(onlineError, lang));
     }
-  }, [onlineError]);
+  }, [onlineError, lang]);
 
   if (screen !== 'playing' || opponentType !== 'online' || replayActive || !onlineRoom) {
     return null;
@@ -105,7 +107,7 @@ export function InMatchChatPanel() {
     const trimmed = input.trim();
     if (!trimmed) return;
     if (trimmed.length > SOCIAL_LIMITS.chatMaxLength) {
-      setLocalError(`Max ${SOCIAL_LIMITS.chatMaxLength} characters.`);
+      setLocalError(t('chat.maxCharsError', { max: SOCIAL_LIMITS.chatMaxLength }));
       return;
     }
     setLocalError(null);
@@ -113,14 +115,20 @@ export function InMatchChatPanel() {
     if (sent) {
       setInput('');
     } else {
-      setLocalError('Room chat is connecting...');
+      setLocalError(t('chat.roomChatConnecting'));
     }
   };
 
   const handleBlockPlayer = async (playerId: string, name: string) => {
     soundEngine.playUiClick();
     const res = await socialClient.blockPlayer(playerId);
-    setActionMsg(res.ok ? `${name} blocked.` : res.error ?? 'Failed to block.');
+    setActionMsg(
+      res.ok
+        ? t('chat.opponentBlocked', { name })
+        : res.error
+          ? localizeServerError(res.error, lang)
+          : t('chat.blockFailed'),
+    );
   };
 
   const handleReportSubmit = async () => {
@@ -134,7 +142,13 @@ export function InMatchChatPanel() {
       excerpt: reportTarget.excerpt,
     });
     setReportTarget(null);
-    setActionMsg(res.ok ? 'Report submitted.' : res.error ?? 'Failed to report.');
+    setActionMsg(
+      res.ok
+        ? t('chat.reportSubmitted')
+        : res.error
+          ? localizeServerError(res.error, lang)
+          : t('chat.reportFailed'),
+    );
   };
 
   return (
@@ -160,7 +174,7 @@ export function InMatchChatPanel() {
         }`}
       >
         <MessageSquare className="h-3.5 w-3.5 text-amber-400" />
-        <span>{onlineSpectating ? 'Broadcast Chat' : 'Chat'}</span>
+        <span>{onlineSpectating ? t('chat.broadcastChatToggle') : t('chat.toggleButton')}</span>
         {roomChatUnreadCount > 0 && (
           <span className="rounded bg-amber-500 px-1.5 py-0.2 font-mono text-[10px] font-black text-slate-950 tabular-nums">
             {roomChatUnreadCount}
@@ -174,17 +188,17 @@ export function InMatchChatPanel() {
           <div className="flex items-center justify-between gap-2 border-b border-white/10 px-2.5 py-1.5 bg-black/30">
             <span className="text-[11px] font-extrabold text-white truncate">
               {activeChannel === 'spectator'
-                ? 'Spectator Chat'
+                ? t('chat.spectatorChatTitle')
                 : opponent
-                  ? `Match Chat · ${opponent.displayName}`
-                  : 'Match Chat'}
+                  ? t('chat.matchChatWithPlayer', { name: opponent.displayName })
+                  : t('chat.matchChatDefaultTitle')}
             </span>
             <div className="flex items-center gap-1">
               {opponent?.playerId && (
                 <>
                   <button
                     type="button"
-                    title="Report Opponent"
+                    title={t('chat.reportOpponent')}
                     onClick={() => {
                       const lastMsg = [...matchMessages]
                         .reverse()
@@ -201,7 +215,7 @@ export function InMatchChatPanel() {
                   </button>
                   <button
                     type="button"
-                    title="Block Opponent"
+                    title={t('chat.blockOpponent')}
                     onClick={() => void handleBlockPlayer(opponent.playerId!, opponent.displayName)}
                     className="inline-flex h-6 w-6 items-center justify-center rounded border border-white/10 bg-white/5 text-slate-300 hover:text-rose-300 cursor-pointer"
                   >
@@ -211,7 +225,7 @@ export function InMatchChatPanel() {
               )}
               <button
                 type="button"
-                aria-label="Close match chat"
+                aria-label={t('chat.closeChatAria')}
                 onClick={() => setRoomChatOpen(false)}
                 className="inline-flex h-6 w-6 items-center justify-center rounded border border-white/10 bg-white/5 text-slate-300 hover:text-white cursor-pointer"
               >
@@ -232,7 +246,7 @@ export function InMatchChatPanel() {
                   : 'text-slate-300 hover:text-white'
               }`}
             >
-              Match ({matchMessages.length})
+              {t('chat.tabMatchCount', { count: matchMessages.length })}
             </button>
             <button
               type="button"
@@ -244,31 +258,31 @@ export function InMatchChatPanel() {
                   : 'text-slate-300 hover:text-white'
               }`}
             >
-              Spectators ({spectatorMessages.length})
+              {t('chat.tabSpectatorsCount', { count: spectatorMessages.length })}
             </button>
           </div>
 
           {reportTarget && (
             <div className="flex flex-wrap items-center gap-1.5 border-b border-rose-500/25 bg-rose-950/30 px-2.5 py-1.5 text-[11px]">
               <span className="text-[10px] font-semibold text-rose-200 truncate max-w-[110px]">
-                Report {reportTarget.name}
+                {t('chat.reportHeader', { name: reportTarget.name })}
               </span>
               <select
                 value={reportReason}
                 onChange={(e) => setReportReason(e.target.value as SocialReportReason)}
                 className="flex-1 rounded border border-white/15 bg-[#0b1017] px-1.5 py-1 text-[10px] text-white"
               >
-                <option value="harassment">Abuse</option>
-                <option value="spam">Spam</option>
-                <option value="cheating">Cheating</option>
-                <option value="other">Other</option>
+                <option value="harassment">{t('chat.reasonAbuse')}</option>
+                <option value="spam">{t('chat.reasonSpam')}</option>
+                <option value="cheating">{t('chat.reasonCheating')}</option>
+                <option value="other">{t('chat.reasonOther')}</option>
               </select>
               <button
                 type="button"
                 onClick={() => void handleReportSubmit()}
                 className="rounded bg-rose-500 px-2 py-1 text-[10px] font-bold text-white hover:bg-rose-400 cursor-pointer"
               >
-                Submit
+                {t('chat.submitReportShort')}
               </button>
             </div>
           )}
@@ -293,7 +307,7 @@ export function InMatchChatPanel() {
             <div className="flex items-center justify-between border-b border-white/10 bg-black/25 px-2.5 py-1 text-[10px] text-slate-400">
               <span className="inline-flex items-center gap-1">
                 <VolumeX className="h-3 w-3 text-slate-400" />
-                {spectatorMutedPlayerIds.length} muted user(s)
+                {t('chat.mutedUsersCount', { count: spectatorMutedPlayerIds.length })}
               </span>
               <button
                 type="button"
@@ -302,7 +316,7 @@ export function InMatchChatPanel() {
                 }}
                 className="text-amber-300 hover:underline cursor-pointer"
               >
-                Unmute All
+                {t('chat.unmuteAll')}
               </button>
             </div>
           )}
@@ -314,18 +328,18 @@ export function InMatchChatPanel() {
             {visibleMessages.length === 0 ? (
               <div className="py-5 text-center text-[11px] text-slate-400">
                 {activeChannel === 'spectator'
-                  ? 'No spectator messages yet.'
-                  : 'No match messages yet.'}
+                  ? t('chat.noSpectatorMessages')
+                  : t('chat.noMatchMessages')}
               </div>
             ) : (
               visibleMessages.map((m) => {
                 const mine = Boolean(selfPlayerId && m.senderPlayerId === selfPlayerId);
                 const roleLabel =
                   m.senderRole === 'spectator'
-                    ? 'Spec'
+                    ? t('chat.specRoleShort')
                     : m.senderRole === 'player1'
-                      ? 'P1'
-                      : 'P2';
+                      ? t('chat.p1RoleShort')
+                      : t('chat.p2RoleShort');
                 return (
                   <div
                     key={m.messageId}
@@ -349,21 +363,21 @@ export function InMatchChatPanel() {
                       <span>{m.body}</span>
                     </div>
                     <div className="mt-0.5 flex items-center gap-1.5 text-[9px] text-slate-500">
-                      <span>{formatClock(m.createdAtMs)}</span>
+                      <span>{formatClock(m.createdAtMs, lang)}</span>
                       {!mine && m.senderPlayerId && (
                         <>
                           <button
                             type="button"
-                            title={`Mute ${m.senderName} locally`}
+                            title={t('chat.muteUserTooltip', { name: m.senderName })}
                             onClick={() => toggleMuteSpectatorChatUser(m.senderPlayerId)}
                             className="inline-flex items-center gap-0.5 text-slate-400 hover:text-amber-300 cursor-pointer"
                           >
                             <EyeOff className="h-2.5 w-2.5" />
-                            Mute
+                            {t('chat.muteShort')}
                           </button>
                           <button
                             type="button"
-                            title={`Report ${m.senderName}`}
+                            title={t('chat.reportUserTooltip', { name: m.senderName })}
                             onClick={() =>
                               setReportTarget({
                                 playerId: m.senderPlayerId,
@@ -373,7 +387,7 @@ export function InMatchChatPanel() {
                             }
                             className="text-slate-400 hover:text-rose-300 cursor-pointer"
                           >
-                            Report
+                            {t('social.reportBtn')}
                           </button>
                         </>
                       )}
@@ -396,14 +410,16 @@ export function InMatchChatPanel() {
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
                 placeholder={
-                  onlineSpectating ? 'Send spectator chat...' : 'Send match chat...'
+                  onlineSpectating
+                    ? t('chat.sendSpectatorPlaceholder')
+                    : t('chat.sendMatchPlaceholder')
                 }
                 className="min-w-0 flex-1 rounded-lg border border-white/12 bg-[#0b1017] px-2 py-1 text-[11px] text-white focus:border-amber-400 focus:outline-none"
               />
               <button
                 type="submit"
                 disabled={!input.trim()}
-                aria-label="Send chat message"
+                aria-label={t('chat.sendMessageAria')}
                 className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-amber-500 text-slate-950 hover:bg-amber-400 disabled:opacity-45 cursor-pointer"
               >
                 <Send className="h-3.5 w-3.5" />
@@ -412,10 +428,10 @@ export function InMatchChatPanel() {
           ) : (
             <div className="border-t border-white/10 bg-black/30 px-2.5 py-2 text-center text-[10px] text-slate-400">
               {onlineSpectating && activeChannel === 'spectator' && !spectatorChatEnabled
-                ? 'Spectator chat is disabled by the room host.'
+                ? t('chat.spectatorDisabledNotice')
                 : onlineSpectating
-                  ? 'Match chat is read-only for spectators.'
-                  : 'Spectator chat is read-only for active players.'}
+                  ? t('chat.spectatorMatchReadOnly')
+                  : t('chat.playersSpectatorReadOnly')}
             </div>
           )}
         </div>

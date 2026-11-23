@@ -1,5 +1,5 @@
 import type { AiDifficulty, BallGroup, MatchBannerNotice, PlayerId, PocketId, RuleProfileId } from '../game/rules/types';
-import type { MatchHighlight } from '../game/replay/types';
+import type { ReplayHighlight } from '../game/replay/types';
 import type { CoinTransactionReason, CosmeticItemDef, ItemRarity } from '../multiplayer/shared/economy';
 import type { ClubJoinMode, ClubRole, PresenceStatus } from '../multiplayer/shared/social';
 import type { CompetitionRegion, TeamMatchFormat } from '../multiplayer/shared/clubLeagues';
@@ -7,6 +7,7 @@ import type { TournamentStatus, TournamentType } from '../multiplayer/shared/tou
 import { ar } from './translations/ar';
 import { en } from './translations/en';
 import type { AppLanguage, PluralForms, TextDirection, TranslationParams, TranslationTree } from './types';
+export type { AppLanguage } from './types';
 import { recordMissingTranslationKey } from './validation';
 
 export const LANGUAGE_STORAGE_KEY = 'ultimate_pool_3d_language_v1';
@@ -521,14 +522,15 @@ export function localizeShotResultLabel(label: string | null | undefined, lang: 
   return localizeMatchHeadline(raw, lang);
 }
 
-export function localizeHighlight(hl: MatchHighlight, lang: AppLanguage): { title: string; description: string } {
+export function localizeHighlight(hl: ReplayHighlight, lang: AppLanguage): { title: string; description: string } {
   if (lang === 'en') return { title: hl.title, description: hl.description };
-  switch (hl.kind) {
+  const shooter = localizePlayerName(hl.shooterName, hl.shooter, lang);
+  switch (hl.category) {
     case 'break':
       return {
         title: tLang(lang, 'replay.hlOpeningBreakTitle'),
         description: tLang(lang, 'replay.hlOpeningBreakDesc', {
-          shooter: hl.shooter ? '' : '',
+          shooter,
           pocketNote: '',
         }).replace(/\s+\./, '.'),
       };
@@ -537,25 +539,28 @@ export function localizeHighlight(hl: MatchHighlight, lang: AppLanguage): { titl
         title: tLang(lang, 'replay.hlEightBallTitle'),
         description: hl.description,
       };
-    case 'winning_shot':
+    case 'winning_moment':
       return {
         title: tLang(lang, 'replay.hlWinningMomentTitle'),
         description: tLang(lang, 'replay.hlWinningMomentDesc', {
-          shooter: '',
+          shooter,
           shot: hl.shotNumber,
         }).trim(),
       };
-    case 'multi_pocket':
+    case 'multi_pocket': {
+      const countMatch = hl.title.match(/(\d+)/);
+      const count = countMatch ? Number(countMatch[1]) : 2;
       return {
-        title: tLang(lang, 'replay.hlMultiPocketTitle', { count: 2 }),
-        description: hl.description,
+        title: tLang(lang, 'replay.hlMultiPocketTitle', { count }),
+        description: tLang(lang, 'replay.hlMultiPocketDesc', { shooter, count }),
       };
-    case 'long_shot':
+    }
+    case 'long_pocket':
       return {
         title: tLang(lang, 'replay.hlLongPotTitle'),
         description: tLang(lang, 'replay.hlLongPotDesc', { shot: hl.shotNumber }),
       };
-    case 'foul_turn':
+    case 'foul':
       return {
         title: tLang(lang, 'replay.hlFoulTurnTitle'),
         description: hl.description,
@@ -738,6 +743,85 @@ export function localizeSeasonNameAndTheme(
   return { name, theme };
 }
 
+export function localizeProgressionToast(
+  title: string,
+  detail: string,
+  lang: AppLanguage,
+): { title: string; detail: string } {
+  if (lang === 'en') return { title, detail };
+
+  let locTitle = title;
+  let locDetail = detail;
+
+  const seasonStartedMatch = title.match(/^(.+?)\s+Started$/);
+  const tierUnlockedMatch = title.match(/^Battle Pass Tier\s+(\d+)\s+Unlocked$/);
+  const dailyMissionMatch = title.match(/^Daily Mission Complete:\s+(.+)$/);
+  const weeklyChallengeMatch = title.match(/^Weekly Challenge Complete:\s+(.+)$/);
+  const seasonEndingMatch = title.match(/^(.+?)\s+Ending Soon$/);
+  const tierClaimedMatch = title.match(/^Tier\s+(\d+)\s+Reward Claimed$/);
+
+  if (seasonStartedMatch) {
+    locTitle = tLang(lang, 'battlePass.toastSeasonStartedTitle', { season: seasonStartedMatch[1] });
+  } else if (tierUnlockedMatch) {
+    locTitle = tLang(lang, 'battlePass.toastTierUnlockedTitle', { level: tierUnlockedMatch[1] });
+  } else if (dailyMissionMatch) {
+    const rawM = dailyMissionMatch[1];
+    const arM = Object.values(TRANSLATIONS.en.catalog.missions).findIndex((m) => m.title === rawM);
+    const missionKeys = Object.keys(TRANSLATIONS.ar.catalog.missions);
+    const localizedMTitle =
+      arM >= 0 ? TRANSLATIONS.ar.catalog.missions[missionKeys[arM] as keyof typeof ar.catalog.missions].title : rawM;
+    locTitle = tLang(lang, 'battlePass.toastDailyMissionTitle', { title: localizedMTitle });
+  } else if (weeklyChallengeMatch) {
+    const rawW = weeklyChallengeMatch[1];
+    const arW = Object.values(TRANSLATIONS.en.catalog.missions).findIndex((m) => m.title === rawW);
+    const missionKeys = Object.keys(TRANSLATIONS.ar.catalog.missions);
+    const localizedWTitle =
+      arW >= 0 ? TRANSLATIONS.ar.catalog.missions[missionKeys[arW] as keyof typeof ar.catalog.missions].title : rawW;
+    locTitle = tLang(lang, 'battlePass.toastWeeklyChallengeTitle', { title: localizedWTitle });
+  } else if (seasonEndingMatch) {
+    locTitle = tLang(lang, 'battlePass.toastSeasonEndingTitle', { season: seasonEndingMatch[1] });
+  } else if (title === 'Mission Reward Claimed') {
+    locTitle = tLang(lang, 'battlePass.toastMissionClaimedTitle');
+  } else if (title === 'Premium Battle Pass Activated') {
+    locTitle = tLang(lang, 'battlePass.toastPremiumActivatedTitle');
+  } else if (tierClaimedMatch) {
+    locTitle = tLang(lang, 'battlePass.toastTierClaimedTitle', { level: tierClaimedMatch[1] });
+  } else if (title === 'All Pending Rewards Claimed') {
+    locTitle = tLang(lang, 'battlePass.toastAllClaimedTitle');
+  }
+
+  const maxTiersMatch = detail.match(/^(\d+)\s+seasonal Battle Pass tiers are now live\.$/);
+  const coinsXpReadyMatch = detail.match(/^\+(\d+)\s+POOL COINS\s+·\s+\+(\d+)\s+Season XP ready to claim\.$/);
+  const coinsXpAddedMatch = detail.match(/^\+(\d+)\s+POOL COINS\s+·\s+\+(\d+)\s+Season XP added\.$/);
+  const premDetailMatch = detail.match(/^(.+?)\s+Premium Track rewards are now unlocked\.$/);
+
+  if (maxTiersMatch) {
+    locDetail = tLang(lang, 'battlePass.toastSeasonStartedDetail', { max: maxTiersMatch[1] });
+  } else if (detail === 'Earn more Season XP or claim your unlocked rewards.') {
+    locDetail = tLang(lang, 'battlePass.toastTierUnlockedDetail');
+  } else if (coinsXpReadyMatch) {
+    locDetail = tLang(lang, 'battlePass.toastMissionDetailCoinsXp', {
+      coins: coinsXpReadyMatch[1],
+      xp: coinsXpReadyMatch[2],
+    });
+  } else if (detail === 'Claim any remaining Battle Pass rewards before rollover.') {
+    locDetail = tLang(lang, 'battlePass.toastSeasonEndingDetail');
+  } else if (coinsXpAddedMatch) {
+    locDetail = tLang(lang, 'battlePass.toastMissionClaimedDetail', {
+      coins: coinsXpAddedMatch[1],
+      xp: coinsXpAddedMatch[2],
+    });
+  } else if (premDetailMatch) {
+    locDetail = tLang(lang, 'battlePass.toastPremiumActivatedDetail', { season: premDetailMatch[1] });
+  } else if (detail === 'Reward added to your account.') {
+    locDetail = tLang(lang, 'battlePass.toastTierClaimedDetailFallback');
+  } else if (detail === 'Account synchronized.') {
+    locDetail = tLang(lang, 'battlePass.toastAllClaimedDetailFallback');
+  }
+
+  return { title: locTitle, detail: locDetail };
+}
+
 export function localizePresence(status: PresenceStatus, lang: AppLanguage): string {
   switch (status) {
     case 'online':
@@ -892,6 +976,9 @@ export function localizeServerError(
   // Fallback message translation for common English server/client error strings
   const lower = message.toLowerCase();
   if (!lower) return tLang(lang, 'errors.networkGeneric');
+  if (lower.includes('competitive player session is unavailable')) {
+    return tLang(lang, 'errors.competitiveSessionUnavailable');
+  }
   if (lower.includes('session not initialized') || lower.includes('player session')) {
     return tLang(lang, 'errors.sessionNotInitialized');
   }
@@ -902,16 +989,81 @@ export function localizeServerError(
   if (lower.includes('username') && lower.includes('taken')) return tLang(lang, 'errors.usernameTaken');
   if (lower.includes('spectator')) return tLang(lang, 'errors.unableSpectateJoin');
   if (lower.includes('friend room')) return tLang(lang, 'errors.unableFriendRoom');
+  if (lower.includes('tournament') && lower.includes('room')) return tLang(lang, 'errors.unableEnterMatchRoom');
   if (lower.includes('tournament')) return tLang(lang, 'errors.unableTournamentRoom');
   if (lower.includes('board')) return tLang(lang, 'errors.unableClubBoardRoom');
   if (lower.includes('webgl')) return tLang(lang, 'errors.webglInitFailed');
   if (lower.includes('room') && lower.includes('expired')) return tLang(lang, 'errors.roomExpired');
   if (lower.includes('room') && lower.includes('full')) return tLang(lang, 'errors.roomFull');
   if (lower.includes('room') && lower.includes('not found')) return tLang(lang, 'errors.roomNotFound');
+  if (lower.includes('unable to create club')) return tLang(lang, 'errors.unableCreateClub');
+  if (lower.includes('unable to create team')) return tLang(lang, 'errors.unableCreateTeam');
+  if (lower.includes('unable to create league')) return tLang(lang, 'errors.unableCreateLeague');
+  if (lower.includes('unable to create championship')) return tLang(lang, 'errors.unableCreateChampionship');
+  if (lower.includes('unable to update club')) return tLang(lang, 'errors.unableUpdateClub');
+  if (lower.includes('unable to leave club')) return tLang(lang, 'errors.unableLeaveClub');
+  if (lower.includes('unable to invite')) return tLang(lang, 'errors.unableSendInvite');
+  if (lower.includes('unable to respond')) return tLang(lang, 'errors.unableRespondInvite');
+  if (lower.includes('unable to enter match room')) return tLang(lang, 'errors.unableEnterMatchRoom');
+  if (lower.includes('unable to enter') || lower.includes('unable to join match room')) {
+    return tLang(lang, 'errors.unableEnterRoom');
+  }
+  if (lower.includes('club') && lower.includes('full')) return tLang(lang, 'errors.clubFull');
+  if (lower.includes('already') && lower.includes('club')) return tLang(lang, 'errors.alreadyInClub');
+  if (lower.includes('permission') || lower.includes('forbidden') || lower.includes('not authorized')) {
+    return tLang(lang, 'errors.permissionDenied');
+  }
+  if (lower.includes('rate limit') || lower.includes('too many')) return tLang(lang, 'errors.rateLimited');
+  if (lower.includes('blocked')) return tLang(lang, 'errors.blockedUser');
   if (lower.includes('network error')) return tLang(lang, 'errors.networkGeneric');
   if (lower.includes('timed out') || lower.includes('timeout')) return tLang(lang, 'errors.matchmakingTimeout');
   if (lower.includes('restricted')) return tLang(lang, 'errors.rankedRestricted');
   if (lower.includes('suspended')) return tLang(lang, 'errors.suspended');
-  if (lower.includes('blocked')) return tLang(lang, 'errors.blockedUser');
+  if (lower === 'action failed.' || lower === 'action failed') return tLang(lang, 'errors.actionFailedGeneric');
   return message;
 }
+
+export function localizeReplayError(rawError: string | null | undefined, lang: AppLanguage): string {
+  const msg = (rawError ?? '').trim();
+  if (!msg) return tLang(lang, 'errors.replayImportFailed');
+  if (lang === 'en') return msg;
+  const lower = msg.toLowerCase();
+  if (lower.includes('empty')) return tLang(lang, 'errors.replayEmpty');
+  if (lower.includes('maximum permitted size')) return tLang(lang, 'errors.replayTooLarge');
+  if (lower.includes('corrupted replay json')) return tLang(lang, 'errors.replayCorruptedJson');
+  if (lower.includes('invalid replay structure')) return tLang(lang, 'errors.replayInvalidStructure');
+  if (lower.includes('unrecognized replay file format')) return tLang(lang, 'errors.replayUnrecognizedHeader');
+  if (lower.includes('unsupported replay format version')) return tLang(lang, 'errors.replayUnsupportedVersion');
+  if (lower.includes('missing replay payload')) return tLang(lang, 'errors.replayMissingPayload');
+  if (lower.includes('between 1 and 200')) return tLang(lang, 'errors.replayInvalidShotCount');
+  if (lower.includes('invalid replay match type')) return tLang(lang, 'errors.replayInvalidMatchType');
+  if (lower.includes('metadata is missing')) return tLang(lang, 'errors.replayMissingMetadata');
+  if (lower.includes('corrupted shot entry')) return tLang(lang, 'errors.replayCorruptedShot');
+  if (lower.includes('physics timing')) return tLang(lang, 'errors.replayInvalidShotPhysics');
+  if (lower.includes('frame buffer size mismatch')) return tLang(lang, 'errors.replayFrameSizeMismatch');
+  if (lower.includes('non-finite physics')) return tLang(lang, 'errors.replayNonFiniteCoords');
+  return tLang(lang, 'errors.replayImportFailed');
+}
+
+export function localizeAvatarLabel(id: string, fallback: string, lang: AppLanguage): string {
+  const avatars = TRANSLATIONS[lang].catalog.avatars as Record<string, string>;
+  if (id in avatars) {
+    return avatars[id];
+  }
+  return fallback;
+}
+
+export function localizeOnlineMatchType(matchType: string | null | undefined, lang: AppLanguage): string {
+  switch (matchType) {
+    case 'ranked':
+      return tLang(lang, 'lobby.roomRanked');
+    case 'private':
+      return tLang(lang, 'progression.matchTypePrivate');
+    case 'tournament':
+      return tLang(lang, 'progression.matchTypeTournament');
+    case 'quick':
+    default:
+      return tLang(lang, 'progression.matchTypeQuick');
+  }
+}
+

@@ -34,11 +34,22 @@ import {
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { RuleProfileId } from '../game/rules/types';
 import { soundEngine } from '../game/utils/SoundEngine';
+import {
+  type AppLanguage,
+  getActiveRuntimeLanguage,
+  getIntlLocale,
+  localizeClubJoinMode,
+  localizeClubRole,
+  localizePresence,
+  localizeRuleProfile,
+  localizeServerError,
+  tLang,
+  useTranslation,
+} from '../i18n';
 import { multiplayerManager } from '../multiplayer/MultiplayerManager';
 import { socialClient } from '../multiplayer/SocialClient';
 import { getAvatarVisualMeta } from '../multiplayer/shared/economy';
 import {
-  getClubRoleLabel,
   isClubOfficerRole,
   SOCIAL_LIMITS,
   type ClubEmblemIcon,
@@ -55,22 +66,11 @@ import {
 } from '../multiplayer/shared/social';
 import { type SocialTab, useGameStore } from '../store/useGameStore';
 
-export function presenceLabel(status: PresenceStatus): string {
-  switch (status) {
-    case 'online':
-      return 'Online';
-    case 'in_match':
-      return 'In Match';
-    case 'in_tournament':
-      return 'In Tournament';
-    case 'spectating':
-      return 'Spectating';
-    case 'busy':
-      return 'Busy';
-    case 'offline':
-    default:
-      return 'Offline';
-  }
+export function presenceLabel(
+  status: PresenceStatus,
+  lang: AppLanguage = getActiveRuntimeLanguage(),
+): string {
+  return localizePresence(status, lang);
 }
 
 export function presenceDotClass(status: PresenceStatus): string {
@@ -91,21 +91,25 @@ export function presenceDotClass(status: PresenceStatus): string {
   }
 }
 
-function formatLastSeen(lastSeenAtMs: number | null, status: PresenceStatus): string {
-  if (status !== 'offline') return presenceLabel(status);
-  if (!lastSeenAtMs || lastSeenAtMs <= 0) return 'Offline';
+function formatLastSeen(
+  lastSeenAtMs: number | null,
+  status: PresenceStatus,
+  lang: AppLanguage,
+): string {
+  if (status !== 'offline') return localizePresence(status, lang);
+  if (!lastSeenAtMs || lastSeenAtMs <= 0) return tLang(lang, 'social.presenceOffline');
   const diffMin = Math.max(0, Math.floor((Date.now() - lastSeenAtMs) / 60_000));
-  if (diffMin < 1) return 'Seen just now';
-  if (diffMin < 60) return `Seen ${diffMin}m ago`;
+  if (diffMin < 1) return tLang(lang, 'social.seenJustNow');
+  if (diffMin < 60) return tLang(lang, 'social.seenMinutesAgo', { count: diffMin });
   const diffHr = Math.floor(diffMin / 60);
-  if (diffHr < 24) return `Seen ${diffHr}h ago`;
+  if (diffHr < 24) return tLang(lang, 'social.seenHoursAgo', { count: diffHr });
   const diffDay = Math.floor(diffHr / 24);
-  return `Seen ${diffDay}d ago`;
+  return tLang(lang, 'social.seenDaysAgo', { count: diffDay });
 }
 
-function formatMessageTime(ms: number): string {
+function formatMessageTime(ms: number, lang: AppLanguage): string {
   try {
-    return new Date(ms).toLocaleTimeString(undefined, {
+    return new Date(ms).toLocaleTimeString(getIntlLocale(lang), {
       hour: '2-digit',
       minute: '2-digit',
     });
@@ -133,39 +137,43 @@ function renderClubEmblem(icon: ClubEmblemIcon, color: string, sizeClass = 'h-4 
   }
 }
 
-function notificationMeta(type: NotificationType): { label: string; tab?: SocialTab } {
+function notificationMeta(
+  type: NotificationType,
+  lang: AppLanguage,
+): { label: string; tab?: SocialTab } {
   switch (type) {
     case 'friend_request':
-      return { label: 'Friend Request', tab: 'requests' };
+      return { label: tLang(lang, 'social.notifFriendRequest'), tab: 'requests' };
     case 'friend_response':
-      return { label: 'Friend Update', tab: 'friends' };
+      return { label: tLang(lang, 'social.notifFriendUpdate'), tab: 'friends' };
     case 'match_invite':
-      return { label: 'Match Invite', tab: 'friends' };
+      return { label: tLang(lang, 'social.notifMatchInvite'), tab: 'friends' };
     case 'club_invite':
-      return { label: 'Club Invite', tab: 'requests' };
+      return { label: tLang(lang, 'social.notifClubInvite'), tab: 'requests' };
     case 'club_join_request':
-      return { label: 'Club Membership', tab: 'clubs' };
+      return { label: tLang(lang, 'social.notifClubMembership'), tab: 'clubs' };
     case 'private_message':
-      return { label: 'Direct Message', tab: 'messages' };
+      return { label: tLang(lang, 'social.notifDirectMessage'), tab: 'messages' };
     case 'club_challenge':
-      return { label: 'Club Challenge', tab: 'clubs' };
+      return { label: tLang(lang, 'social.notifClubChallenge'), tab: 'clubs' };
     case 'tournament_event':
     default:
-      return { label: 'Tournament' };
+      return { label: tLang(lang, 'social.notifTournament') };
   }
 }
 
 const CLUB_COLOR_PRESETS = ['#f59e0b', '#10b981', '#38bdf8', '#f43f5e', '#a78bfa', '#fb923c'];
-const CLUB_ICONS: Array<{ id: ClubEmblemIcon; label: string }> = [
-  { id: 'shield', label: 'Shield' },
-  { id: 'crown', label: 'Crown' },
-  { id: 'flame', label: 'Flame' },
-  { id: 'star', label: 'Star' },
-  { id: 'swords', label: 'Swords' },
-  { id: 'target', label: 'Target' },
+const CLUB_ICONS: Array<{ id: ClubEmblemIcon; labelKey: string }> = [
+  { id: 'shield', labelKey: 'social.emblemShield' },
+  { id: 'crown', labelKey: 'social.emblemCrown' },
+  { id: 'flame', labelKey: 'social.emblemFlame' },
+  { id: 'star', labelKey: 'social.emblemStar' },
+  { id: 'swords', labelKey: 'social.emblemSwords' },
+  { id: 'target', labelKey: 'social.emblemTarget' },
 ];
 
 export function SocialModal() {
+  const { t, language, formatNumber } = useTranslation();
   const socialModalOpen = useGameStore((s) => s.socialModalOpen);
   const closeSocialModal = useGameStore((s) => s.closeSocialModal);
   const socialTab = useGameStore((s) => s.socialTab);
@@ -330,7 +338,10 @@ export function SocialModal() {
     multiplayerManager.setManualPresence(next);
     const res = await socialClient.setPresence(next);
     if (!res.ok) {
-      setSocialNotice({ type: 'err', text: res.error ?? 'Failed to update status.' });
+      setSocialNotice({
+        type: 'err',
+        text: localizeServerError(res.error, language) || t('common.actionFailed'),
+      });
     }
   };
 
@@ -344,11 +355,14 @@ export function SocialModal() {
         type: 'ok',
         text:
           res.data?.outcome === 'accepted'
-            ? 'Mutual friend request accepted!'
-            : 'Friend request sent.',
+            ? t('social.noticeAcceptedMutual')
+            : t('social.noticeFriendRequestSent'),
       });
     } else {
-      setSocialNotice({ type: 'err', text: res.error ?? 'Unable to send friend request.' });
+      setSocialNotice({
+        type: 'err',
+        text: localizeServerError(res.error, language) || t('common.actionFailed'),
+      });
     }
   };
 
@@ -361,7 +375,10 @@ export function SocialModal() {
     const res = await socialClient.respondFriendRequest(targetPlayerId, action);
     setBusyActionId(null);
     if (!res.ok) {
-      setSocialNotice({ type: 'err', text: res.error ?? 'Action failed.' });
+      setSocialNotice({
+        type: 'err',
+        text: localizeServerError(res.error, language) || t('common.actionFailed'),
+      });
     }
   };
 
@@ -371,9 +388,12 @@ export function SocialModal() {
     const res = await socialClient.removeFriend(targetPlayerId);
     setBusyActionId(null);
     if (res.ok) {
-      setSocialNotice({ type: 'ok', text: 'Friend removed.' });
+      setSocialNotice({ type: 'ok', text: t('social.noticeRemovedFriend') });
     } else {
-      setSocialNotice({ type: 'err', text: res.error ?? 'Unable to remove friend.' });
+      setSocialNotice({
+        type: 'err',
+        text: localizeServerError(res.error, language) || t('common.actionFailed'),
+      });
     }
   };
 
@@ -383,9 +403,12 @@ export function SocialModal() {
     const res = await socialClient.blockPlayer(targetPlayerId);
     setBusyActionId(null);
     if (res.ok) {
-      setSocialNotice({ type: 'ok', text: 'Player blocked.' });
+      setSocialNotice({ type: 'ok', text: t('social.noticeBlocked') });
     } else {
-      setSocialNotice({ type: 'err', text: res.error ?? 'Unable to block player.' });
+      setSocialNotice({
+        type: 'err',
+        text: localizeServerError(res.error, language) || t('common.actionFailed'),
+      });
     }
   };
 
@@ -395,9 +418,12 @@ export function SocialModal() {
     const res = await socialClient.unblockPlayer(targetPlayerId);
     setBusyActionId(null);
     if (res.ok) {
-      setSocialNotice({ type: 'ok', text: 'Player unblocked.' });
+      setSocialNotice({ type: 'ok', text: t('social.noticeUnblocked') });
     } else {
-      setSocialNotice({ type: 'err', text: res.error ?? 'Unable to unblock player.' });
+      setSocialNotice({
+        type: 'err',
+        text: localizeServerError(res.error, language) || t('common.actionFailed'),
+      });
     }
   };
 
@@ -418,12 +444,23 @@ export function SocialModal() {
     });
     setBusyActionId(null);
     if (res.ok) {
+      const friendName =
+        friends.find((f) => f.playerId === targetPlayerId)?.displayName ?? targetPlayerId;
       setSocialNotice({
         type: 'ok',
-        text: inviteKind === 'spectate' ? 'Spectate invite sent!' : 'Match invitation sent!',
+        text: t('social.noticeInviteSent', {
+          kind:
+            inviteKind === 'spectate'
+              ? t('social.inviteBannerSpectateTitle')
+              : t('social.inviteBannerMatchTitle'),
+          name: friendName,
+        }),
       });
     } else {
-      setSocialNotice({ type: 'err', text: res.error ?? 'Failed to send invitation.' });
+      setSocialNotice({
+        type: 'err',
+        text: localizeServerError(res.error, language) || t('errors.unableSendInvite'),
+      });
     }
   };
 
@@ -440,7 +477,10 @@ export function SocialModal() {
     const res = await socialClient.respondInvite(inviteId, 'cancel');
     setBusyActionId(null);
     if (!res.ok) {
-      setSocialNotice({ type: 'err', text: res.error ?? 'Unable to cancel invitation.' });
+      setSocialNotice({
+        type: 'err',
+        text: localizeServerError(res.error, language) || t('common.actionFailed'),
+      });
     }
   };
 
@@ -452,7 +492,7 @@ export function SocialModal() {
     if (trimmed.length > SOCIAL_LIMITS.chatMaxLength) {
       setSocialNotice({
         type: 'err',
-        text: `Message cannot exceed ${SOCIAL_LIMITS.chatMaxLength} characters.`,
+        text: t('social.noticeMsgTooLong', { max: SOCIAL_LIMITS.chatMaxLength }),
       });
       return;
     }
@@ -463,7 +503,10 @@ export function SocialModal() {
     if (res.ok) {
       setDmInput('');
     } else {
-      setSocialNotice({ type: 'err', text: res.error ?? 'Message failed to send.' });
+      setSocialNotice({
+        type: 'err',
+        text: localizeServerError(res.error, language) || t('common.actionFailed'),
+      });
     }
   };
 
@@ -482,12 +525,15 @@ export function SocialModal() {
     if (res.ok) {
       setSocialNotice({
         type: 'ok',
-        text: `Report submitted for ${reportTarget.displayName}.`,
+        text: t('social.noticeReportSubmitted'),
       });
       setReportTarget(null);
       setReportDetails('');
     } else {
-      setSocialNotice({ type: 'err', text: res.error ?? 'Unable to submit report.' });
+      setSocialNotice({
+        type: 'err',
+        text: localizeServerError(res.error, language) || t('common.actionFailed'),
+      });
     }
   };
 
@@ -509,9 +555,18 @@ export function SocialModal() {
       setNewClubTag('');
       setNewClubDesc('');
       setClubSubView('my_club');
-      setSocialNotice({ type: 'ok', text: `Club [${res.data?.club.tag}] created!` });
+      setSocialNotice({
+        type: 'ok',
+        text: t('social.noticeClubCreated', {
+          tag: res.data?.club.tag ?? '',
+          name: res.data?.club.name ?? '',
+        }),
+      });
     } else {
-      setSocialNotice({ type: 'err', text: res.error ?? 'Unable to create club.' });
+      setSocialNotice({
+        type: 'err',
+        text: localizeServerError(res.error, language) || t('errors.unableCreateClub'),
+      });
     }
   };
 
@@ -521,9 +576,12 @@ export function SocialModal() {
     const res = await socialClient.updatePrivacySettings(partial);
     setBusyActionId(null);
     if (res.ok) {
-      setSocialNotice({ type: 'ok', text: 'Privacy settings saved.' });
+      setSocialNotice({ type: 'ok', text: t('social.noticePrivacySaved') });
     } else {
-      setSocialNotice({ type: 'err', text: res.error ?? 'Failed to save privacy settings.' });
+      setSocialNotice({
+        type: 'err',
+        text: localizeServerError(res.error, language) || t('common.actionFailed'),
+      });
     }
   };
 
@@ -546,7 +604,7 @@ export function SocialModal() {
     <div
       role="dialog"
       aria-modal="true"
-      aria-label="Friends, Clubs, Notifications & Social Community"
+      aria-label={t('social.dialogAria')}
       data-testid="social-modal"
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-3 sm:p-4"
     >
@@ -560,10 +618,11 @@ export function SocialModal() {
             <div>
               <div className="flex items-center gap-2">
                 <h2 className="text-base sm:text-lg font-extrabold tracking-tight text-white">
-                  Social, Clubs & Community
+                  {t('social.headerTitle')}
                 </h2>
                 {myClub && (
                   <span
+                    dir="ltr"
                     className="rounded-md border px-1.5 py-0.5 font-mono text-[10px] font-black"
                     style={{
                       borderColor: `${myClub.emblemColor}66`,
@@ -578,10 +637,12 @@ export function SocialModal() {
               <div className="flex items-center gap-2 text-[11px] text-slate-400">
                 <span className="inline-flex items-center gap-1.5 font-semibold text-slate-200">
                   <span className={`h-2 w-2 rounded-full ${presenceDotClass(selfPresence)}`} />
-                  {presenceLabel(selfPresence)}
+                  {localizePresence(selfPresence, language)}
                 </span>
                 {ownProfile && (
-                  <span className="font-mono text-slate-400">· ID {ownProfile.playerId}</span>
+                  <span className="font-mono text-slate-400" dir="ltr">
+                    · {t('social.headerIdPrefix', { id: ownProfile.playerId })}
+                  </span>
                 )}
               </div>
             </div>
@@ -601,7 +662,7 @@ export function SocialModal() {
                   }`}
                 >
                   <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
-                  Online
+                  {t('social.presenceOnline')}
                 </button>
                 <button
                   type="button"
@@ -613,7 +674,7 @@ export function SocialModal() {
                   }`}
                 >
                   <span className="h-1.5 w-1.5 rounded-full bg-amber-400" />
-                  Busy
+                  {t('social.presenceBusy')}
                 </button>
               </div>
             )}
@@ -624,7 +685,7 @@ export function SocialModal() {
                 soundEngine.playUiClick();
                 closeSocialModal();
               }}
-              aria-label="Close social lounge"
+              aria-label={t('social.closeAria')}
               className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-white/10 bg-white/5 text-slate-300 hover:bg-white/12 hover:text-white cursor-pointer"
             >
               <X className="h-4 w-4" />
@@ -656,26 +717,35 @@ export function SocialModal() {
         <div className="mt-3.5 grid grid-cols-4 sm:grid-cols-8 gap-1 rounded-xl border border-white/10 bg-black/35 p-1">
           {(
             [
-              { id: 'friends', label: `Friends (${friends.length})`, icon: Users },
-              { id: 'search', label: 'Find', icon: Search },
+              { id: 'friends', label: `${t('social.tabFriends')} (${friends.length})`, icon: Users },
+              { id: 'search', label: t('social.tabFind'), icon: Search },
               {
                 id: 'requests',
-                label: pendingReqCount > 0 ? `Requests (${pendingReqCount})` : 'Requests',
+                label:
+                  pendingReqCount > 0
+                    ? `${t('social.tabRequests')} (${pendingReqCount})`
+                    : t('social.tabRequests'),
                 icon: UserPlus,
               },
               {
                 id: 'messages',
-                label: totalUnreadDmCount > 0 ? `Chat (${totalUnreadDmCount})` : 'Chat',
+                label:
+                  totalUnreadDmCount > 0
+                    ? `${t('social.tabMessages')} (${totalUnreadDmCount})`
+                    : t('social.tabMessages'),
                 icon: MessageSquare,
               },
-              { id: 'clubs', label: myClub ? `[${myClub.tag}]` : 'Clubs', icon: Shield },
-              { id: 'club_rankings', label: 'Club Ranks', icon: Trophy },
+              { id: 'clubs', label: myClub ? `[${myClub.tag}]` : t('social.tabClubs'), icon: Shield },
+              { id: 'club_rankings', label: t('social.tabClubRanks'), icon: Trophy },
               {
                 id: 'notifications',
-                label: unreadNotificationCount > 0 ? `Alerts (${unreadNotificationCount})` : 'Alerts',
+                label:
+                  unreadNotificationCount > 0
+                    ? `${t('social.tabNotifications')} (${unreadNotificationCount})`
+                    : t('social.tabNotifications'),
                 icon: Bell,
               },
-              { id: 'privacy', label: 'Safety', icon: ShieldCheck },
+              { id: 'privacy', label: t('social.tabPrivacy'), icon: ShieldCheck },
             ] as Array<{ id: SocialTab; label: string; icon: typeof Users }>
           ).map((tab) => {
             const Icon = tab.icon;
@@ -711,7 +781,7 @@ export function SocialModal() {
             <div className="flex items-center justify-between">
               <span className="inline-flex items-center gap-1.5 text-xs font-extrabold text-rose-200">
                 <ShieldAlert className="h-4 w-4 text-rose-400" />
-                Report {reportTarget.displayName}
+                {t('social.reportTitleName', { name: reportTarget.displayName })}
               </span>
               <button
                 type="button"
@@ -727,18 +797,18 @@ export function SocialModal() {
                 onChange={(e) => setReportReason(e.target.value as SocialReportReason)}
                 className="rounded-lg border border-white/15 bg-[#0b1017] px-2.5 py-1.5 text-xs text-white focus:border-amber-400 focus:outline-none"
               >
-                <option value="harassment">Harassment / Abuse</option>
-                <option value="spam">Spam / Flooding</option>
-                <option value="inappropriate_name">Inappropriate Name</option>
-                <option value="cheating">Cheating / Exploits</option>
-                <option value="other">Other</option>
+                <option value="harassment">{t('social.reportReasonHarassment')}</option>
+                <option value="spam">{t('social.reportReasonSpam')}</option>
+                <option value="inappropriate_name">{t('social.reportReasonInappropriateName')}</option>
+                <option value="cheating">{t('social.reportReasonCheating')}</option>
+                <option value="other">{t('social.reportReasonOther')}</option>
               </select>
               <input
                 type="text"
                 maxLength={240}
                 value={reportDetails}
                 onChange={(e) => setReportDetails(e.target.value)}
-                placeholder="Optional details..."
+                placeholder={t('social.reportDetailsPlaceholder')}
                 className="rounded-lg border border-white/15 bg-[#0b1017] px-2.5 py-1.5 text-xs text-white focus:border-amber-400 focus:outline-none"
               />
             </div>
@@ -748,14 +818,14 @@ export function SocialModal() {
                 onClick={() => setReportTarget(null)}
                 className="rounded-lg border border-white/12 bg-white/5 px-3 py-1 text-xs font-semibold text-slate-300 hover:bg-white/10 cursor-pointer whitespace-nowrap"
               >
-                Cancel
+                {t('common.cancel')}
               </button>
               <button
                 type="submit"
                 disabled={reportBusy}
                 className="rounded-lg bg-rose-500 px-3 py-1 text-xs font-extrabold text-white hover:bg-rose-400 disabled:opacity-50 cursor-pointer whitespace-nowrap"
               >
-                {reportBusy ? 'Submitting...' : 'Submit Report'}
+                {reportBusy ? t('social.submittingReport') : t('social.submitReportBtn')}
               </button>
             </div>
           </form>
@@ -769,18 +839,18 @@ export function SocialModal() {
               {/* Rule Selector + Filter */}
               <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-white/10 bg-black/25 px-3 py-2">
                 <div className="relative flex-1 min-w-[160px] max-w-xs">
-                  <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" />
+                  <Search className="pointer-events-none absolute start-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" />
                   <input
                     type="text"
                     value={friendFilter}
                     onChange={(e) => setFriendFilter(e.target.value)}
-                    placeholder="Filter friends or [TAG]..."
-                    className="w-full rounded-lg border border-white/10 bg-[#0b1017] pl-8 pr-2.5 py-1 text-xs text-white focus:border-amber-400 focus:outline-none"
+                    placeholder={t('social.filterFriendsPlaceholder')}
+                    className="w-full rounded-lg border border-white/10 bg-[#0b1017] ps-8 pe-2.5 py-1 text-xs text-white focus:border-amber-400 focus:outline-none"
                   />
                 </div>
                 <div className="flex items-center gap-2">
                   <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
-                    1v1 Rules
+                    {t('social.rules1v1Label')}
                   </span>
                   <div className="flex items-center gap-1 rounded-lg border border-white/10 bg-[#0b1017] p-0.5 text-[11px] font-bold">
                     <button
@@ -792,7 +862,7 @@ export function SocialModal() {
                           : 'text-slate-300 hover:text-white'
                       }`}
                     >
-                      Casual
+                      {t('hud.ruleCasualShort')}
                     </button>
                     <button
                       type="button"
@@ -803,7 +873,7 @@ export function SocialModal() {
                           : 'text-slate-300 hover:text-white'
                       }`}
                     >
-                      WPA
+                      {t('hud.ruleWpaShort')}
                     </button>
                   </div>
                 </div>
@@ -813,7 +883,7 @@ export function SocialModal() {
               {outgoingInvitations.length > 0 && (
                 <div className="space-y-1.5 rounded-xl border border-amber-400/25 bg-amber-500/8 p-2.5">
                   <div className="text-[10px] font-bold uppercase tracking-wider text-amber-300">
-                    Pending Sent Invitations
+                    {t('social.pendingSentInvitations')}
                   </div>
                   {outgoingInvitations.map((inv) => (
                     <div
@@ -822,8 +892,11 @@ export function SocialModal() {
                     >
                       <div className="min-w-0 truncate">
                         <span className="font-bold text-white">{inv.recipientName}</span>
-                        <span className="ml-2 text-[10px] text-slate-400">
-                          {inv.inviteKind === 'spectate' ? 'Spectate Invite' : inv.ruleProfileId === 'wpa' ? 'Strict WPA' : 'Casual'} · Waiting...
+                        <span className="ms-2 text-[10px] text-slate-400">
+                          {inv.inviteKind === 'spectate'
+                            ? t('social.spectateInviteBadge')
+                            : localizeRuleProfile(inv.ruleProfileId, language, true)}{' '}
+                          · {t('common.waiting')}
                         </span>
                       </div>
                       <button
@@ -832,7 +905,7 @@ export function SocialModal() {
                         onClick={() => handleCancelInvite(inv.inviteId)}
                         className="rounded-md border border-rose-500/35 bg-rose-500/12 px-2 py-0.5 text-[10px] font-bold text-rose-200 hover:bg-rose-500/20 cursor-pointer whitespace-nowrap"
                       >
-                        Cancel
+                        {t('common.cancel')}
                       </button>
                     </div>
                   ))}
@@ -841,14 +914,14 @@ export function SocialModal() {
 
               {friends.length === 0 ? (
                 <div className="rounded-xl border border-white/10 bg-black/25 py-10 text-center space-y-2">
-                  <p className="text-xs text-slate-400">You have not added any friends yet.</p>
+                  <p className="text-xs text-slate-400">{t('social.noFriendsYetPrompt')}</p>
                   <button
                     type="button"
                     onClick={() => setSocialTab('search')}
                     className="inline-flex items-center gap-1.5 rounded-lg bg-amber-500 px-3.5 py-1.5 text-xs font-extrabold text-slate-950 hover:bg-amber-400 cursor-pointer whitespace-nowrap"
                   >
                     <Search className="h-3.5 w-3.5" />
-                    Find Players
+                    {t('social.findPlayersBtn')}
                   </button>
                 </div>
               ) : (
@@ -879,6 +952,7 @@ export function SocialModal() {
                               </span>
                               {f.club && (
                                 <span
+                                  dir="ltr"
                                   className="rounded border px-1 py-0.2 font-mono text-[9px] font-black"
                                   style={{
                                     borderColor: `${f.club.emblemColor}66`,
@@ -890,15 +964,18 @@ export function SocialModal() {
                                 </span>
                               )}
                               {f.username && (
-                                <span className="text-[10px] text-slate-400">@{f.username}</span>
+                                <span dir="ltr" className="text-[10px] text-slate-400">
+                                  @{f.username}
+                                </span>
                               )}
                               <span className="inline-flex items-center gap-1 rounded border border-white/10 bg-white/5 px-1.5 py-0.5 text-[10px] font-semibold text-slate-200">
                                 <span className={`h-1.5 w-1.5 rounded-full ${presenceDotClass(f.presence)}`} />
-                                {formatLastSeen(f.lastSeenAtMs, f.presence)}
+                                {formatLastSeen(f.lastSeenAtMs, f.presence, language)}
                               </span>
                             </div>
                             <div className="text-[10px] font-mono tabular-nums text-slate-400">
-                              Lv {f.level} · {f.elo} ELO · {f.playerId}
+                              {t('social.levelEloLine', { level: f.level, elo: f.elo })} ·{' '}
+                              <span dir="ltr">{f.playerId}</span>
                             </div>
                           </div>
                         </div>
@@ -912,7 +989,7 @@ export function SocialModal() {
                               className="inline-flex items-center gap-1 rounded-lg bg-emerald-500 px-2.5 py-1 text-[11px] font-extrabold text-slate-950 hover:bg-emerald-400 disabled:opacity-45 cursor-pointer whitespace-nowrap"
                             >
                               <Swords className="h-3 w-3" />
-                              Join Room
+                              {t('social.joinRoomBtn')}
                             </button>
                           )}
 
@@ -936,8 +1013,8 @@ export function SocialModal() {
                                       setSocialNotice({
                                         type: 'err',
                                         text:
-                                          res.error ??
-                                          'Friend match cannot be spectated (private or ended).',
+                                          localizeServerError(res.error, language) ||
+                                          t('errors.unableSpectateJoin'),
                                       });
                                     }
                                   })
@@ -946,7 +1023,7 @@ export function SocialModal() {
                               className="inline-flex items-center gap-1 rounded-lg border border-amber-400/45 bg-amber-500/15 px-2.5 py-1 text-[11px] font-extrabold text-amber-200 hover:bg-amber-500/25 disabled:opacity-45 cursor-pointer whitespace-nowrap"
                             >
                               <Eye className="h-3 w-3 text-amber-400" />
-                              Watch
+                              {t('social.spectateBtn')}
                             </button>
                           )}
 
@@ -960,7 +1037,7 @@ export function SocialModal() {
                               className="inline-flex items-center gap-1 rounded-lg border border-violet-400/40 bg-violet-500/15 px-2 py-1 text-[11px] font-bold text-violet-200 hover:bg-violet-500/25 disabled:opacity-45 cursor-pointer whitespace-nowrap"
                             >
                               <Eye className="h-3 w-3" />
-                              Invite Watch
+                              {t('social.inviteWatchBtn')}
                             </button>
                           )}
 
@@ -971,7 +1048,7 @@ export function SocialModal() {
                             className="inline-flex items-center gap-1 rounded-lg bg-amber-500 px-2.5 py-1 text-[11px] font-extrabold text-slate-950 hover:bg-amber-400 disabled:opacity-45 cursor-pointer whitespace-nowrap"
                           >
                             <Swords className="h-3 w-3" />
-                            {alreadyInvited ? 'Invited' : 'Invite'}
+                            {alreadyInvited ? t('social.invitedBadge') : t('social.inviteToMatchBtn')}
                           </button>
 
                           <button
@@ -984,12 +1061,13 @@ export function SocialModal() {
                             className="inline-flex items-center gap-1 rounded-lg border border-white/12 bg-white/5 px-2.5 py-1 text-[11px] font-bold text-slate-200 hover:bg-white/10 cursor-pointer whitespace-nowrap"
                           >
                             <MessageSquare className="h-3 w-3 text-amber-400" />
-                            Chat{f.unreadDmCount > 0 ? ` (${f.unreadDmCount})` : ''}
+                            {t('social.tabMessages')}
+                            {f.unreadDmCount > 0 ? ` (${f.unreadDmCount})` : ''}
                           </button>
 
                           <button
                             type="button"
-                            title="View Public Profile"
+                            title={t('social.viewPublicProfileTitle')}
                             onClick={() => {
                               soundEngine.playUiClick();
                               openProgressionModal('profile', f.playerId);
@@ -1001,7 +1079,7 @@ export function SocialModal() {
 
                           <button
                             type="button"
-                            title="Remove Friend"
+                            title={t('social.removeFriendTitle')}
                             disabled={busyActionId === f.playerId}
                             onClick={() => handleRemoveFriend(f.playerId)}
                             className="inline-flex h-7 w-7 items-center justify-center rounded-lg border border-white/10 bg-white/5 text-slate-300 hover:border-rose-400/40 hover:text-rose-300 cursor-pointer"
@@ -1011,7 +1089,7 @@ export function SocialModal() {
 
                           <button
                             type="button"
-                            title="Block Player"
+                            title={t('social.blockPlayerTitle')}
                             disabled={busyActionId === f.playerId}
                             onClick={() => handleBlock(f.playerId)}
                             className="inline-flex h-7 w-7 items-center justify-center rounded-lg border border-white/10 bg-white/5 text-slate-300 hover:border-rose-400/40 hover:text-rose-300 cursor-pointer"
@@ -1039,8 +1117,11 @@ export function SocialModal() {
                         className="rounded-lg border border-white/15 bg-white/5 px-4 py-1.5 text-xs font-bold text-slate-200 hover:bg-white/10 disabled:opacity-50 cursor-pointer whitespace-nowrap"
                       >
                         {loadingMoreFriends
-                          ? 'Loading...'
-                          : `Load More Friends (${friends.length}/${friendsTotal})`}
+                          ? t('common.loading')
+                          : t('social.loadMoreFriendsBtn', {
+                              cur: formatNumber(friends.length),
+                              total: formatNumber(friendsTotal),
+                            })}
                       </button>
                     </div>
                   )}
@@ -1053,22 +1134,24 @@ export function SocialModal() {
           {socialTab === 'search' && (
             <div className="space-y-3">
               <div className="relative">
-                <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                <Search className="pointer-events-none absolute start-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
                 <input
                   type="text"
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder="Search by display name, @username, or unique player ID (ply_...)..."
-                  className="w-full rounded-xl border border-white/15 bg-[#0b1017] pl-9 pr-3.5 py-2 text-xs text-white focus:border-amber-400 focus:outline-none"
+                  placeholder={t('social.searchPlaceholder')}
+                  className="w-full rounded-xl border border-white/15 bg-[#0b1017] ps-9 pe-3.5 py-2 text-xs text-white focus:border-amber-400 focus:outline-none"
                 />
               </div>
 
               <div className="space-y-2 max-h-[340px] overflow-y-auto">
                 {searching ? (
-                  <div className="py-8 text-center text-xs text-slate-400">Searching players...</div>
+                  <div className="py-8 text-center text-xs text-slate-400">
+                    {t('social.searchingPlayers')}
+                  </div>
                 ) : searchResults.length === 0 ? (
                   <div className="rounded-xl border border-white/10 bg-black/25 py-8 text-center text-xs text-slate-400">
-                    No matching players found.
+                    {t('social.searchEmpty')}
                   </div>
                 ) : (
                   searchResults.map((p) => {
@@ -1092,6 +1175,7 @@ export function SocialModal() {
                               </span>
                               {p.club && (
                                 <span
+                                  dir="ltr"
                                   className="rounded border px-1 py-0.2 font-mono text-[9px] font-black"
                                   style={{
                                     borderColor: `${p.club.emblemColor}66`,
@@ -1103,11 +1187,14 @@ export function SocialModal() {
                                 </span>
                               )}
                               {p.username && (
-                                <span className="text-[10px] text-slate-400">@{p.username}</span>
+                                <span dir="ltr" className="text-[10px] text-slate-400">
+                                  @{p.username}
+                                </span>
                               )}
                             </div>
                             <div className="text-[10px] font-mono tabular-nums text-slate-400">
-                              Lv {p.level} · {p.elo} ELO · {p.playerId}
+                              {t('social.levelEloLine', { level: p.level, elo: p.elo })} ·{' '}
+                              <span dir="ltr">{p.playerId}</span>
                             </div>
                           </div>
                         </div>
@@ -1121,12 +1208,12 @@ export function SocialModal() {
                               className="inline-flex items-center gap-1 rounded-lg bg-amber-500 px-2.5 py-1 text-[11px] font-extrabold text-slate-950 hover:bg-amber-400 disabled:opacity-50 cursor-pointer whitespace-nowrap"
                             >
                               <UserPlus className="h-3 w-3" />
-                              Add Friend
+                              {t('social.addFriendBtn')}
                             </button>
                           )}
                           {p.relationship === 'outgoing_request' && (
                             <span className="rounded-lg border border-white/15 bg-white/5 px-2.5 py-1 text-[10px] font-bold text-slate-300 whitespace-nowrap">
-                              Request Sent
+                              {t('social.requestSentBtn')}
                             </span>
                           )}
                           {p.relationship === 'incoming_request' && (
@@ -1137,13 +1224,13 @@ export function SocialModal() {
                               className="inline-flex items-center gap-1 rounded-lg bg-emerald-500 px-2.5 py-1 text-[11px] font-extrabold text-slate-950 hover:bg-emerald-400 cursor-pointer whitespace-nowrap"
                             >
                               <Check className="h-3 w-3" />
-                              Accept Request
+                              {t('social.acceptRequestBtn')}
                             </button>
                           )}
                           {p.relationship === 'friend' && (
                             <span className="inline-flex items-center gap-1 rounded-lg border border-emerald-400/35 bg-emerald-500/12 px-2 py-1 text-[10px] font-bold text-emerald-300 whitespace-nowrap">
                               <UserCheck className="h-3 w-3" />
-                              Friend
+                              {t('social.friendBadgeBtn')}
                             </span>
                           )}
                           {p.relationship === 'blocked' && (
@@ -1153,13 +1240,13 @@ export function SocialModal() {
                               onClick={() => handleUnblock(p.playerId)}
                               className="rounded-lg border border-rose-400/35 bg-rose-500/12 px-2.5 py-1 text-[10px] font-bold text-rose-200 hover:bg-rose-500/20 cursor-pointer whitespace-nowrap"
                             >
-                              Unblock
+                              {t('social.unblockBtn')}
                             </button>
                           )}
 
                           <button
                             type="button"
-                            title="View Profile"
+                            title={t('common.viewProfile')}
                             onClick={() => {
                               soundEngine.playUiClick();
                               openProgressionModal('profile', p.playerId);
@@ -1172,7 +1259,7 @@ export function SocialModal() {
                           {p.relationship !== 'self' && p.relationship !== 'blocked' && (
                             <button
                               type="button"
-                              title="Block Player"
+                              title={t('social.blockPlayerTitle')}
                               disabled={busyActionId === p.playerId}
                               onClick={() => handleBlock(p.playerId)}
                               className="inline-flex h-7 w-7 items-center justify-center rounded-lg border border-white/10 bg-white/5 text-slate-300 hover:border-rose-400/40 hover:text-rose-300 cursor-pointer"
@@ -1194,11 +1281,11 @@ export function SocialModal() {
             <div className="space-y-4">
               <div>
                 <h3 className="text-[11px] font-bold uppercase tracking-wider text-amber-400 mb-2">
-                  Incoming Friend Requests ({incomingRequests.length})
+                  {t('social.incomingFriendReqCount', { count: incomingRequests.length })}
                 </h3>
                 {incomingRequests.length === 0 ? (
                   <div className="rounded-xl border border-white/10 bg-black/25 py-5 text-center text-xs text-slate-400">
-                    No incoming friend requests.
+                    {t('social.noIncomingFriendReqs')}
                   </div>
                 ) : (
                   <div className="space-y-2">
@@ -1210,7 +1297,8 @@ export function SocialModal() {
                         <div>
                           <div className="text-xs font-bold text-white">{req.displayName}</div>
                           <div className="text-[10px] font-mono tabular-nums text-slate-400">
-                            Lv {req.level} · {req.elo} ELO · {req.playerId}
+                            {t('social.levelEloLine', { level: req.level, elo: req.elo })} ·{' '}
+                            <span dir="ltr">{req.playerId}</span>
                           </div>
                         </div>
                         <div className="flex items-center gap-1.5">
@@ -1221,7 +1309,7 @@ export function SocialModal() {
                             className="inline-flex items-center gap-1 rounded-lg bg-emerald-500 px-2.5 py-1 text-[11px] font-extrabold text-slate-950 hover:bg-emerald-400 cursor-pointer whitespace-nowrap"
                           >
                             <Check className="h-3 w-3" />
-                            Accept
+                            {t('common.accept')}
                           </button>
                           <button
                             type="button"
@@ -1229,7 +1317,7 @@ export function SocialModal() {
                             onClick={() => handleRespondRequest(req.playerId, 'reject')}
                             className="inline-flex items-center gap-1 rounded-lg border border-white/15 bg-white/5 px-2.5 py-1 text-[11px] font-bold text-slate-200 hover:bg-white/10 cursor-pointer whitespace-nowrap"
                           >
-                            Decline
+                            {t('common.decline')}
                           </button>
                         </div>
                       </div>
@@ -1240,11 +1328,11 @@ export function SocialModal() {
 
               <div>
                 <h3 className="text-[11px] font-bold uppercase tracking-wider text-amber-400 mb-2">
-                  Incoming Club Invitations ({incomingClubInvitations.length})
+                  {t('social.incomingClubInvCount', { count: incomingClubInvitations.length })}
                 </h3>
                 {incomingClubInvitations.length === 0 ? (
                   <div className="rounded-xl border border-white/10 bg-black/25 py-5 text-center text-xs text-slate-400">
-                    No pending club invitations.
+                    {t('social.noPendingClubInvs')}
                   </div>
                 ) : (
                   <div className="space-y-2">
@@ -1259,10 +1347,10 @@ export function SocialModal() {
                           </div>
                           <div className="min-w-0">
                             <div className="text-xs font-extrabold text-white truncate">
-                              [{cinv.clubTag}] {cinv.clubName}
+                              <span dir="ltr">[{cinv.clubTag}]</span> {cinv.clubName}
                             </div>
                             <div className="text-[10px] text-slate-400">
-                              Invited by {cinv.inviterName}
+                              {t('social.invitedByPrefix', { name: cinv.inviterName })}
                             </div>
                           </div>
                         </div>
@@ -1281,20 +1369,25 @@ export function SocialModal() {
                               if (res.ok) {
                                 setSocialNotice({
                                   type: 'ok',
-                                  text: `Joined [${cinv.clubTag}] ${cinv.clubName}!`,
+                                  text: t('social.noticeJoinedClub', {
+                                    tag: cinv.clubTag,
+                                    name: cinv.clubName,
+                                  }),
                                 });
                                 setSocialTab('clubs');
                               } else {
                                 setSocialNotice({
                                   type: 'err',
-                                  text: res.error ?? 'Unable to accept club invite.',
+                                  text:
+                                    localizeServerError(res.error, language) ||
+                                    t('errors.unableRespondInvite'),
                                 });
                               }
                             }}
                             className="inline-flex items-center gap-1 rounded-lg bg-emerald-500 px-2.5 py-1 text-[11px] font-extrabold text-slate-950 hover:bg-emerald-400 cursor-pointer whitespace-nowrap"
                           >
                             <Check className="h-3 w-3" />
-                            Join Club
+                            {t('social.joinClubBtn')}
                           </button>
                           <button
                             type="button"
@@ -1307,7 +1400,7 @@ export function SocialModal() {
                             }}
                             className="inline-flex items-center gap-1 rounded-lg border border-white/15 bg-white/5 px-2.5 py-1 text-[11px] font-bold text-slate-200 hover:bg-white/10 cursor-pointer whitespace-nowrap"
                           >
-                            Decline
+                            {t('common.decline')}
                           </button>
                         </div>
                       </div>
@@ -1318,11 +1411,11 @@ export function SocialModal() {
 
               <div>
                 <h3 className="text-[11px] font-bold uppercase tracking-wider text-slate-400 mb-2">
-                  Outgoing Friend Requests ({outgoingRequests.length})
+                  {t('social.outgoingFriendReqCount', { count: outgoingRequests.length })}
                 </h3>
                 {outgoingRequests.length === 0 ? (
                   <div className="rounded-xl border border-white/10 bg-black/25 py-5 text-center text-xs text-slate-400">
-                    No pending outgoing requests.
+                    {t('social.noPendingOutgoingReqs')}
                   </div>
                 ) : (
                   <div className="space-y-2">
@@ -1334,7 +1427,8 @@ export function SocialModal() {
                         <div>
                           <div className="text-xs font-bold text-white">{req.displayName}</div>
                           <div className="text-[10px] font-mono tabular-nums text-slate-400">
-                            Lv {req.level} · {req.elo} ELO · {req.playerId}
+                            {t('social.levelEloLine', { level: req.level, elo: req.elo })} ·{' '}
+                            <span dir="ltr">{req.playerId}</span>
                           </div>
                         </div>
                         <button
@@ -1343,7 +1437,7 @@ export function SocialModal() {
                           onClick={() => handleRespondRequest(req.playerId, 'cancel')}
                           className="rounded-lg border border-rose-500/35 bg-rose-500/12 px-2.5 py-1 text-[11px] font-bold text-rose-200 hover:bg-rose-500/20 cursor-pointer whitespace-nowrap"
                         >
-                          Cancel Request
+                          {t('social.cancelRequestBtn')}
                         </button>
                       </div>
                     ))}
@@ -1358,11 +1452,11 @@ export function SocialModal() {
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 min-h-[320px]">
               <div className="rounded-xl border border-white/10 bg-black/25 p-2 space-y-1 max-h-[360px] overflow-y-auto">
                 <div className="px-2 py-1 text-[10px] font-bold uppercase tracking-wider text-slate-400">
-                  Friends
+                  {t('social.tabFriends')}
                 </div>
                 {friends.length === 0 ? (
                   <div className="px-2 py-6 text-center text-[11px] text-slate-500">
-                    Add friends to start messaging.
+                    {t('social.addFriendsToChat')}
                   </div>
                 ) : (
                   friends.map((f) => {
@@ -1375,7 +1469,7 @@ export function SocialModal() {
                           soundEngine.playUiClick();
                           setActiveDmPeerId(f.playerId);
                         }}
-                        className={`flex w-full items-center justify-between gap-2 rounded-lg px-2.5 py-2 text-left text-xs transition-colors cursor-pointer ${
+                        className={`flex w-full items-center justify-between gap-2 rounded-lg px-2.5 py-2 text-start text-xs transition-colors cursor-pointer ${
                           active
                             ? 'bg-amber-500/18 border border-amber-400/40 text-white'
                             : 'hover:bg-white/5 text-slate-300 border border-transparent'
@@ -1408,7 +1502,7 @@ export function SocialModal() {
                           {activeDmFriend.displayName}
                         </span>
                         <span className="text-[10px] text-slate-400">
-                          {presenceLabel(activeDmFriend.presence)}
+                          {localizePresence(activeDmFriend.presence, language)}
                         </span>
                       </div>
                       <div className="flex items-center gap-1">
@@ -1418,11 +1512,11 @@ export function SocialModal() {
                           className="inline-flex items-center gap-1 rounded-md bg-amber-500 px-2 py-1 text-[10px] font-extrabold text-slate-950 hover:bg-amber-400 cursor-pointer whitespace-nowrap"
                         >
                           <Swords className="h-3 w-3" />
-                          Invite
+                          {t('social.inviteToMatchBtn')}
                         </button>
                         <button
                           type="button"
-                          title="Report Abuse"
+                          title={t('social.reportAbuseBtn')}
                           onClick={() =>
                             setReportTarget({
                               playerId: activeDmFriend.playerId,
@@ -1437,7 +1531,7 @@ export function SocialModal() {
                         </button>
                         <button
                           type="button"
-                          title="Block Player"
+                          title={t('social.blockPlayerBtn')}
                           onClick={() => handleBlock(activeDmFriend.playerId)}
                           className="inline-flex h-6 w-6 items-center justify-center rounded-md border border-white/10 bg-white/5 text-slate-300 hover:text-rose-300 cursor-pointer"
                         >
@@ -1452,11 +1546,11 @@ export function SocialModal() {
                     >
                       {dmLoading && currentMessages.length === 0 ? (
                         <div className="py-10 text-center text-xs text-slate-400">
-                          Loading conversation...
+                          {t('social.loadingConversation')}
                         </div>
                       ) : currentMessages.length === 0 ? (
                         <div className="py-10 text-center text-xs text-slate-400">
-                          No messages yet. Say hello or challenge {activeDmFriend.displayName} to a rack!
+                          {t('social.noMessagesYet', { name: activeDmFriend.displayName })}
                         </div>
                       ) : (
                         currentMessages.map((m) => {
@@ -1477,8 +1571,8 @@ export function SocialModal() {
                               </div>
                               <div className="mt-0.5 flex items-center gap-1 text-[9px] text-slate-500">
                                 <Clock className="h-2.5 w-2.5" />
-                                <span>{formatMessageTime(m.createdAtMs)}</span>
-                                {isMine && m.readAtMs && <span>· Read</span>}
+                                <span dir="ltr">{formatMessageTime(m.createdAtMs, language)}</span>
+                                {isMine && m.readAtMs && <span>· {t('social.dmReadStatus')}</span>}
                               </div>
                             </div>
                           );
@@ -1495,10 +1589,12 @@ export function SocialModal() {
                         maxLength={SOCIAL_LIMITS.chatMaxLength}
                         value={dmInput}
                         onChange={(e) => setDmInput(e.target.value)}
-                        placeholder={`Message ${activeDmFriend.displayName}...`}
+                        placeholder={t('social.messagePeerPlaceholder', {
+                          name: activeDmFriend.displayName,
+                        })}
                         className="flex-1 rounded-lg border border-white/12 bg-[#0b1017] px-2.5 py-1.5 text-xs text-white focus:border-amber-400 focus:outline-none"
                       />
-                      <span className="font-mono text-[10px] text-slate-500 tabular-nums">
+                      <span dir="ltr" className="font-mono text-[10px] text-slate-500 tabular-nums">
                         {dmInput.length}/{SOCIAL_LIMITS.chatMaxLength}
                       </span>
                       <button
@@ -1507,13 +1603,13 @@ export function SocialModal() {
                         className="inline-flex items-center gap-1 rounded-lg bg-amber-500 px-3 py-1.5 text-xs font-extrabold text-slate-950 hover:bg-amber-400 disabled:opacity-45 cursor-pointer whitespace-nowrap"
                       >
                         <Send className="h-3.5 w-3.5" />
-                        Send
+                        {t('common.send')}
                       </button>
                     </form>
                   </>
                 ) : (
                   <div className="flex flex-1 items-center justify-center p-6 text-xs text-slate-400">
-                    Select a friend to open private chat.
+                    {t('social.dmSelectFriendPrompt')}
                   </div>
                 )}
               </div>
@@ -1539,7 +1635,9 @@ export function SocialModal() {
                           : 'bg-white/5 text-slate-300 hover:text-white'
                       }`}
                     >
-                      {myClub ? `My Club [${myClub.tag}]` : 'Club Details'}
+                      {myClub
+                        ? t('social.myClubTab', { tag: myClub.tag })
+                        : t('social.clubDetailsTab')}
                     </button>
                   )}
                   <button
@@ -1554,7 +1652,7 @@ export function SocialModal() {
                         : 'bg-white/5 text-slate-300 hover:text-white'
                     }`}
                   >
-                    Browse Clubs ({clubsList.length})
+                    {t('social.browseClubsCount', { count: clubsList.length })}
                   </button>
                   {!myClub && (
                     <button
@@ -1567,7 +1665,7 @@ export function SocialModal() {
                       }`}
                     >
                       <Plus className="h-3 w-3" />
-                      Create Club
+                      {t('social.createClubTab')}
                     </button>
                   )}
                 </div>
@@ -1579,7 +1677,7 @@ export function SocialModal() {
                     className="inline-flex items-center gap-1 rounded-lg border border-amber-400/35 bg-amber-500/12 px-2.5 py-1 text-[11px] font-bold text-amber-200 hover:bg-amber-500/20 cursor-pointer whitespace-nowrap"
                   >
                     <Trophy className="h-3 w-3 text-amber-400" />
-                    Club Leaderboard
+                    {t('social.clubLeaderboardTab')}
                   </button>
                 )}
               </div>
@@ -1591,12 +1689,12 @@ export function SocialModal() {
                   className="rounded-xl border border-white/10 bg-black/25 p-4 space-y-3"
                 >
                   <h3 className="text-xs font-extrabold uppercase tracking-wider text-amber-400">
-                    Establish a New Pool Club
+                    {t('social.establishClubTitle')}
                   </h3>
                   <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
                     <div className="sm:col-span-2">
                       <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1">
-                        Club Name (3–28 chars)
+                        {t('social.clubNamePlaceholder')}
                       </label>
                       <input
                         type="text"
@@ -1605,19 +1703,20 @@ export function SocialModal() {
                         maxLength={28}
                         value={newClubName}
                         onChange={(e) => setNewClubName(e.target.value)}
-                        placeholder="e.g. Emerald Cue Syndicate"
+                        placeholder={t('social.clubNamePlaceholder')}
                         className="w-full rounded-lg border border-white/15 bg-[#0b1017] px-3 py-1.5 text-xs text-white focus:border-amber-400 focus:outline-none"
                       />
                     </div>
                     <div>
                       <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1">
-                        Tag (2–5 chars)
+                        {t('social.clubTagPlaceholder')}
                       </label>
                       <input
                         type="text"
                         required
                         minLength={2}
                         maxLength={5}
+                        dir="ltr"
                         value={newClubTag}
                         onChange={(e) => setNewClubTag(e.target.value.toUpperCase())}
                         placeholder="ECS"
@@ -1628,14 +1727,14 @@ export function SocialModal() {
 
                   <div>
                     <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1">
-                      Club Motto / Description
+                      {t('social.clubMottoPlaceholder')}
                     </label>
                     <input
                       type="text"
                       maxLength={180}
                       value={newClubDesc}
                       onChange={(e) => setNewClubDesc(e.target.value)}
-                      placeholder="Competitive 8-ball cueists striving for precision..."
+                      placeholder={t('social.clubDescPlaceholder')}
                       className="w-full rounded-lg border border-white/15 bg-[#0b1017] px-3 py-1.5 text-xs text-white focus:border-amber-400 focus:outline-none"
                     />
                   </div>
@@ -1643,7 +1742,7 @@ export function SocialModal() {
                   <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                     <div>
                       <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1">
-                        Emblem Color
+                        {t('social.emblemColorLabel')}
                       </div>
                       <div className="flex flex-wrap gap-1.5">
                         {CLUB_COLOR_PRESETS.map((c) => (
@@ -1655,7 +1754,7 @@ export function SocialModal() {
                               newClubColor === c ? 'border-white scale-105' : 'border-transparent'
                             }`}
                             style={{ backgroundColor: c }}
-                            aria-label={`Select color ${c}`}
+                            aria-label={t('social.selectColorAria', { color: c })}
                           />
                         ))}
                       </div>
@@ -1663,14 +1762,14 @@ export function SocialModal() {
 
                     <div>
                       <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1">
-                        Emblem Icon
+                        {t('social.emblemIconLabel')}
                       </div>
                       <div className="flex flex-wrap gap-1">
                         {CLUB_ICONS.map((ic) => (
                           <button
                             key={ic.id}
                             type="button"
-                            title={ic.label}
+                            title={t(ic.labelKey)}
                             onClick={() => setNewClubIcon(ic.id)}
                             className={`inline-flex h-7 w-7 items-center justify-center rounded-lg border cursor-pointer ${
                               newClubIcon === ic.id
@@ -1686,7 +1785,7 @@ export function SocialModal() {
 
                     <div>
                       <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1">
-                        Membership Policy
+                        {t('social.membershipPolicyLabel')}
                       </div>
                       <div className="grid grid-cols-2 gap-1 rounded-lg border border-white/10 bg-[#0b1017] p-0.5 text-[11px] font-bold">
                         <button
@@ -1698,7 +1797,7 @@ export function SocialModal() {
                               : 'text-slate-300'
                           }`}
                         >
-                          Open
+                          {t('social.policyOpenShort')}
                         </button>
                         <button
                           type="button"
@@ -1709,7 +1808,7 @@ export function SocialModal() {
                               : 'text-slate-300'
                           }`}
                         >
-                          Approval
+                          {t('social.policyApprovalShort')}
                         </button>
                       </div>
                     </div>
@@ -1722,12 +1821,14 @@ export function SocialModal() {
                       className="inline-flex items-center gap-1.5 rounded-lg bg-amber-500 px-4 py-1.5 text-xs font-extrabold text-slate-950 hover:bg-amber-400 disabled:opacity-50 cursor-pointer whitespace-nowrap"
                     >
                       <Plus className="h-3.5 w-3.5" />
-                      {busyActionId === 'create-club' ? 'Creating...' : 'Create Club'}
+                      {busyActionId === 'create-club'
+                        ? t('common.creating')
+                        : t('social.createClubTab')}
                     </button>
                   </div>
                 </form>
               ) : clubSubView === 'my_club' && clubDetail ? (
-                <div className="space-y-3 max-h-[420px] overflow-y-auto pr-0.5">
+                <div className="space-y-3 max-h-[420px] overflow-y-auto pe-0.5">
                   {/* Club Banner Card */}
                   <div className="rounded-xl border border-white/10 bg-black/30 p-3.5 space-y-3">
                     <div className="flex flex-wrap items-start justify-between gap-3">
@@ -1748,6 +1849,7 @@ export function SocialModal() {
                         <div className="min-w-0">
                           <div className="flex flex-wrap items-center gap-1.5">
                             <span
+                              dir="ltr"
                               className="rounded border px-1.5 py-0.5 font-mono text-[10px] font-black"
                               style={{
                                 borderColor: `${clubDetail.club.emblemColor}66`,
@@ -1760,7 +1862,7 @@ export function SocialModal() {
                               {clubDetail.club.name}
                             </h3>
                             <span className="rounded border border-white/15 bg-white/5 px-1.5 py-0.5 text-[10px] font-bold text-slate-300">
-                              {clubDetail.club.joinMode === 'public' ? 'Open Club' : 'Approval Required'}
+                              {localizeClubJoinMode(clubDetail.club.joinMode, language)}
                             </span>
                           </div>
                           {clubDetail.club.description && (
@@ -1769,15 +1871,16 @@ export function SocialModal() {
                             </p>
                           )}
                           <div className="mt-1 flex flex-wrap items-center gap-3 font-mono text-[10px] tabular-nums text-slate-400">
-                            <span>{clubDetail.club.memberCount} Members</span>
-                            <span>·</span>
-                            <span>Rating {clubDetail.club.clubRating}</span>
-                            <span>·</span>
                             <span>
-                              {clubDetail.club.totalWins}W / {clubDetail.club.totalMatches}M
+                              {t('social.clubStatsSummary', {
+                                members: formatNumber(clubDetail.club.memberCount),
+                                max: formatNumber(clubDetail.club.maxMembers ?? 50),
+                                rating: formatNumber(clubDetail.club.clubRating),
+                                wins: formatNumber(clubDetail.club.totalWins),
+                                matches: formatNumber(clubDetail.club.totalMatches),
+                                challengeWins: formatNumber(clubDetail.club.challengeWins),
+                              })}
                             </span>
-                            <span>·</span>
-                            <span>{clubDetail.club.challengeWins} Challenge Wins</span>
                           </div>
                         </div>
                       </div>
@@ -1793,7 +1896,7 @@ export function SocialModal() {
                           className="inline-flex items-center gap-1 rounded-lg border border-emerald-400/40 bg-emerald-500/15 px-2.5 py-1 text-[11px] font-extrabold text-emerald-200 hover:bg-emerald-500/25 cursor-pointer whitespace-nowrap"
                         >
                           <Trophy className="h-3 w-3 text-emerald-400" />
-                          Teams & Leagues
+                          {t('social.teamsLeaguesBtn')}
                         </button>
                         {isClubOfficerRole(clubDetail.viewerRole) && (
                           <>
@@ -1809,7 +1912,7 @@ export function SocialModal() {
                               className="inline-flex items-center gap-1 rounded-lg bg-amber-500 px-2.5 py-1 text-[11px] font-extrabold text-slate-950 hover:bg-amber-400 cursor-pointer whitespace-nowrap"
                             >
                               <Swords className="h-3 w-3" />
-                              Challenge Club
+                              {t('social.clubChallengeBtn')}
                             </button>
                             <button
                               type="button"
@@ -1823,7 +1926,7 @@ export function SocialModal() {
                               className="inline-flex items-center gap-1 rounded-lg border border-white/15 bg-white/5 px-2.5 py-1 text-[11px] font-bold text-slate-200 hover:bg-white/10 cursor-pointer whitespace-nowrap"
                             >
                               <Edit3 className="h-3 w-3" />
-                              Settings
+                              {t('social.settingsBtn')}
                             </button>
                           </>
                         )}
@@ -1838,18 +1941,20 @@ export function SocialModal() {
                               setBusyActionId(null);
                               if (res.ok) {
                                 setClubSubView('directory');
-                                setSocialNotice({ type: 'ok', text: 'Left club.' });
+                                setSocialNotice({ type: 'ok', text: t('social.noticeLeftClub') });
                               } else {
                                 setSocialNotice({
                                   type: 'err',
-                                  text: res.error ?? 'Unable to leave club.',
+                                  text:
+                                    localizeServerError(res.error, language) ||
+                                    t('errors.unableLeaveClub'),
                                 });
                               }
                             }}
                             className="inline-flex items-center gap-1 rounded-lg border border-rose-500/35 bg-rose-500/12 px-2.5 py-1 text-[11px] font-bold text-rose-200 hover:bg-rose-500/20 cursor-pointer whitespace-nowrap"
                           >
                             <LogOut className="h-3 w-3" />
-                            Leave
+                            {t('common.leave')}
                           </button>
                         ) : !myClub ? (
                           <button
@@ -1868,24 +1973,29 @@ export function SocialModal() {
                                   type: 'ok',
                                   text:
                                     res.data?.outcome === 'requested'
-                                      ? 'Join request sent to club officers.'
-                                      : `Joined [${clubDetail.club.tag}]!`,
+                                      ? t('social.noticeClubRequested')
+                                      : t('social.noticeJoinedClub', {
+                                          tag: clubDetail.club.tag,
+                                          name: clubDetail.club.name,
+                                        }),
                                 });
                                 void socialClient.getClubDetail(clubDetail.club.clubId);
                               } else {
                                 setSocialNotice({
                                   type: 'err',
-                                  text: res.error ?? 'Unable to join club.',
+                                  text:
+                                    localizeServerError(res.error, language) ||
+                                    t('common.actionFailed'),
                                 });
                               }
                             }}
                             className="inline-flex items-center gap-1 rounded-lg bg-amber-500 px-3 py-1 text-[11px] font-extrabold text-slate-950 hover:bg-amber-400 disabled:opacity-50 cursor-pointer whitespace-nowrap"
                           >
                             {clubDetail.viewerHasPendingRequest
-                              ? 'Request Pending'
+                              ? t('social.requestPendingBtn')
                               : clubDetail.club.joinMode === 'public'
-                                ? 'Join Club'
-                                : 'Request to Join'}
+                                ? t('social.joinClubBtn')
+                                : t('social.requestToJoinBtn')}
                           </button>
                         ) : null}
                       </div>
@@ -1893,184 +2003,186 @@ export function SocialModal() {
 
                     {/* Officer Settings Drawer */}
                     {editingClub && isClubOfficerRole(clubDetail.viewerRole) && (
-                        <div className="rounded-xl border border-white/10 bg-[#0b1017] p-3 space-y-2.5">
-                          <div className="text-[10px] font-bold uppercase tracking-wider text-amber-400">
-                            Update Club Settings
-                          </div>
-                          <input
-                            type="text"
-                            maxLength={180}
-                            value={editClubDesc}
-                            onChange={(e) => setEditClubDesc(e.target.value)}
-                            placeholder="Club description..."
-                            className="w-full rounded-lg border border-white/15 bg-black/40 px-2.5 py-1.5 text-xs text-white"
-                          />
-                          <div className="flex flex-wrap items-center gap-3">
-                            <div className="flex gap-1">
-                              {CLUB_COLOR_PRESETS.map((c) => (
-                                <button
-                                  key={c}
-                                  type="button"
-                                  onClick={() => setEditClubColor(c)}
-                                  className={`h-5 w-5 rounded border-2 cursor-pointer ${
-                                    editClubColor === c ? 'border-white' : 'border-transparent'
-                                  }`}
-                                  style={{ backgroundColor: c }}
-                                />
-                              ))}
-                            </div>
-                            <div className="flex gap-1">
-                              {CLUB_ICONS.map((ic) => (
-                                <button
-                                  key={ic.id}
-                                  type="button"
-                                  onClick={() => setEditClubIcon(ic.id)}
-                                  className={`h-6 w-6 inline-flex items-center justify-center rounded border cursor-pointer ${
-                                    editClubIcon === ic.id
-                                      ? 'border-amber-400 bg-amber-500/15'
-                                      : 'border-white/10'
-                                  }`}
-                                >
-                                  {renderClubEmblem(ic.id, editClubColor, 'h-3 w-3')}
-                                </button>
-                              ))}
-                            </div>
-                            <select
-                              value={editClubJoinMode}
-                              onChange={(e) => setEditClubJoinMode(e.target.value as ClubJoinMode)}
-                              className="rounded-lg border border-white/15 bg-black/40 px-2 py-1 text-xs text-white"
-                            >
-                              <option value="public">Open Join</option>
-                              <option value="approval">Approval Required</option>
-                            </select>
-                            <button
-                              type="button"
-                              disabled={busyActionId === 'update-club'}
-                              onClick={async () => {
-                                setBusyActionId('update-club');
-                                const res = await socialClient.updateClub(
-                                  clubDetail.club.clubId,
-                                  {
-                                    description: editClubDesc,
-                                    emblemColor: editClubColor,
-                                    emblemIcon: editClubIcon,
-                                    joinMode: editClubJoinMode,
-                                  },
-                                );
-                                setBusyActionId(null);
-                                if (res.ok) {
-                                  setEditingClub(false);
-                                  setSocialNotice({ type: 'ok', text: 'Club settings updated.' });
-                                } else {
-                                  setSocialNotice({
-                                    type: 'err',
-                                    text: res.error ?? 'Unable to update club.',
-                                  });
-                                }
-                              }}
-                              className="ml-auto rounded-lg bg-amber-500 px-3 py-1 text-[11px] font-extrabold text-slate-950 hover:bg-amber-400 cursor-pointer whitespace-nowrap"
-                            >
-                              Save Changes
-                            </button>
-                          </div>
+                      <div className="rounded-xl border border-white/10 bg-[#0b1017] p-3 space-y-2.5">
+                        <div className="text-[10px] font-bold uppercase tracking-wider text-amber-400">
+                          {t('social.updateClubSettingsTitle')}
                         </div>
-                      )}
+                        <input
+                          type="text"
+                          maxLength={180}
+                          value={editClubDesc}
+                          onChange={(e) => setEditClubDesc(e.target.value)}
+                          placeholder={t('social.clubDescPlaceholder')}
+                          className="w-full rounded-lg border border-white/15 bg-black/40 px-2.5 py-1.5 text-xs text-white"
+                        />
+                        <div className="flex flex-wrap items-center gap-3">
+                          <div className="flex gap-1">
+                            {CLUB_COLOR_PRESETS.map((c) => (
+                              <button
+                                key={c}
+                                type="button"
+                                onClick={() => setEditClubColor(c)}
+                                className={`h-5 w-5 rounded border-2 cursor-pointer ${
+                                  editClubColor === c ? 'border-white' : 'border-transparent'
+                                }`}
+                                style={{ backgroundColor: c }}
+                              />
+                            ))}
+                          </div>
+                          <div className="flex gap-1">
+                            {CLUB_ICONS.map((ic) => (
+                              <button
+                                key={ic.id}
+                                type="button"
+                                title={t(ic.labelKey)}
+                                onClick={() => setEditClubIcon(ic.id)}
+                                className={`h-6 w-6 inline-flex items-center justify-center rounded border cursor-pointer ${
+                                  editClubIcon === ic.id
+                                    ? 'border-amber-400 bg-amber-500/15'
+                                    : 'border-white/10'
+                                }`}
+                              >
+                                {renderClubEmblem(ic.id, editClubColor, 'h-3 w-3')}
+                              </button>
+                            ))}
+                          </div>
+                          <select
+                            value={editClubJoinMode}
+                            onChange={(e) => setEditClubJoinMode(e.target.value as ClubJoinMode)}
+                            className="rounded-lg border border-white/15 bg-black/40 px-2 py-1 text-xs text-white"
+                          >
+                            <option value="public">{t('social.clubJoinModePublic')}</option>
+                            <option value="approval">{t('social.clubJoinModeApproval')}</option>
+                          </select>
+                          <button
+                            type="button"
+                            disabled={busyActionId === 'update-club'}
+                            onClick={async () => {
+                              setBusyActionId('update-club');
+                              const res = await socialClient.updateClub(clubDetail.club.clubId, {
+                                description: editClubDesc,
+                                emblemColor: editClubColor,
+                                emblemIcon: editClubIcon,
+                                joinMode: editClubJoinMode,
+                              });
+                              setBusyActionId(null);
+                              if (res.ok) {
+                                setEditingClub(false);
+                                setSocialNotice({ type: 'ok', text: t('social.noticeClubUpdated') });
+                              } else {
+                                setSocialNotice({
+                                  type: 'err',
+                                  text:
+                                    localizeServerError(res.error, language) ||
+                                    t('errors.unableUpdateClub'),
+                                });
+                              }
+                            }}
+                            className="ms-auto rounded-lg bg-amber-500 px-3 py-1 text-[11px] font-extrabold text-slate-950 hover:bg-amber-400 cursor-pointer whitespace-nowrap"
+                          >
+                            {t('clubLeagues.club.saveChangesBtn')}
+                          </button>
+                        </div>
+                      </div>
+                    )}
 
                     {/* Club Challenge Creator */}
                     {challengeModalOpen && isClubOfficerRole(clubDetail.viewerRole) && (
-                        <div className="rounded-xl border border-amber-400/35 bg-amber-500/8 p-3 space-y-2.5">
-                          <div className="flex items-center justify-between">
-                            <span className="text-[11px] font-extrabold uppercase tracking-wider text-amber-300">
-                              Issue Inter-Club Challenge
-                            </span>
-                            <button
-                              type="button"
-                              onClick={() => setChallengeModalOpen(false)}
-                              className="text-slate-400 hover:text-white cursor-pointer"
-                            >
-                              <X className="h-3.5 w-3.5" />
-                            </button>
-                          </div>
-                          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-                            <select
-                              value={challengeTargetClubId}
-                              onChange={(e) => setChallengeTargetClubId(e.target.value)}
-                              className="rounded-lg border border-white/15 bg-[#0b1017] px-2.5 py-1.5 text-xs text-white"
-                            >
-                              <option value="">Select Opponent Club...</option>
-                              {clubsList
-                                .filter((c) => c.clubId !== clubDetail.club.clubId)
-                                .map((c) => (
-                                  <option key={c.clubId} value={c.clubId}>
-                                    [{c.tag}] {c.name} ({c.clubRating})
-                                  </option>
-                                ))}
-                            </select>
-                            <select
-                              value={challengeTargetWins}
-                              onChange={(e) =>
-                                setChallengeTargetWins(Number.parseInt(e.target.value, 10) || 3)
-                              }
-                              className="rounded-lg border border-white/15 bg-[#0b1017] px-2.5 py-1.5 text-xs text-white"
-                            >
-                              <option value={1}>First to 1 Win (Bo1)</option>
-                              <option value={2}>First to 2 Wins (Bo3)</option>
-                              <option value={3}>First to 3 Wins (Bo5)</option>
-                              <option value={5}>First to 5 Wins (Bo9)</option>
-                            </select>
-                            <select
-                              value={challengeRule}
-                              onChange={(e) => setChallengeRule(e.target.value as RuleProfileId)}
-                              className="rounded-lg border border-white/15 bg-[#0b1017] px-2.5 py-1.5 text-xs text-white"
-                            >
-                              <option value="casual">Standard Casual</option>
-                              <option value="wpa">Strict Called (WPA)</option>
-                            </select>
-                          </div>
-                          <div className="flex items-center gap-2">
-                            <input
-                              type="text"
-                              maxLength={120}
-                              value={challengeNotes}
-                              onChange={(e) => setChallengeNotes(e.target.value)}
-                              placeholder="Optional challenge message..."
-                              className="flex-1 rounded-lg border border-white/15 bg-[#0b1017] px-2.5 py-1.5 text-xs text-white"
-                            />
-                            <button
-                              type="button"
-                              disabled={!challengeTargetClubId || busyActionId === 'send-challenge'}
-                              onClick={async () => {
-                                setBusyActionId('send-challenge');
-                                const res = await socialClient.createClubChallenge({
-                                  challengerClubId: clubDetail.club.clubId,
-                                  targetClubId: challengeTargetClubId,
-                                  ruleProfileId: challengeRule,
-                                  calledShotsEnabled: challengeRule === 'wpa',
-                                  targetWins: challengeTargetWins,
-                                  notes: challengeNotes,
-                                });
-                                setBusyActionId(null);
-                                if (res.ok) {
-                                  setChallengeModalOpen(false);
-                                  setChallengeNotes('');
-                                  setSocialNotice({
-                                    type: 'ok',
-                                    text: 'Club challenge issued!',
-                                  });
-                                } else {
-                                  setSocialNotice({
-                                    type: 'err',
-                                    text: res.error ?? 'Failed to issue challenge.',
-                                  });
-                                }
-                              }}
-                              className="rounded-lg bg-amber-500 px-3 py-1.5 text-xs font-extrabold text-slate-950 hover:bg-amber-400 disabled:opacity-50 cursor-pointer whitespace-nowrap"
-                            >
-                              Send Challenge
-                            </button>
-                          </div>
+                      <div className="rounded-xl border border-amber-400/35 bg-amber-500/8 p-3 space-y-2.5">
+                        <div className="flex items-center justify-between">
+                          <span className="text-[11px] font-extrabold uppercase tracking-wider text-amber-300">
+                            {t('social.issueChallengeTitle')}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => setChallengeModalOpen(false)}
+                            className="text-slate-400 hover:text-white cursor-pointer"
+                          >
+                            <X className="h-3.5 w-3.5" />
+                          </button>
                         </div>
-                      )}
+                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                          <select
+                            value={challengeTargetClubId}
+                            onChange={(e) => setChallengeTargetClubId(e.target.value)}
+                            className="rounded-lg border border-white/15 bg-[#0b1017] px-2.5 py-1.5 text-xs text-white"
+                          >
+                            <option value="">{t('social.selectOpponentPlaceholder')}</option>
+                            {clubsList
+                              .filter((c) => c.clubId !== clubDetail.club.clubId)
+                              .map((c) => (
+                                <option key={c.clubId} value={c.clubId}>
+                                  [{c.tag}] {c.name} ({c.clubRating})
+                                </option>
+                              ))}
+                          </select>
+                          <select
+                            value={challengeTargetWins}
+                            onChange={(e) =>
+                              setChallengeTargetWins(Number.parseInt(e.target.value, 10) || 3)
+                            }
+                            className="rounded-lg border border-white/15 bg-[#0b1017] px-2.5 py-1.5 text-xs text-white"
+                          >
+                            <option value={1}>{t('social.seriesBo1')}</option>
+                            <option value={2}>{t('social.seriesBo3')}</option>
+                            <option value={3}>{t('social.seriesBo5')}</option>
+                            <option value={5}>{t('social.seriesBo9')}</option>
+                          </select>
+                          <select
+                            value={challengeRule}
+                            onChange={(e) => setChallengeRule(e.target.value as RuleProfileId)}
+                            className="rounded-lg border border-white/15 bg-[#0b1017] px-2.5 py-1.5 text-xs text-white"
+                          >
+                            <option value="casual">{t('menu.ruleCasual')}</option>
+                            <option value="wpa">{t('menu.ruleWpa')}</option>
+                          </select>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="text"
+                            maxLength={120}
+                            value={challengeNotes}
+                            onChange={(e) => setChallengeNotes(e.target.value)}
+                            placeholder={t('social.optionalChallengeMsg')}
+                            className="flex-1 rounded-lg border border-white/15 bg-[#0b1017] px-2.5 py-1.5 text-xs text-white"
+                          />
+                          <button
+                            type="button"
+                            disabled={!challengeTargetClubId || busyActionId === 'send-challenge'}
+                            onClick={async () => {
+                              setBusyActionId('send-challenge');
+                              const res = await socialClient.createClubChallenge({
+                                challengerClubId: clubDetail.club.clubId,
+                                targetClubId: challengeTargetClubId,
+                                ruleProfileId: challengeRule,
+                                calledShotsEnabled: challengeRule === 'wpa',
+                                targetWins: challengeTargetWins,
+                                notes: challengeNotes,
+                              });
+                              setBusyActionId(null);
+                              if (res.ok) {
+                                setChallengeModalOpen(false);
+                                setChallengeNotes('');
+                                setSocialNotice({
+                                  type: 'ok',
+                                  text: t('social.noticeChallengeIssued'),
+                                });
+                              } else {
+                                setSocialNotice({
+                                  type: 'err',
+                                  text:
+                                    localizeServerError(res.error, language) ||
+                                    t('common.actionFailed'),
+                                });
+                              }
+                            }}
+                            className="rounded-lg bg-amber-500 px-3 py-1.5 text-xs font-extrabold text-slate-950 hover:bg-amber-400 disabled:opacity-50 cursor-pointer whitespace-nowrap"
+                          >
+                            {t('social.sendChallengeBtn')}
+                          </button>
+                        </div>
+                      </div>
+                    )}
 
                     {/* Officer Invite Bar */}
                     {isClubOfficerRole(clubDetail.viewerRole) && (
@@ -2079,14 +2191,14 @@ export function SocialModal() {
                           type="text"
                           value={clubInviteTargetId}
                           onChange={(e) => setClubInviteTargetId(e.target.value)}
-                          placeholder="Invite player by ID (ply_...) or pick friend..."
+                          placeholder={t('social.inviteByIdPlaceholder')}
                           list="club-friend-invite-list"
                           className="flex-1 min-w-[180px] rounded-lg border border-white/15 bg-[#0b1017] px-2.5 py-1.5 text-xs text-white focus:border-amber-400 focus:outline-none"
                         />
                         <datalist id="club-friend-invite-list">
                           {friends.map((f) => (
                             <option key={f.playerId} value={f.playerId}>
-                              {f.displayName} ({f.elo} ELO)
+                              {f.displayName} ({f.elo} {t('common.elo')})
                             </option>
                           ))}
                         </datalist>
@@ -2102,18 +2214,20 @@ export function SocialModal() {
                             setBusyActionId(null);
                             if (res.ok) {
                               setClubInviteTargetId('');
-                              setSocialNotice({ type: 'ok', text: 'Club invitation sent!' });
+                              setSocialNotice({ type: 'ok', text: t('social.noticeClubInviteSent') });
                             } else {
                               setSocialNotice({
                                 type: 'err',
-                                text: res.error ?? 'Unable to invite player.',
+                                text:
+                                  localizeServerError(res.error, language) ||
+                                  t('errors.unableSendInvite'),
                               });
                             }
                           }}
                           className="inline-flex items-center gap-1 rounded-lg border border-amber-400/40 bg-amber-500/15 px-3 py-1.5 text-xs font-bold text-amber-200 hover:bg-amber-500/25 disabled:opacity-50 cursor-pointer whitespace-nowrap"
                         >
                           <UserPlus className="h-3.5 w-3.5" />
-                          Invite to Club
+                          {t('social.inviteToClubBtn')}
                         </button>
                       </div>
                     )}
@@ -2124,7 +2238,7 @@ export function SocialModal() {
                     clubDetail.joinRequests.length > 0 && (
                       <div className="rounded-xl border border-amber-400/30 bg-amber-500/8 p-3 space-y-2">
                         <div className="text-[10px] font-bold uppercase tracking-wider text-amber-300">
-                          Pending Membership Applications ({clubDetail.joinRequests.length})
+                          {t('social.pendingApplicationsTitle')} ({clubDetail.joinRequests.length})
                         </div>
                         {clubDetail.joinRequests.map((jr) => (
                           <div
@@ -2133,8 +2247,8 @@ export function SocialModal() {
                           >
                             <div>
                               <span className="font-bold text-white">{jr.displayName}</span>
-                              <span className="ml-2 font-mono text-[10px] text-slate-400">
-                                Lv {jr.level} · {jr.elo} ELO
+                              <span className="ms-2 font-mono text-[10px] text-slate-400">
+                                {t('social.levelEloLine', { level: jr.level, elo: jr.elo })}
                               </span>
                               {jr.message && (
                                 <div className="text-[11px] text-slate-300">{jr.message}</div>
@@ -2155,7 +2269,7 @@ export function SocialModal() {
                                 }}
                                 className="rounded-md bg-emerald-500 px-2.5 py-1 text-[10px] font-extrabold text-slate-950 hover:bg-emerald-400 cursor-pointer whitespace-nowrap"
                               >
-                                Approve
+                                {t('common.approve')}
                               </button>
                               <button
                                 type="button"
@@ -2171,7 +2285,7 @@ export function SocialModal() {
                                 }}
                                 className="rounded-md border border-white/15 bg-white/5 px-2.5 py-1 text-[10px] font-bold text-slate-200 hover:bg-white/10 cursor-pointer whitespace-nowrap"
                               >
-                                Reject
+                                {t('common.reject')}
                               </button>
                             </div>
                           </div>
@@ -2183,12 +2297,22 @@ export function SocialModal() {
                   {clubDetail.challenges.length > 0 && (
                     <div className="rounded-xl border border-white/10 bg-black/25 p-3 space-y-2">
                       <div className="text-[10px] font-bold uppercase tracking-wider text-amber-400">
-                        Club Challenges ({clubDetail.challenges.length})
+                        {t('social.clubChallengesTitle')} ({clubDetail.challenges.length})
                       </div>
                       <div className="space-y-1.5">
                         {clubDetail.challenges.map((ch) => {
                           const isTarget = ch.targetClubId === clubDetail.club.clubId;
                           const isOfficer = isClubOfficerRole(clubDetail.viewerRole);
+                          const challengeStatusLabel =
+                            ch.status === 'pending'
+                              ? t('common.pending')
+                              : ch.status === 'accepted' || ch.status === 'in_progress'
+                                ? t('common.active')
+                                : ch.status === 'completed'
+                                  ? t('common.completed')
+                                  : ch.status === 'declined'
+                                    ? t('common.decline')
+                                    : t('tournaments.statusCancelled');
                           return (
                             <div
                               key={ch.challengeId}
@@ -2196,19 +2320,25 @@ export function SocialModal() {
                             >
                               <div className="min-w-0">
                                 <div className="flex flex-wrap items-center gap-1.5">
-                                  <span className="font-extrabold text-white">
-                                    [{ch.challengerClubTag}] vs [{ch.targetClubTag}]
+                                  <span dir="ltr" className="font-extrabold text-white">
+                                    [{ch.challengerClubTag}] {t('common.vs')} [{ch.targetClubTag}]
                                   </span>
                                   <span className="rounded border border-white/15 bg-white/5 px-1.5 py-0.5 font-mono text-[10px] font-bold uppercase text-amber-300 tabular-nums">
-                                    {ch.challengerScore} – {ch.targetScore} (First to {ch.targetWins})
+                                    {t('social.challengeScoreLine', {
+                                      challengerScore: ch.challengerScore,
+                                      targetScore: ch.targetScore,
+                                      targetWins: ch.targetWins,
+                                    })}
                                   </span>
                                   <span className="rounded border border-white/10 px-1.5 py-0.5 text-[10px] uppercase text-slate-300">
-                                    {ch.status}
+                                    {challengeStatusLabel}
                                   </span>
                                 </div>
                                 <div className="text-[10px] text-slate-400 mt-0.5">
-                                  {ch.ruleProfileId === 'wpa' ? 'Strict WPA' : 'Casual'} ·{' '}
-                                  {ch.linkedMatchIds.length} verified match(es) recorded
+                                  {localizeRuleProfile(ch.ruleProfileId, language, true)} ·{' '}
+                                  {t('social.verifiedMatchesRecorded', {
+                                    count: ch.linkedMatchIds.length,
+                                  })}
                                   {ch.notes ? ` · ${ch.notes}` : ''}
                                 </div>
                               </div>
@@ -2230,7 +2360,7 @@ export function SocialModal() {
                                         }}
                                         className="rounded-md bg-emerald-500 px-2.5 py-1 text-[10px] font-extrabold text-slate-950 hover:bg-emerald-400 cursor-pointer whitespace-nowrap"
                                       >
-                                        Accept
+                                        {t('common.accept')}
                                       </button>
                                       <button
                                         type="button"
@@ -2245,7 +2375,7 @@ export function SocialModal() {
                                         }}
                                         className="rounded-md border border-white/15 bg-white/5 px-2.5 py-1 text-[10px] font-bold text-slate-200 cursor-pointer whitespace-nowrap"
                                       >
-                                        Decline
+                                        {t('common.decline')}
                                       </button>
                                     </>
                                   ) : (
@@ -2262,7 +2392,7 @@ export function SocialModal() {
                                       }}
                                       className="rounded-md border border-rose-500/35 bg-rose-500/12 px-2.5 py-1 text-[10px] font-bold text-rose-200 cursor-pointer whitespace-nowrap"
                                     >
-                                      Cancel
+                                      {t('common.cancel')}
                                     </button>
                                   )}
                                 </div>
@@ -2277,7 +2407,7 @@ export function SocialModal() {
                   {/* Member Roster */}
                   <div className="rounded-xl border border-white/10 bg-black/25 p-3 space-y-2">
                     <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
-                      Roster ({clubDetail.members.length})
+                      {t('social.rosterTitleCount', { count: clubDetail.members.length })}
                     </div>
                     <div className="space-y-1.5">
                       {clubDetail.members.map((m) => {
@@ -2318,10 +2448,10 @@ export function SocialModal() {
                                         : 'bg-white/10 text-slate-300'
                                 }`}
                               >
-                                {getClubRoleLabel(m.role)}
+                                {localizeClubRole(m.role, language)}
                               </span>
                               <span className="font-mono text-[10px] text-slate-400 tabular-nums">
-                                {m.elo} ELO · {m.wins}W
+                                {m.elo} {t('common.elo')} · {t('common.winsCount', { count: m.wins })}
                               </span>
                             </div>
 
@@ -2343,11 +2473,13 @@ export function SocialModal() {
                                     className="rounded border border-white/15 bg-[#0b1017] px-1.5 py-0.5 text-[10px] font-bold text-slate-200 cursor-pointer"
                                   >
                                     {clubDetail.viewerRole === 'owner' && (
-                                      <option value="president">President</option>
+                                      <option value="president">{localizeClubRole('president', language)}</option>
                                     )}
-                                    <option value="vice_president">Vice President</option>
-                                    <option value="captain">Captain</option>
-                                    <option value="member">Member</option>
+                                    <option value="vice_president">
+                                      {localizeClubRole('vice_president', language)}
+                                    </option>
+                                    <option value="captain">{localizeClubRole('captain', language)}</option>
+                                    <option value="member">{localizeClubRole('member', language)}</option>
                                   </select>
                                   {clubDetail.viewerRole === 'owner' && (
                                     <button
@@ -2364,7 +2496,7 @@ export function SocialModal() {
                                       }}
                                       className="rounded border border-amber-400/35 bg-amber-500/10 px-2 py-0.5 text-[10px] font-bold text-amber-200 hover:bg-amber-500/20 cursor-pointer whitespace-nowrap"
                                     >
-                                      Make Owner
+                                      {t('social.makeOwnerBtn')}
                                     </button>
                                   )}
                                 </>
@@ -2383,12 +2515,12 @@ export function SocialModal() {
                                   }}
                                   className="rounded border border-rose-500/35 bg-rose-500/12 px-2 py-0.5 text-[10px] font-bold text-rose-200 hover:bg-rose-500/20 cursor-pointer whitespace-nowrap"
                                 >
-                                  Kick
+                                  {t('common.kick')}
                                 </button>
                               )}
                               <button
                                 type="button"
-                                title="View Profile"
+                                title={t('common.viewProfile')}
                                 onClick={() => openProgressionModal('profile', m.playerId)}
                                 className="inline-flex h-6 w-6 items-center justify-center rounded border border-white/10 bg-white/5 text-slate-300 hover:bg-white/10 cursor-pointer"
                               >
@@ -2405,7 +2537,7 @@ export function SocialModal() {
                   {clubDetail.recentActivity.length > 0 && (
                     <div className="rounded-xl border border-white/10 bg-black/25 p-3 space-y-1.5">
                       <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
-                        Recent Club Activity
+                        {t('social.recentClubActivityTitle')}
                       </div>
                       {clubDetail.recentActivity.slice(0, 8).map((act) => (
                         <div
@@ -2413,8 +2545,8 @@ export function SocialModal() {
                           className="flex items-center justify-between gap-2 text-[11px] text-slate-300"
                         >
                           <span className="truncate">{act.summary}</span>
-                          <span className="font-mono text-[10px] text-slate-500 shrink-0">
-                            {formatMessageTime(act.createdAtMs)}
+                          <span dir="ltr" className="font-mono text-[10px] text-slate-500 shrink-0">
+                            {formatMessageTime(act.createdAtMs, language)}
                           </span>
                         </div>
                       ))}
@@ -2425,19 +2557,19 @@ export function SocialModal() {
                 /* Browse Clubs Directory */
                 <div className="space-y-2.5">
                   <div className="relative">
-                    <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" />
+                    <Search className="pointer-events-none absolute start-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" />
                     <input
                       type="text"
                       value={clubSearch}
                       onChange={(e) => setClubSearch(e.target.value)}
-                      placeholder="Search clubs by name or tag..."
-                      className="w-full rounded-xl border border-white/15 bg-[#0b1017] pl-9 pr-3 py-2 text-xs text-white focus:border-amber-400 focus:outline-none"
+                      placeholder={t('social.searchClubsPlaceholder')}
+                      className="w-full rounded-xl border border-white/15 bg-[#0b1017] ps-9 pe-3 py-2 text-xs text-white focus:border-amber-400 focus:outline-none"
                     />
                   </div>
                   <div className="space-y-2 max-h-[340px] overflow-y-auto">
                     {clubsList.length === 0 ? (
                       <div className="rounded-xl border border-white/10 bg-black/25 py-8 text-center text-xs text-slate-400">
-                        No clubs found yet. Be the first to establish one!
+                        {t('social.noClubsFoundYet')}
                       </div>
                     ) : (
                       clubsList.map((c) => {
@@ -2460,6 +2592,7 @@ export function SocialModal() {
                               <div className="min-w-0">
                                 <div className="flex items-center gap-1.5">
                                   <span
+                                    dir="ltr"
                                     className="font-mono text-[10px] font-black"
                                     style={{ color: c.emblemColor }}
                                   >
@@ -2469,11 +2602,18 @@ export function SocialModal() {
                                     {c.name}
                                   </span>
                                   <span className="rounded border border-white/10 bg-white/5 px-1.5 py-0.2 text-[9px] font-bold text-slate-300">
-                                    {c.joinMode === 'public' ? 'Open' : 'Approval'}
+                                    {c.joinMode === 'public'
+                                      ? t('social.policyOpenShort')
+                                      : t('social.policyApprovalShort')}
                                   </span>
                                 </div>
                                 <div className="text-[10px] font-mono tabular-nums text-slate-400">
-                                  {c.memberCount} Members · {c.clubRating} Rating · {c.totalWins}W
+                                  {t('social.clubDirectoryStats', {
+                                    members: formatNumber(c.memberCount),
+                                    max: formatNumber(c.maxMembers ?? 50),
+                                    rating: formatNumber(c.clubRating),
+                                    wins: formatNumber(c.totalWins),
+                                  })}
                                 </div>
                               </div>
                             </div>
@@ -2487,7 +2627,7 @@ export function SocialModal() {
                                 }}
                                 className="rounded-lg border border-white/15 bg-white/5 px-2.5 py-1 text-[11px] font-bold text-slate-200 hover:bg-white/10 cursor-pointer whitespace-nowrap"
                               >
-                                {isMine ? 'Open Club' : 'Inspect'}
+                                {isMine ? t('social.openClubBtn') : t('social.inspectBtn')}
                               </button>
                               {!myClub && (
                                 <button
@@ -2502,8 +2642,11 @@ export function SocialModal() {
                                         type: 'ok',
                                         text:
                                           res.data?.outcome === 'requested'
-                                            ? `Join request sent to [${c.tag}].`
-                                            : `Joined [${c.tag}] ${c.name}!`,
+                                            ? t('social.noticeClubRequested')
+                                            : t('social.noticeJoinedClub', {
+                                                tag: c.tag,
+                                                name: c.name,
+                                              }),
                                       });
                                       if (res.data?.outcome === 'joined') {
                                         setClubSubView('my_club');
@@ -2511,13 +2654,15 @@ export function SocialModal() {
                                     } else {
                                       setSocialNotice({
                                         type: 'err',
-                                        text: res.error ?? 'Unable to join club.',
+                                        text:
+                                          localizeServerError(res.error, language) ||
+                                          t('common.actionFailed'),
                                       });
                                     }
                                   }}
                                   className="rounded-lg bg-amber-500 px-2.5 py-1 text-[11px] font-extrabold text-slate-950 hover:bg-amber-400 disabled:opacity-50 cursor-pointer whitespace-nowrap"
                                 >
-                                  {c.joinMode === 'public' ? 'Join' : 'Apply'}
+                                  {c.joinMode === 'public' ? t('common.join') : t('common.apply')}
                                 </button>
                               )}
                             </div>
@@ -2536,14 +2681,14 @@ export function SocialModal() {
             <div className="space-y-3">
               <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-white/10 bg-black/25 px-3 py-2">
                 <span className="text-[11px] font-bold uppercase tracking-wider text-amber-400">
-                  Club Leaderboards (Verified Matches)
+                  {t('social.clubRankingsHeader')}
                 </span>
                 <div className="flex items-center gap-1 rounded-lg border border-white/10 bg-[#0b1017] p-0.5 text-[11px] font-bold">
                   {(
                     [
-                      { id: 'global', label: 'Global' },
-                      { id: 'weekly', label: 'Weekly' },
-                      { id: 'seasonal', label: 'Seasonal' },
+                      { id: 'global', label: t('social.scopeGlobal') },
+                      { id: 'weekly', label: t('social.scopeWeekly') },
+                      { id: 'seasonal', label: t('social.scopeSeasonal') },
                     ] as Array<{ id: ClubLeaderboardScope; label: string }>
                   ).map((sc) => (
                     <button
@@ -2565,7 +2710,7 @@ export function SocialModal() {
               <div className="space-y-1.5 max-h-[360px] overflow-y-auto">
                 {clubLeaderboard.length === 0 ? (
                   <div className="rounded-xl border border-white/10 bg-black/25 py-10 text-center text-xs text-slate-400">
-                    No ranked clubs yet.
+                    {t('social.noRankedClubsYet')}
                   </div>
                 ) : (
                   clubLeaderboard.map((entry) => {
@@ -2579,7 +2724,7 @@ export function SocialModal() {
                         className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-white/10 bg-black/25 px-3 py-2.5"
                       >
                         <div className="flex items-center gap-2.5 min-w-0">
-                          <span className="w-7 text-center font-mono text-xs font-black tabular-nums text-amber-300">
+                          <span dir="ltr" className="w-7 text-center font-mono text-xs font-black tabular-nums text-amber-300">
                             #{entry.rank}
                           </span>
                           <div
@@ -2594,6 +2739,7 @@ export function SocialModal() {
                           <div className="min-w-0">
                             <div className="flex items-center gap-1.5">
                               <span
+                                dir="ltr"
                                 className="font-mono text-[10px] font-black"
                                 style={{ color: entry.emblemColor }}
                               >
@@ -2604,18 +2750,23 @@ export function SocialModal() {
                               </span>
                             </div>
                             <div className="text-[10px] font-mono tabular-nums text-slate-400">
-                              {entry.memberCount} Members · {entry.periodWins} Period Wins ·{' '}
-                              {entry.challengeWins} Challenge Wins
+                              {t('social.clubRankingRowMeta', {
+                                members: formatNumber(entry.memberCount),
+                                wins: formatNumber(entry.periodWins),
+                                challengeWins: formatNumber(entry.challengeWins),
+                              })}
                             </div>
                           </div>
                         </div>
 
                         <div className="flex items-center gap-2">
-                          <div className="text-right font-mono tabular-nums">
+                          <div className="text-end font-mono tabular-nums">
                             <div className="text-xs font-black text-amber-300">
-                              {entry.clubRating}
+                              {formatNumber(entry.clubRating)}
                             </div>
-                            <div className="text-[9px] uppercase text-slate-400">Club Rating</div>
+                            <div className="text-[9px] uppercase text-slate-400">
+                              {t('social.clubRatingLabel')}
+                            </div>
                           </div>
                           {canChallenge && (
                             <button
@@ -2630,7 +2781,7 @@ export function SocialModal() {
                               className="inline-flex items-center gap-1 rounded-lg bg-amber-500 px-2.5 py-1 text-[10px] font-extrabold text-slate-950 hover:bg-amber-400 cursor-pointer whitespace-nowrap"
                             >
                               <Swords className="h-3 w-3" />
-                              Challenge
+                              {t('social.challengeBtn')}
                             </button>
                           )}
                         </div>
@@ -2647,7 +2798,7 @@ export function SocialModal() {
             <div className="space-y-3">
               <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-white/10 bg-black/25 px-3 py-2">
                 <span className="text-xs font-bold text-slate-200">
-                  Notifications ({unreadNotificationCount} unread)
+                  {t('social.notificationsCountHeader', { unread: unreadNotificationCount })}
                 </span>
                 <div className="flex items-center gap-1.5">
                   <button
@@ -2657,7 +2808,7 @@ export function SocialModal() {
                     className="inline-flex items-center gap-1 rounded-lg border border-white/15 bg-white/5 px-2.5 py-1 text-[11px] font-bold text-slate-200 hover:bg-white/10 disabled:opacity-45 cursor-pointer whitespace-nowrap"
                   >
                     <CheckCheck className="h-3.5 w-3.5 text-emerald-400" />
-                    Mark All Read
+                    {t('social.markAllReadBtn')}
                   </button>
                   <button
                     type="button"
@@ -2666,7 +2817,7 @@ export function SocialModal() {
                     className="inline-flex items-center gap-1 rounded-lg border border-rose-500/35 bg-rose-500/12 px-2.5 py-1 text-[11px] font-bold text-rose-200 hover:bg-rose-500/20 disabled:opacity-45 cursor-pointer whitespace-nowrap"
                   >
                     <Trash2 className="h-3.5 w-3.5" />
-                    Clear All
+                    {t('social.clearAllBtn')}
                   </button>
                 </div>
               </div>
@@ -2674,11 +2825,11 @@ export function SocialModal() {
               <div className="space-y-2 max-h-[360px] overflow-y-auto">
                 {notifications.length === 0 ? (
                   <div className="rounded-xl border border-white/10 bg-black/25 py-10 text-center text-xs text-slate-400">
-                    No notifications right now.
+                    {t('social.noNotificationsPrompt')}
                   </div>
                 ) : (
                   notifications.map((n) => {
-                    const meta = notificationMeta(n.type);
+                    const meta = notificationMeta(n.type, language);
                     const unread = n.readAtMs === null;
                     return (
                       <div
@@ -2695,8 +2846,8 @@ export function SocialModal() {
                               {meta.label}
                             </span>
                             <span className="text-xs font-extrabold text-white">{n.title}</span>
-                            <span className="font-mono text-[10px] text-slate-500">
-                              {formatMessageTime(n.createdAtMs)}
+                            <span dir="ltr" className="font-mono text-[10px] text-slate-500">
+                              {formatMessageTime(n.createdAtMs, language)}
                             </span>
                           </div>
                           <p className="mt-0.5 text-xs text-slate-300">{n.body}</p>
@@ -2714,7 +2865,7 @@ export function SocialModal() {
                               }}
                               className="rounded-lg bg-amber-500 px-2.5 py-1 text-[10px] font-extrabold text-slate-950 hover:bg-amber-400 cursor-pointer whitespace-nowrap"
                             >
-                              View
+                              {t('common.view')}
                             </button>
                           )}
                           {unread && (
@@ -2723,12 +2874,12 @@ export function SocialModal() {
                               onClick={() => void socialClient.markNotificationsRead(n.notificationId)}
                               className="rounded-lg border border-white/15 bg-white/5 px-2 py-1 text-[10px] font-bold text-slate-200 hover:bg-white/10 cursor-pointer whitespace-nowrap"
                             >
-                              Mark Read
+                              {t('social.markReadBtn')}
                             </button>
                           )}
                           <button
                             type="button"
-                            title="Dismiss notification"
+                            title={t('social.dismissNotificationAria')}
                             onClick={() => void socialClient.clearNotifications(n.notificationId)}
                             className="inline-flex h-6 w-6 items-center justify-center rounded-md border border-white/10 bg-white/5 text-slate-400 hover:text-white cursor-pointer"
                           >
@@ -2745,18 +2896,18 @@ export function SocialModal() {
 
           {/* 8. PRIVACY & SAFETY TAB */}
           {socialTab === 'privacy' && (
-            <div className="space-y-4 max-h-[420px] overflow-y-auto pr-0.5">
+            <div className="space-y-4 max-h-[420px] overflow-y-auto pe-0.5">
               {/* Server-Enforced Privacy Controls */}
               <div className="rounded-xl border border-white/10 bg-black/25 p-3.5 space-y-3">
                 <div className="flex items-center gap-2 text-xs font-extrabold uppercase tracking-wider text-amber-400">
                   <Settings className="h-3.5 w-3.5" />
-                  Privacy Preferences
+                  {t('social.privacyPrefsTitle')}
                 </div>
 
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
                   <div>
                     <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1">
-                      Friend Requests
+                      {t('social.privacyFriendRequests')}
                     </label>
                     <select
                       data-testid="privacy-friend-requests"
@@ -2769,14 +2920,14 @@ export function SocialModal() {
                       }
                       className="w-full rounded-lg border border-white/15 bg-[#0b1017] px-2.5 py-1.5 text-xs text-white"
                     >
-                      <option value="everyone">Everyone</option>
-                      <option value="nobody">No One</option>
+                      <option value="everyone">{t('social.policyEveryone')}</option>
+                      <option value="nobody">{t('social.policyNobody')}</option>
                     </select>
                   </div>
 
                   <div>
                     <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1">
-                      Match Invites
+                      {t('social.privacyMatchInvites')}
                     </label>
                     <select
                       data-testid="privacy-match-invites"
@@ -2789,15 +2940,15 @@ export function SocialModal() {
                       }
                       className="w-full rounded-lg border border-white/15 bg-[#0b1017] px-2.5 py-1.5 text-xs text-white"
                     >
-                      <option value="everyone">Everyone</option>
-                      <option value="friends">Friends Only</option>
-                      <option value="nobody">No One</option>
+                      <option value="everyone">{t('social.policyEveryone')}</option>
+                      <option value="friends">{t('social.policyFriends')}</option>
+                      <option value="nobody">{t('social.policyNobody')}</option>
                     </select>
                   </div>
 
                   <div>
                     <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1">
-                      Direct Messages
+                      {t('social.privacyDirectMessages')}
                     </label>
                     <select
                       data-testid="privacy-direct-messages"
@@ -2810,9 +2961,9 @@ export function SocialModal() {
                       }
                       className="w-full rounded-lg border border-white/15 bg-[#0b1017] px-2.5 py-1.5 text-xs text-white"
                     >
-                      <option value="everyone">Everyone</option>
-                      <option value="friends">Friends Only</option>
-                      <option value="nobody">No One</option>
+                      <option value="everyone">{t('social.policyEveryone')}</option>
+                      <option value="friends">{t('social.policyFriends')}</option>
+                      <option value="nobody">{t('social.policyNobody')}</option>
                     </select>
                   </div>
                 </div>
@@ -2820,9 +2971,11 @@ export function SocialModal() {
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 pt-1">
                   <label className="flex items-center justify-between gap-2 rounded-lg border border-white/10 bg-white/[0.02] px-3 py-2 cursor-pointer">
                     <div>
-                      <div className="text-xs font-bold text-white">Show Online Status</div>
+                      <div className="text-xs font-bold text-white">
+                        {t('social.privacyShowOnlineStatus')}
+                      </div>
                       <div className="text-[10px] text-slate-400">
-                        Allow friends to see live presence & open rooms
+                        {t('social.privacyShowOnlineDesc')}
                       </div>
                     </div>
                     <input
@@ -2838,9 +2991,11 @@ export function SocialModal() {
 
                   <label className="flex items-center justify-between gap-2 rounded-lg border border-white/10 bg-white/[0.02] px-3 py-2 cursor-pointer">
                     <div>
-                      <div className="text-xs font-bold text-white">Show Detailed Stats</div>
+                      <div className="text-xs font-bold text-white">
+                        {t('social.privacyShowPublicStats')}
+                      </div>
                       <div className="text-[10px] text-slate-400">
-                        Share detailed match breakdown & recent matches publicly
+                        {t('social.privacyShowStatsDesc')}
                       </div>
                     </div>
                     <input
@@ -2860,13 +3015,13 @@ export function SocialModal() {
               <div className="rounded-xl border border-white/10 bg-black/25 p-3.5 space-y-2">
                 <div className="flex items-center justify-between">
                   <span className="text-xs font-extrabold uppercase tracking-wider text-slate-300">
-                    Blocked Players ({blockedPlayers.length})
+                    {t('social.blockedPlayersCount', { count: blockedPlayers.length })}
                   </span>
                   <Award className="h-3.5 w-3.5 text-slate-500" />
                 </div>
                 {blockedPlayers.length === 0 ? (
                   <div className="py-5 text-center text-xs text-slate-400">
-                    No blocked players.
+                    {t('social.noBlockedPlayers')}
                   </div>
                 ) : (
                   blockedPlayers.map((b) => (
@@ -2876,7 +3031,9 @@ export function SocialModal() {
                     >
                       <div>
                         <div className="text-xs font-bold text-white">{b.displayName}</div>
-                        <div className="text-[10px] font-mono text-slate-400">{b.playerId}</div>
+                        <div dir="ltr" className="text-[10px] font-mono text-slate-400">
+                          {b.playerId}
+                        </div>
                       </div>
                       <button
                         type="button"
@@ -2884,7 +3041,7 @@ export function SocialModal() {
                         onClick={() => handleUnblock(b.playerId)}
                         className="rounded-lg border border-white/15 bg-white/5 px-3 py-1 text-xs font-bold text-slate-200 hover:bg-white/10 cursor-pointer whitespace-nowrap"
                       >
-                        Unblock
+                        {t('social.unblockBtn')}
                       </button>
                     </div>
                   ))

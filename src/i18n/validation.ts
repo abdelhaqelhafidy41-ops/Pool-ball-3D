@@ -1,4 +1,4 @@
-import type { AppLanguage, PluralForms, TranslationTree } from './types';
+import type { AppLanguage, PluralForms, TranslationSchema, TranslationTree } from './types';
 
 export interface DictionaryValidationReport {
   ok: boolean;
@@ -28,7 +28,7 @@ function isPluralObject(val: unknown): val is PluralForms {
 }
 
 export function flattenTranslationTree(
-  tree: TranslationTree,
+  tree: TranslationTree | TranslationSchema,
   prefix = '',
   out: Record<string, string> = {},
 ): Record<string, string> {
@@ -59,8 +59,8 @@ export function extractPlaceholders(template: string): string[] {
 }
 
 export function validateTranslationDictionaries(
-  enDict: TranslationTree,
-  arDict: TranslationTree,
+  enDict: TranslationTree | TranslationSchema,
+  arDict: TranslationTree | TranslationSchema,
 ): DictionaryValidationReport {
   const flatEn = flattenTranslationTree(enDict);
   const flatAr = flattenTranslationTree(arDict);
@@ -90,7 +90,10 @@ export function validateTranslationDictionaries(
     if (typeof arVal !== 'string') continue;
     const enPh = extractPlaceholders(enVal);
     const arPh = extractPlaceholders(arVal);
-    if (enPh.length !== arPh.length || enPh.some((p, i) => p !== arPh[i])) {
+    const isImplicitCountPluralSubkey = /\.(zero|one|two)$/.test(k);
+    const enCheck = isImplicitCountPluralSubkey ? enPh.filter((p) => p !== 'count') : enPh;
+    const arCheck = isImplicitCountPluralSubkey ? arPh.filter((p) => p !== 'count') : arPh;
+    if (enCheck.length !== arCheck.length || enCheck.some((p, i) => p !== arCheck[i])) {
       placeholderMismatches.push({
         key: k,
         enPlaceholders: enPh,

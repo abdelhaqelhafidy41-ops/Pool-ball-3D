@@ -8,6 +8,12 @@ import {
 import type { BallGroup, PlayerId } from '../game/rules/types';
 import { BALL_DEFINITIONS } from '../game/utils/constants';
 import {
+  localizeBallName,
+  localizeMatchHeadline,
+  localizePlayerName,
+  useTranslation,
+} from '../i18n';
+import {
   getAvatarVisualMeta,
   getBadgeVisualMeta,
   getNameplateVisualClass,
@@ -23,6 +29,7 @@ function MiniBallBadge({
   pocketed?: boolean;
   dimmed?: boolean;
 }) {
+  const { lang } = useTranslation();
   const def = BALL_DEFINITIONS[num];
   if (!def) return null;
   const isCue = num === 0;
@@ -30,7 +37,7 @@ function MiniBallBadge({
 
   return (
     <span
-      title={def.name}
+      title={localizeBallName(num, lang)}
       className={`inline-flex h-4 w-4 items-center justify-center rounded-full text-[9px] font-extrabold transition-opacity ${
         pocketed ? 'opacity-20' : dimmed ? 'opacity-45' : 'opacity-100'
       }`}
@@ -81,6 +88,7 @@ function PlayerScoreCard({
   nameplateId?: string | null;
   badgeId?: string | null;
 }) {
+  const { t, formatNumber } = useTranslation();
   const remaining = group ? getRemainingBallsForGroup(pocketedSet, group) : [];
   const onEight = group ? canTargetEightBall(pocketedSet, group) : false;
   const groupNumbers =
@@ -91,12 +99,12 @@ function PlayerScoreCard({
         : null;
 
   const groupTag = tableOpen
-    ? 'OPEN'
+    ? t('hud.openTag')
     : group === 'solids'
-      ? 'SOLIDS 1–7'
+      ? t('hud.solidsTag')
       : group === 'stripes'
-        ? 'STRIPES 9–15'
-        : 'OPEN';
+        ? t('hud.stripesTag')
+        : t('hud.openTag');
 
   const nameplate = getNameplateVisualClass(nameplateId);
   const badgeMeta = getBadgeVisualMeta(badgeId);
@@ -187,7 +195,7 @@ function PlayerScoreCard({
             <MiniBallBadge num={1} dimmed />
             <MiniBallBadge num={9} dimmed />
             <MiniBallBadge num={8} dimmed />
-            <span className="ml-0.5">Awaiting group</span>
+            <span className="ml-0.5">{t('hud.awaitingGroup')}</span>
           </div>
         )}
       </div>
@@ -200,18 +208,18 @@ function PlayerScoreCard({
         <span className={isActive ? 'text-slate-200 font-semibold' : 'text-slate-400'}>
           {group
             ? onEight
-              ? 'TARGET: 8-BALL'
-              : `REMAINING: ${remaining.length}/7`
+              ? t('hud.targetEightTag')
+              : t('hud.remainingRatio', { count: formatNumber(remaining.length) })
             : isActive
-              ? 'OPEN TABLE'
-              : 'WAITING'}
+              ? t('hud.openTableBadge')
+              : t('hud.waitingTag')}
         </span>
         {isActive && (
           <span
             data-testid={`turn-badge-${playerId}`}
             className="rounded bg-amber-400/18 px-1.5 py-0.5 text-[9px] font-extrabold uppercase tracking-wider text-amber-300 border border-amber-400/35"
           >
-            TURN
+            {t('hud.activeTurnBadge')}
           </span>
         )}
       </div>
@@ -220,6 +228,7 @@ function PlayerScoreCard({
 }
 
 export function MatchScoreboard() {
+  const { t, lang, formatNumber } = useTranslation();
   const screen = useGameStore((s) => s.screen);
   const matchConfig = useGameStore((s) => s.matchConfig);
   const matchPhase = useGameStore((s) => s.matchPhase);
@@ -241,22 +250,25 @@ export function MatchScoreboard() {
     return (
       <div className="pointer-events-auto flex items-center gap-3 rounded-xl border border-white/10 bg-[#0c1219]/92 px-3 py-1.5 shadow-lg">
         <div className="text-[11px] font-bold uppercase tracking-wider text-amber-400">
-          Free Play Practice
+          {t('hud.freePlayLabel')}
         </div>
         <div className="h-3.5 w-px bg-white/15" />
         <div className="text-[11px] font-mono tabular-nums text-slate-300">
-          SHOTS {shotCount} · POCKETED {pocketedNumbers.length}/15
+          {t('hud.freePlayStats', {
+            shots: formatNumber(shotCount),
+            pocketed: formatNumber(pocketedNumbers.length),
+          })}
         </div>
       </div>
     );
   }
 
   const pocketedSet = new Set(pocketedNumbers);
-  const p1Name = matchConfig.player1Name.trim() || 'Player 1';
+  const p1Name = localizePlayerName(matchConfig.player1Name, 'player1', lang);
   const p2Name =
     matchConfig.opponentType === 'ai'
-      ? matchConfig.player2Name.trim() || 'CPU Pro'
-      : matchConfig.player2Name.trim() || 'Player 2';
+      ? localizePlayerName(matchConfig.player2Name || 'CPU Pro', 'player2', lang)
+      : localizePlayerName(matchConfig.player2Name, 'player2', lang);
 
   const isOnline = matchConfig.opponentType === 'online';
   const onlineP1 = isOnline
@@ -266,10 +278,10 @@ export function MatchScoreboard() {
     ? onlineRoom?.players.find((p) => p.role === 'player2') ?? null
     : null;
 
-  const statusText = statusHeadline;
+  const statusText = localizeMatchHeadline(statusHeadline, lang);
 
   return (
-    <div className="pointer-events-auto flex flex-wrap items-center justify-center gap-2">
+    <div dir="ltr" className="pointer-events-auto flex flex-wrap items-center justify-center gap-2">
       <PlayerScoreCard
         playerId="player1"
         name={p1Name}
@@ -285,17 +297,22 @@ export function MatchScoreboard() {
       />
 
       {/* Center Match Status Box */}
-      <div className="hidden md:flex flex-col items-center justify-center rounded-xl border border-white/10 bg-[#0c1219]/92 px-3 py-1.5 text-center min-w-[164px]">
+      <div
+        dir={lang === 'ar' ? 'rtl' : 'ltr'}
+        className="hidden md:flex flex-col items-center justify-center rounded-xl border border-white/10 bg-[#0c1219]/92 px-3 py-1.5 text-center min-w-[164px]"
+      >
         <div className="flex items-center gap-1.5 text-[10px] font-extrabold uppercase tracking-[0.16em] text-amber-400">
           <MiniBallBadge num={0} pocketed={cueBallPocketed} />
-          <span>8-Ball Pool</span>
+          <span>{t('hud.eightBallMatchLabel')}</span>
           <MiniBallBadge num={8} pocketed={pocketedSet.has(8)} />
         </div>
         <div className="mt-0.5 text-[11px] font-semibold text-white max-w-[190px] truncate">
           {statusText}
         </div>
         <div className="text-[10px] font-mono tabular-nums text-slate-400">
-          {matchConfig.calledShotsEnabled ? 'CALLED POCKET · ' : ''}SHOT {shotCount}
+          {matchConfig.calledShotsEnabled
+            ? t('hud.calledPocketShot', { shot: formatNumber(shotCount) })
+            : t('hud.shotPrefix', { shot: formatNumber(shotCount) })}
         </div>
       </div>
 
@@ -315,3 +332,4 @@ export function MatchScoreboard() {
     </div>
   );
 }
+

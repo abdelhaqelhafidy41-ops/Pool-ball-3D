@@ -116,7 +116,7 @@ export function RankProgressCard({
             <div className="text-[11px] text-slate-400">
               {progress.next && nextName
                 ? t('progression.rankEloNeeded', {
-                    pts: formatNumber(progress.eloNeededForNext),
+                    pts: formatNumber(progress.eloNeededForNext ?? 0),
                     tier: nextName,
                     minElo: formatNumber(progress.next.minElo),
                   })

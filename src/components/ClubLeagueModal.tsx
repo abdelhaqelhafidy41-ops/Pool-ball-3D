@@ -30,7 +30,16 @@ import {
 import { useEffect, useMemo, useState } from 'react';
 import type { RuleProfileId } from '../game/rules/types';
 import { soundEngine } from '../game/utils/SoundEngine';
-import { CLUB_LEAGUE_COPY, type ClubLeagueCopy } from '../i18n/clubsLeaguesI18n';
+import {
+  type AppLanguage,
+  TRANSLATIONS,
+  formatLocalizedDate,
+  localizeClubRegion,
+  localizeServerError,
+  localizeTeamBoardLabel,
+  localizeTournamentRoundLabel,
+  useTranslation,
+} from '../i18n';
 import { clubLeagueClient } from '../multiplayer/ClubLeagueClient';
 import { multiplayerManager } from '../multiplayer/MultiplayerManager';
 import { socialClient } from '../multiplayer/SocialClient';
@@ -58,6 +67,8 @@ import {
 } from '../multiplayer/shared/social';
 import { type ClubLeagueTab, useGameStore } from '../store/useGameStore';
 
+type ClubLeagueCopy = (typeof TRANSLATIONS)['en']['clubLeagues'];
+
 const COLOR_PRESETS = [
   '#f59e0b',
   '#10b981',
@@ -69,13 +80,13 @@ const COLOR_PRESETS = [
   '#14b8a6',
 ];
 
-const EMBLEM_ICONS: Array<{ id: ClubEmblemIcon; label: string }> = [
-  { id: 'shield', label: 'Shield' },
-  { id: 'crown', label: 'Crown' },
-  { id: 'flame', label: 'Flame' },
-  { id: 'star', label: 'Star' },
-  { id: 'swords', label: 'Swords' },
-  { id: 'target', label: 'Target' },
+const EMBLEM_ICONS: Array<{ id: ClubEmblemIcon; labelKey: string }> = [
+  { id: 'shield', labelKey: 'social.emblemShield' },
+  { id: 'crown', labelKey: 'social.emblemCrown' },
+  { id: 'flame', labelKey: 'social.emblemFlame' },
+  { id: 'star', labelKey: 'social.emblemStar' },
+  { id: 'swords', labelKey: 'social.emblemSwords' },
+  { id: 'target', labelKey: 'social.emblemTarget' },
 ];
 
 function renderEmblemIcon(icon: ClubEmblemIcon, color: string, className = 'h-4 w-4') {
@@ -114,16 +125,9 @@ function presenceDotClass(status: string): string {
   }
 }
 
-function formatShortTime(ms: number | null | undefined): string {
+function formatShortTime(ms: number | null | undefined, lang: AppLanguage): string {
   if (!ms) return '—';
-  try {
-    return new Date(ms).toLocaleDateString(undefined, {
-      month: 'short',
-      day: 'numeric',
-    });
-  } catch {
-    return '—';
-  }
+  return formatLocalizedDate(ms, lang) || '—';
 }
 
 function getStatusTextClass(status: string): string {
@@ -204,13 +208,14 @@ function EncounterCard({
   copy,
   onNotice,
 }: EncounterCardProps) {
+  const { t, language } = useTranslation();
   const requiredPlayers = TEAM_MATCH_FORMAT_SPEC[matchFormat].requiredLineupPlayers;
   const viewerHomeTeam = useMemo(
-    () => (homeTeamId && viewerTeamIds.includes(homeTeamId) ? clubTeams.find((t) => t.teamId === homeTeamId) ?? null : null),
+    () => (homeTeamId && viewerTeamIds.includes(homeTeamId) ? clubTeams.find((tm) => tm.teamId === homeTeamId) ?? null : null),
     [clubTeams, homeTeamId, viewerTeamIds],
   );
   const viewerAwayTeam = useMemo(
-    () => (awayTeamId && viewerTeamIds.includes(awayTeamId) ? clubTeams.find((t) => t.teamId === awayTeamId) ?? null : null),
+    () => (awayTeamId && viewerTeamIds.includes(awayTeamId) ? clubTeams.find((tm) => tm.teamId === awayTeamId) ?? null : null),
     [clubTeams, awayTeamId, viewerTeamIds],
   );
   const lineupTeam = viewerHomeTeam ?? viewerAwayTeam;
@@ -248,7 +253,7 @@ function EncounterCard({
     if (!lineupTeam) return;
     const picked = lineupSlots.filter(Boolean);
     if (picked.length < requiredPlayers) {
-      onNotice({ type: 'err', text: `Select ${requiredPlayers} player(s) for lineup.` });
+      onNotice({ type: 'err', text: `${copy.leagues.submitLineup}: ${requiredPlayers}` });
       return;
     }
     setBusyKey('lineup');
@@ -261,9 +266,9 @@ function EncounterCard({
     });
     setBusyKey(null);
     if (res.ok) {
-      onNotice({ type: 'ok', text: `Lineup saved for [${lineupTeam.tag}].` });
+      onNotice({ type: 'ok', text: copy.notices.lineupSaved });
     } else {
-      onNotice({ type: 'err', text: res.error ?? 'Failed to save lineup.' });
+      onNotice({ type: 'err', text: localizeServerError(res.error, language) });
     }
   };
 
@@ -279,9 +284,9 @@ function EncounterCard({
     });
     setBusyKey(null);
     if (res.ok) {
-      onNotice({ type: 'ok', text: `Updated ${sm.boardLabel} player.` });
+      onNotice({ type: 'ok', text: copy.notices.substitutionDone });
     } else {
-      onNotice({ type: 'err', text: res.error ?? 'Substitution failed.' });
+      onNotice({ type: 'err', text: localizeServerError(res.error, language) });
     }
   };
 
@@ -293,9 +298,12 @@ function EncounterCard({
         : await clubLeagueClient.resolveChampionshipEncounter(competitionId, encounterId, winTeamId, resolution);
     setBusyKey(null);
     if (res.ok) {
-      onNotice({ type: 'ok', text: `Encounter settled (${resolution}).` });
+      onNotice({
+        type: 'ok',
+        text: resolution === 'walkover' ? copy.notices.walkoverAwarded : copy.notices.teamDisqualified,
+      });
     } else {
-      onNotice({ type: 'err', text: res.error ?? 'Unable to settle encounter.' });
+      onNotice({ type: 'err', text: localizeServerError(res.error, language) });
     }
   };
 
@@ -312,19 +320,21 @@ function EncounterCard({
       <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-white/10 bg-black/35 px-3 py-2">
         <div className="flex items-center gap-2 min-w-0">
           {homeSeed ? (
-            <span className="font-mono text-[10px] text-slate-400 tabular-nums">#{homeSeed}</span>
+            <span className="font-mono text-[10px] text-slate-400 tabular-nums" dir="ltr">
+              #{homeSeed}
+            </span>
           ) : null}
           <span
             className={`truncate text-xs font-extrabold ${
               winnerTeamId && winnerTeamId === homeTeamId ? 'text-amber-300' : 'text-white'
             }`}
           >
-            {homeTeamTag ? `[${homeTeamTag}] ` : ''}
-            {homeTeamName ?? 'TBD'}
+            {homeTeamTag ? <span dir="ltr">[{homeTeamTag}] </span> : null}
+            {homeTeamName ?? t('tournaments.tbdSlot')}
           </span>
         </div>
 
-        <div className="font-mono text-sm font-black tracking-wider text-amber-300 tabular-nums shrink-0">
+        <div className="font-mono text-sm font-black tracking-wider text-amber-300 tabular-nums shrink-0" dir="ltr">
           {homeScore} : {awayScore}
         </div>
 
@@ -334,11 +344,13 @@ function EncounterCard({
               winnerTeamId && winnerTeamId === awayTeamId ? 'text-amber-300' : 'text-white'
             }`}
           >
-            {awayTeamTag ? `[${awayTeamTag}] ` : ''}
-            {awayTeamName ?? (status === 'bye' ? 'BYE' : 'TBD')}
+            {awayTeamTag ? <span dir="ltr">[{awayTeamTag}] </span> : null}
+            {awayTeamName ?? (status === 'bye' ? t('tournaments.byeSlot') : t('tournaments.tbdSlot'))}
           </span>
           {awaySeed ? (
-            <span className="font-mono text-[10px] text-slate-400 tabular-nums">#{awaySeed}</span>
+            <span className="font-mono text-[10px] text-slate-400 tabular-nums" dir="ltr">
+              #{awaySeed}
+            </span>
           ) : null}
         </div>
       </div>
@@ -348,7 +360,7 @@ function EncounterCard({
         <div className="rounded-lg border border-amber-400/25 bg-amber-500/[0.06] p-2.5 space-y-2">
           <div className="flex items-center justify-between gap-2">
             <span className="text-[11px] font-bold text-amber-300">
-              {copy.leagues.submitLineup} · [{lineupTeam.tag}] ({requiredPlayers})
+              {copy.leagues.submitLineup} · <span dir="ltr">[{lineupTeam.tag}]</span> ({requiredPlayers})
             </span>
             <button
               type="button"
@@ -374,7 +386,7 @@ function EncounterCard({
                 }}
                 className="min-h-[36px] rounded-lg border border-white/15 bg-[#0a0f16] px-2 py-1 text-xs text-white focus:border-amber-400 focus:outline-none"
               >
-                <option value="">Slot {idx + 1}</option>
+                <option value="">{t('clubLeagues.leagues.boardSlotPrefix', { num: idx + 1 })}</option>
                 {lineupTeam.roster.map((member) => (
                   <option key={member.playerId} value={member.playerId}>
                     {member.displayName} ({member.elo})
@@ -411,7 +423,9 @@ function EncounterCard({
               >
                 <div className="min-w-0 flex-1 space-y-0.5">
                   <div className="flex flex-wrap items-center gap-2 text-[11px]">
-                    <span className="font-bold text-amber-300">{sm.boardLabel}</span>
+                    <span className="font-bold text-amber-300">
+                      {localizeTeamBoardLabel(sm.boardLabel, language)}
+                    </span>
                     <span className="text-slate-500">·</span>
                     <span className={getStatusTextClass(sm.status)}>
                       {getLocalizedStatus(copy, sm.status)}
@@ -419,8 +433,8 @@ function EncounterCard({
                     {sm.roomCode && (
                       <>
                         <span className="text-slate-500">·</span>
-                        <span className="font-mono text-[10px] text-slate-400">
-                          Room {sm.roomCode}
+                        <span className="font-mono text-[10px] text-slate-400" dir="ltr">
+                          {t('clubLeagues.leagues.roomCodeTag', { code: sm.roomCode })}
                         </span>
                       </>
                     )}
@@ -433,9 +447,9 @@ function EncounterCard({
                           : 'text-slate-200'
                       }`}
                     >
-                      {sm.homePlayerName ?? 'TBD'}
+                      {sm.homePlayerName ?? t('tournaments.tbdSlot')}
                     </span>
-                    <span className="text-slate-500">vs</span>
+                    <span className="text-slate-500">{t('common.vs')}</span>
                     <span
                       className={`font-semibold ${
                         sm.winnerPlayerId && sm.winnerPlayerId === sm.awayPlayerId
@@ -443,7 +457,7 @@ function EncounterCard({
                           : 'text-slate-200'
                       }`}
                     >
-                      {sm.awayPlayerName ?? 'TBD'}
+                      {sm.awayPlayerName ?? t('tournaments.tbdSlot')}
                     </span>
                   </div>
                 </div>
@@ -475,7 +489,7 @@ function EncounterCard({
                           onClick={() => void handleSubstitute(sm)}
                           className="min-h-[36px] rounded-lg border border-amber-400/40 bg-amber-500/15 px-2.5 py-1 text-[11px] font-bold text-amber-200 hover:bg-amber-500/25 cursor-pointer whitespace-nowrap"
                         >
-                          OK
+                          {copy.leagues.okBadge}
                         </button>
                       )}
                     </div>
@@ -527,7 +541,7 @@ function EncounterCard({
             onClick={() => void handleResolve(homeTeamId, 'walkover')}
             className="min-h-[34px] rounded-lg border border-white/15 bg-white/5 px-2.5 py-1 text-[10px] font-bold text-slate-200 hover:bg-white/10 cursor-pointer whitespace-nowrap"
           >
-            WO → [{homeTeamTag}]
+            {t('clubLeagues.leagues.walkoverArrow', { tag: homeTeamTag ?? '' })}
           </button>
           <button
             type="button"
@@ -535,7 +549,7 @@ function EncounterCard({
             onClick={() => void handleResolve(awayTeamId, 'walkover')}
             className="min-h-[34px] rounded-lg border border-white/15 bg-white/5 px-2.5 py-1 text-[10px] font-bold text-slate-200 hover:bg-white/10 cursor-pointer whitespace-nowrap"
           >
-            WO → [{awayTeamTag}]
+            {t('clubLeagues.leagues.walkoverArrow', { tag: awayTeamTag ?? '' })}
           </button>
           <button
             type="button"
@@ -543,7 +557,7 @@ function EncounterCard({
             onClick={() => void handleResolve(awayTeamId, 'disqualified')}
             className="min-h-[34px] rounded-lg border border-rose-500/35 bg-rose-500/10 px-2.5 py-1 text-[10px] font-bold text-rose-200 hover:bg-rose-500/20 cursor-pointer whitespace-nowrap"
           >
-            DQ [{homeTeamTag}]
+            {copy.championships.dqBadge} <span dir="ltr">[{homeTeamTag}]</span>
           </button>
           <button
             type="button"
@@ -551,7 +565,7 @@ function EncounterCard({
             onClick={() => void handleResolve(homeTeamId, 'disqualified')}
             className="min-h-[34px] rounded-lg border border-rose-500/35 bg-rose-500/10 px-2.5 py-1 text-[10px] font-bold text-rose-200 hover:bg-rose-500/20 cursor-pointer whitespace-nowrap"
           >
-            DQ [{awayTeamTag}]
+            {copy.championships.dqBadge} <span dir="ltr">[{awayTeamTag}]</span>
           </button>
         </div>
       )}
@@ -565,8 +579,6 @@ export function ClubLeagueModal() {
   const closeClubLeagueModal = useGameStore((s) => s.closeClubLeagueModal);
   const clubLeagueTab = useGameStore((s) => s.clubLeagueTab);
   const setClubLeagueTab = useGameStore((s) => s.setClubLeagueTab);
-  const clubLeagueLanguage = useGameStore((s) => s.clubLeagueLanguage);
-  const setClubLeagueLanguage = useGameStore((s) => s.setClubLeagueLanguage);
   const ownProfile = useGameStore((s) => s.ownProfile);
   const myClub = useGameStore((s) => s.myClub);
   const clubDetail = useGameStore((s) => s.clubDetail);
@@ -588,6 +600,9 @@ export function ClubLeagueModal() {
   const clubLeagueNotice = useGameStore((s) => s.clubLeagueNotice);
   const setClubLeagueNotice = useGameStore((s) => s.setClubLeagueNotice);
   const openProgressionModal = useGameStore((s) => s.openProgressionModal);
+
+  const { t, language, isRtl, setLanguage, formatNumber } = useTranslation();
+  const copy = useMemo(() => TRANSLATIONS[language].clubLeagues, [language]);
 
   const [busyId, setBusyId] = useState<string | null>(null);
 
@@ -664,8 +679,6 @@ export function ClubLeagueModal() {
   const [rankingsSubTab, setRankingsSubTab] = useState<'teams' | 'clubs' | 'trophies'>('teams');
   const [rankingsRegionFilter, setRankingsRegionFilter] = useState('ALL');
 
-  const copy = useMemo(() => CLUB_LEAGUE_COPY[clubLeagueLanguage], [clubLeagueLanguage]);
-  const isRtl = clubLeagueLanguage === 'ar';
   const viewerRole: ClubRole | null = clubDetail?.viewerRole ?? myClub?.role ?? null;
   const isOfficer = useMemo(() => isClubOfficerRole(viewerRole), [viewerRole]);
   const canManageTeams = useMemo(() => canManageClubTeams(viewerRole), [viewerRole]);
@@ -673,7 +686,7 @@ export function ClubLeagueModal() {
   const selectedTeam = useMemo(() => {
     if (clubTeams.length === 0) return null;
     if (selectedTeamId) {
-      const match = clubTeams.find((t) => t.teamId === selectedTeamId);
+      const match = clubTeams.find((tm) => tm.teamId === selectedTeamId);
       if (match) return match;
     }
     return clubTeams[0] ?? null;
@@ -780,11 +793,17 @@ export function ClubLeagueModal() {
       setNewClubName('');
       setNewClubTag('');
       setNewClubDesc('');
-      setClubLeagueNotice({ type: 'ok', text: `Founded [${res.data.club.tag}] ${res.data.club.name}!` });
+      setClubLeagueNotice({
+        type: 'ok',
+        text: t('clubLeagues.notices.foundedClub', {
+          tag: res.data.club.tag,
+          name: res.data.club.name,
+        }),
+      });
       void clubLeagueClient.listClubTeams(res.data.club.clubId);
       void socialClient.fetchClubChat(res.data.club.clubId, 50);
     } else {
-      setClubLeagueNotice({ type: 'err', text: res.error ?? 'Unable to create club.' });
+      setClubLeagueNotice({ type: 'err', text: localizeServerError(res.error, language) });
     }
   };
 
@@ -808,9 +827,15 @@ export function ClubLeagueModal() {
       setTeamName('');
       setTeamTag('');
       setSelectedTeamId(res.data.teamId);
-      setClubLeagueNotice({ type: 'ok', text: `Formed squad [${res.data.tag}] ${res.data.name}!` });
+      setClubLeagueNotice({
+        type: 'ok',
+        text: t('clubLeagues.notices.formedSquad', {
+          tag: res.data.tag,
+          name: res.data.name,
+        }),
+      });
     } else {
-      setClubLeagueNotice({ type: 'err', text: res.error ?? 'Unable to create team.' });
+      setClubLeagueNotice({ type: 'err', text: localizeServerError(res.error, language) });
     }
   };
 
@@ -838,9 +863,12 @@ export function ClubLeagueModal() {
       setLeagueTitle('');
       setLeagueDesc('');
       setSelectedLeagueId(res.data.league.leagueId);
-      setClubLeagueNotice({ type: 'ok', text: `Created league "${res.data.league.title}"!` });
+      setClubLeagueNotice({
+        type: 'ok',
+        text: t('clubLeagues.notices.createdLeague', { title: res.data.league.title }),
+      });
     } else {
-      setClubLeagueNotice({ type: 'err', text: res.error ?? 'Unable to create league.' });
+      setClubLeagueNotice({ type: 'err', text: localizeServerError(res.error, language) });
     }
   };
 
@@ -870,10 +898,12 @@ export function ClubLeagueModal() {
       setSelectedChampionshipId(res.data.championship.championshipId);
       setClubLeagueNotice({
         type: 'ok',
-        text: `Launched championship "${res.data.championship.title}"!`,
+        text: t('clubLeagues.notices.launchedChampionship', {
+          title: res.data.championship.title,
+        }),
       });
     } else {
-      setClubLeagueNotice({ type: 'err', text: res.error ?? 'Unable to create championship.' });
+      setClubLeagueNotice({ type: 'err', text: localizeServerError(res.error, language) });
     }
   };
 
@@ -912,12 +942,12 @@ export function ClubLeagueModal() {
               data-testid="club-league-lang-toggle"
               onClick={() => {
                 soundEngine.playUiClick();
-                setClubLeagueLanguage(clubLeagueLanguage === 'en' ? 'ar' : 'en');
+                setLanguage(language === 'en' ? 'ar' : 'en');
               }}
               className="min-h-[44px] inline-flex items-center gap-1.5 rounded-lg border border-white/15 bg-white/5 px-3 py-1.5 text-xs font-bold text-slate-200 hover:bg-white/10 cursor-pointer whitespace-nowrap"
             >
               <Languages className="h-3.5 w-3.5 text-amber-400" />
-              {clubLeagueLanguage === 'en' ? 'العربية (RTL)' : 'English (LTR)'}
+              {language === 'en' ? 'العربية' : 'English'}
             </button>
 
             <button
@@ -1001,7 +1031,7 @@ export function ClubLeagueModal() {
               {incomingClubInvitations.length > 0 && (
                 <div className="rounded-xl border border-amber-400/35 bg-amber-500/10 p-3 space-y-2">
                   <div className="text-[11px] font-extrabold uppercase tracking-wider text-amber-300">
-                    Club Invitations ({incomingClubInvitations.length})
+                    {copy.club.clubInvitationsTitle} ({incomingClubInvitations.length})
                   </div>
                   {incomingClubInvitations.map((inv) => (
                     <div
@@ -1011,9 +1041,11 @@ export function ClubLeagueModal() {
                       <div className="flex items-center gap-2">
                         {renderEmblemIcon(inv.emblemIcon, inv.emblemColor)}
                         <span className="font-extrabold text-white">
-                          [{inv.clubTag}] {inv.clubName}
+                          <span dir="ltr">[{inv.clubTag}]</span> {inv.clubName}
                         </span>
-                        <span className="text-slate-400">· Invited by {inv.inviterName}</span>
+                        <span className="text-slate-400">
+                          · {t('clubLeagues.club.invitedBy', { name: inv.inviterName })}
+                        </span>
                       </div>
                       <div className="flex items-center gap-1.5">
                         <button
@@ -1024,14 +1056,20 @@ export function ClubLeagueModal() {
                             const r = await socialClient.respondClubInvite(inv.inviteId, 'accept');
                             setBusyId(null);
                             if (r.ok) {
-                              setClubLeagueNotice({ type: 'ok', text: `Joined [${inv.clubTag}]!` });
+                              setClubLeagueNotice({
+                                type: 'ok',
+                                text: t('clubLeagues.notices.inviteAccepted', {
+                                  tag: inv.clubTag,
+                                  name: inv.clubName,
+                                }),
+                              });
                             } else {
-                              setClubLeagueNotice({ type: 'err', text: r.error ?? 'Failed.' });
+                              setClubLeagueNotice({ type: 'err', text: localizeServerError(r.error, language) });
                             }
                           }}
                           className="min-h-[36px] rounded-lg bg-emerald-500 px-3 py-1 text-xs font-extrabold text-slate-950 hover:bg-emerald-400 cursor-pointer"
                         >
-                          Accept
+                          {t('common.accept')}
                         </button>
                         <button
                           type="button"
@@ -1043,7 +1081,7 @@ export function ClubLeagueModal() {
                           }}
                           className="min-h-[36px] rounded-lg border border-white/15 bg-white/5 px-3 py-1 text-xs font-bold text-slate-300 hover:bg-white/10 cursor-pointer"
                         >
-                          Decline
+                          {t('common.decline')}
                         </button>
                       </div>
                     </div>
@@ -1071,6 +1109,7 @@ export function ClubLeagueModal() {
                             <span
                               className="font-mono text-xs font-black"
                               style={{ color: clubDetail.club.emblemColor }}
+                              dir="ltr"
                             >
                               [{clubDetail.club.tag}]
                             </span>
@@ -1078,7 +1117,7 @@ export function ClubLeagueModal() {
                               {clubDetail.club.name}
                             </h3>
                             <span className="text-xs font-bold text-amber-300">
-                              {copy.club.levelLabel} {clubDetail.club.level ?? 1}
+                              {copy.club.levelLabel} {formatNumber(clubDetail.club.level ?? 1)}
                             </span>
                           </div>
                           {clubDetail.club.description && (
@@ -1086,29 +1125,37 @@ export function ClubLeagueModal() {
                           )}
                           <div className="mt-1.5 flex flex-wrap items-center gap-2 font-mono text-[11px] tabular-nums text-slate-400">
                             <span>
-                              {copy.club.regionLabel}: {clubDetail.club.region ?? 'GLOBAL'}
+                              {copy.club.regionLabel}: {localizeClubRegion(clubDetail.club.region, language)}
                             </span>
                             <span>·</span>
                             <span>
-                              {copy.club.capacityLabel}: {clubDetail.club.memberCount}/
-                              {clubDetail.club.maxMembers ?? 50}
-                            </span>
-                            <span>·</span>
-                            <span>Rating {clubDetail.club.clubRating}</span>
-                            <span>·</span>
-                            <span>
-                              {clubDetail.club.totalWins}W / {clubDetail.club.totalMatches}M
+                              {copy.club.capacityLabel}:{' '}
+                              <span dir="ltr">
+                                {clubDetail.club.memberCount}/{clubDetail.club.maxMembers ?? 50}
+                              </span>
                             </span>
                             <span>·</span>
                             <span>
-                              {clubDetail.club.leagueTitles ?? 0}L / {clubDetail.club.championshipTitles ?? 0}C
+                              {copy.notices.ratingMetaPrefix} {formatNumber(clubDetail.club.clubRating)}
+                            </span>
+                            <span>·</span>
+                            <span dir="ltr">
+                              {clubDetail.club.totalWins}{copy.notices.recordShortW} /{' '}
+                              {clubDetail.club.totalMatches}{copy.notices.recordShortM}
+                            </span>
+                            <span>·</span>
+                            <span>
+                              {copy.rankings.titles}:{' '}
+                              <span dir="ltr">
+                                {(clubDetail.club.leagueTitles ?? 0) + (clubDetail.club.championshipTitles ?? 0)}
+                              </span>
                             </span>
                           </div>
                           {/* Club XP Bar */}
                           <div className="mt-2 max-w-xs space-y-1">
                             <div className="flex justify-between font-mono text-[10px] text-slate-400 tabular-nums">
                               <span>{copy.club.xpLabel}</span>
-                              <span>
+                              <span dir="ltr">
                                 {clubDetail.club.xpIntoLevel ?? 0} / {clubDetail.club.xpForNextLevel ?? 250}
                               </span>
                             </div>
@@ -1145,7 +1192,7 @@ export function ClubLeagueModal() {
                             className="min-h-[40px] inline-flex items-center gap-1.5 rounded-lg border border-white/15 bg-white/5 px-3 py-1.5 text-xs font-bold text-slate-200 hover:bg-white/10 cursor-pointer whitespace-nowrap"
                           >
                             <Settings className="h-3.5 w-3.5 text-amber-400" />
-                            Edit
+                            {copy.club.editClubBtn}
                           </button>
                         )}
                         <button
@@ -1156,9 +1203,9 @@ export function ClubLeagueModal() {
                             const res = await socialClient.leaveClub(clubDetail.club.clubId);
                             setBusyId(null);
                             if (res.ok) {
-                              setClubLeagueNotice({ type: 'ok', text: 'Left club.' });
+                              setClubLeagueNotice({ type: 'ok', text: copy.notices.leftClub });
                             } else {
-                              setClubLeagueNotice({ type: 'err', text: res.error ?? 'Unable to leave club.' });
+                              setClubLeagueNotice({ type: 'err', text: localizeServerError(res.error, language) });
                             }
                           }}
                           className="min-h-[40px] inline-flex items-center gap-1.5 rounded-lg border border-rose-500/35 bg-rose-500/12 px-3 py-1.5 text-xs font-bold text-rose-200 hover:bg-rose-500/20 cursor-pointer whitespace-nowrap"
@@ -1178,7 +1225,7 @@ export function ClubLeagueModal() {
                             maxLength={180}
                             value={editClubDesc}
                             onChange={(e) => setEditClubDesc(e.target.value)}
-                            placeholder="Club description..."
+                            placeholder={copy.club.descPlaceholder}
                             className="sm:col-span-2 min-h-[38px] rounded-lg border border-white/15 bg-[#0a0f16] px-2.5 py-1.5 text-xs text-white"
                           />
                           <select
@@ -1188,7 +1235,7 @@ export function ClubLeagueModal() {
                           >
                             {COMPETITION_REGIONS.map((r) => (
                               <option key={r.id} value={r.id}>
-                                {r.label}
+                                {localizeClubRegion(r.id, language)}
                               </option>
                             ))}
                           </select>
@@ -1216,8 +1263,8 @@ export function ClubLeagueModal() {
                               onChange={(e) => setEditClubJoinMode(e.target.value as ClubJoinMode)}
                               className="flex-1 min-h-[38px] rounded-lg border border-white/15 bg-[#0a0f16] px-2 py-1.5 text-xs text-white"
                             >
-                              <option value="public">Open</option>
-                              <option value="approval">Approval</option>
+                              <option value="public">{copy.notices.openJoinPolicy}</option>
+                              <option value="approval">{copy.notices.approvalJoinPolicy}</option>
                             </select>
                           </div>
                         </div>
@@ -1236,14 +1283,14 @@ export function ClubLeagueModal() {
                               setBusyId(null);
                               if (res.ok) {
                                 setEditingClub(false);
-                                setClubLeagueNotice({ type: 'ok', text: 'Club settings updated.' });
+                                setClubLeagueNotice({ type: 'ok', text: copy.notices.clubUpdated });
                               } else {
-                                setClubLeagueNotice({ type: 'err', text: res.error ?? 'Failed.' });
+                                setClubLeagueNotice({ type: 'err', text: localizeServerError(res.error, language) });
                               }
                             }}
                             className="min-h-[38px] rounded-lg bg-amber-500 px-3 py-1.5 text-xs font-extrabold text-slate-950 hover:bg-amber-400 cursor-pointer"
                           >
-                            Save Changes
+                            {copy.club.saveChangesBtn}
                           </button>
                         </div>
                       </div>
@@ -1255,7 +1302,7 @@ export function ClubLeagueModal() {
                         {copy.club.announcementLabel}
                       </div>
                       <p className="text-xs text-slate-200">
-                        {clubDetail.club.announcement || 'No official club bulletin posted yet.'}
+                        {clubDetail.club.announcement || copy.notices.noOfficialBulletin}
                       </p>
                       {isOfficer && (
                         <form
@@ -1270,9 +1317,9 @@ export function ClubLeagueModal() {
                             setBusyId(null);
                             if (res.ok) {
                               setAnnouncementDraft('');
-                              setClubLeagueNotice({ type: 'ok', text: 'Bulletin updated.' });
+                              setClubLeagueNotice({ type: 'ok', text: copy.club.bulletinUpdatedNotice });
                             } else {
-                              setClubLeagueNotice({ type: 'err', text: res.error ?? 'Failed.' });
+                              setClubLeagueNotice({ type: 'err', text: localizeServerError(res.error, language) });
                             }
                           }}
                           className="flex flex-wrap gap-2"
@@ -1290,7 +1337,7 @@ export function ClubLeagueModal() {
                             disabled={!announcementDraft.trim() || busyId === 'post-announcement'}
                             className="min-h-[38px] rounded-lg bg-amber-500 px-3 py-1.5 text-xs font-extrabold text-slate-950 hover:bg-amber-400 disabled:opacity-50 cursor-pointer whitespace-nowrap"
                           >
-                            <Edit3 className="inline h-3 w-3 mr-1" />
+                            <Edit3 className="inline h-3 w-3 me-1" />
                             {copy.club.postAnnouncement}
                           </button>
                         </form>
@@ -1329,9 +1376,9 @@ export function ClubLeagueModal() {
                               setBusyId(null);
                               if (res.ok) {
                                 setInviteTargetId('');
-                                setClubLeagueNotice({ type: 'ok', text: 'Invitation sent!' });
+                                setClubLeagueNotice({ type: 'ok', text: copy.notices.inviteSent });
                               } else {
-                                setClubLeagueNotice({ type: 'err', text: res.error ?? 'Failed to invite.' });
+                                setClubLeagueNotice({ type: 'err', text: localizeServerError(res.error, language) });
                               }
                             }}
                             className="min-h-[38px] inline-flex items-center gap-1 rounded-lg border border-amber-400/40 bg-amber-500/15 px-3 py-1.5 text-xs font-bold text-amber-200 hover:bg-amber-500/25 disabled:opacity-50 cursor-pointer whitespace-nowrap"
@@ -1354,8 +1401,8 @@ export function ClubLeagueModal() {
                             >
                               <div>
                                 <span className="font-bold text-white">{jr.displayName}</span>
-                                <span className="ml-2 font-mono text-[10px] text-slate-400 tabular-nums">
-                                  {jr.elo} ELO
+                                <span className="ms-2 font-mono text-[10px] text-slate-400 tabular-nums">
+                                  {formatNumber(jr.elo)} {t('common.elo')}
                                 </span>
                               </div>
                               <div className="flex items-center gap-1.5">
@@ -1423,7 +1470,7 @@ export function ClubLeagueModal() {
                                   {copy.roles[m.role] ?? m.role}
                                 </span>
                                 <span className="font-mono text-[10px] text-slate-400 tabular-nums">
-                                  {m.elo} ELO
+                                  {formatNumber(m.elo)} {t('common.elo')}
                                 </span>
                               </div>
 
@@ -1442,7 +1489,7 @@ export function ClubLeagueModal() {
                                       );
                                       setBusyId(null);
                                       if (!res.ok) {
-                                        setClubLeagueNotice({ type: 'err', text: res.error ?? 'Failed.' });
+                                        setClubLeagueNotice({ type: 'err', text: localizeServerError(res.error, language) });
                                       }
                                     }}
                                     aria-label={copy.club.promoteRole}
@@ -1475,7 +1522,7 @@ export function ClubLeagueModal() {
                                 <button
                                   type="button"
                                   onClick={() => openProgressionModal('profile', m.playerId)}
-                                  title="View Profile"
+                                  title={t('common.viewProfile')}
                                   className="min-h-[34px] min-w-[34px] inline-flex items-center justify-center rounded-md border border-white/10 bg-white/5 text-slate-300 hover:bg-white/10 cursor-pointer"
                                 >
                                   <User className="h-3.5 w-3.5" />
@@ -1497,7 +1544,7 @@ export function ClubLeagueModal() {
                         </div>
                         <div className="max-h-[200px] min-h-[120px] overflow-y-auto space-y-1.5 rounded-lg border border-white/10 bg-black/35 p-2.5">
                           {clubChatMessages.length === 0 ? (
-                            <p className="text-xs text-slate-500">No club messages yet.</p>
+                            <p className="text-xs text-slate-500">{copy.club.noChatYet}</p>
                           ) : (
                             clubChatMessages.map((msg) => (
                               <div key={msg.messageId} className="text-xs leading-relaxed">
@@ -1523,7 +1570,7 @@ export function ClubLeagueModal() {
                             if (res.ok) {
                               setChatDraft('');
                             } else {
-                              setClubLeagueNotice({ type: 'err', text: res.error ?? 'Message failed.' });
+                              setClubLeagueNotice({ type: 'err', text: localizeServerError(res.error, language) });
                             }
                           }}
                           className="flex gap-2"
@@ -1557,20 +1604,20 @@ export function ClubLeagueModal() {
                           <p className="text-xs text-slate-400">{copy.club.noTrophies}</p>
                         ) : (
                           <div className="space-y-1.5 max-h-[160px] overflow-y-auto">
-                            {clubTrophies.map((t) => (
+                            {clubTrophies.map((tr) => (
                               <div
-                                key={t.trophyId}
+                                key={tr.trophyId}
                                 className="flex items-center justify-between gap-2 rounded-lg border border-white/10 bg-black/30 px-2.5 py-2 text-xs"
                               >
                                 <div className="min-w-0">
-                                  <div className="truncate font-bold text-amber-300">{t.title}</div>
+                                  <div className="truncate font-bold text-amber-300">{tr.title}</div>
                                   <div className="text-[10px] text-slate-400">
-                                    {t.tier} · {t.seasonLabel}
-                                    {t.teamName ? ` · ${t.teamName}` : ''}
+                                    {tr.tier} · {tr.seasonLabel}
+                                    {tr.teamName ? ` · ${tr.teamName}` : ''}
                                   </div>
                                 </div>
                                 <span className="font-mono text-[10px] text-slate-500 shrink-0 tabular-nums">
-                                  {formatShortTime(t.awardedAtMs)}
+                                  {formatShortTime(tr.awardedAtMs, language)}
                                 </span>
                               </div>
                             ))}
@@ -1611,7 +1658,7 @@ export function ClubLeagueModal() {
                           maxLength={28}
                           value={newClubName}
                           onChange={(e) => setNewClubName(e.target.value)}
-                          placeholder="Club Name (3-28 chars)"
+                          placeholder={copy.club.clubNamePlaceholder}
                           className="sm:col-span-2 min-h-[40px] rounded-lg border border-white/15 bg-[#0a0f16] px-3 py-2 text-xs text-white"
                         />
                         <input
@@ -1621,7 +1668,7 @@ export function ClubLeagueModal() {
                           maxLength={5}
                           value={newClubTag}
                           onChange={(e) => setNewClubTag(e.target.value.toUpperCase())}
-                          placeholder="TAG (2-5)"
+                          placeholder={copy.club.clubTagPlaceholder}
                           className="min-h-[40px] rounded-lg border border-white/15 bg-[#0a0f16] px-3 py-2 font-mono text-xs font-bold uppercase text-white"
                         />
                       </div>
@@ -1630,7 +1677,7 @@ export function ClubLeagueModal() {
                         maxLength={180}
                         value={newClubDesc}
                         onChange={(e) => setNewClubDesc(e.target.value)}
-                        placeholder="Club description..."
+                        placeholder={copy.club.descPlaceholder}
                         className="w-full min-h-[40px] rounded-lg border border-white/15 bg-[#0a0f16] px-3 py-2 text-xs text-white"
                       />
                       <div className="grid grid-cols-1 sm:grid-cols-4 gap-2.5">
@@ -1641,7 +1688,7 @@ export function ClubLeagueModal() {
                         >
                           {COMPETITION_REGIONS.map((r) => (
                             <option key={r.id} value={r.id}>
-                              {r.label}
+                              {localizeClubRegion(r.id, language)}
                             </option>
                           ))}
                         </select>
@@ -1650,8 +1697,8 @@ export function ClubLeagueModal() {
                           onChange={(e) => setNewClubJoinMode(e.target.value as ClubJoinMode)}
                           className="min-h-[40px] rounded-lg border border-white/15 bg-[#0a0f16] px-2.5 py-2 text-xs text-white"
                         >
-                          <option value="public">Open Join</option>
-                          <option value="approval">Approval Required</option>
+                          <option value="public">{copy.club.publicModeLabel}</option>
+                          <option value="approval">{copy.club.approvalModeLabel}</option>
                         </select>
                         <input
                           type="number"
@@ -1677,6 +1724,7 @@ export function ClubLeagueModal() {
                             <button
                               key={c}
                               type="button"
+                              aria-label={t('social.selectColorAria', { color: c })}
                               onClick={() => setNewClubColor(c)}
                               className={`h-7 w-7 rounded border-2 cursor-pointer ${
                                 newClubColor === c ? 'border-white' : 'border-transparent'
@@ -1692,6 +1740,7 @@ export function ClubLeagueModal() {
                             <button
                               key={ic.id}
                               type="button"
+                              aria-label={t(ic.labelKey)}
                               onClick={() => setNewClubIcon(ic.id)}
                               className={`h-8 w-8 inline-flex items-center justify-center rounded-lg border cursor-pointer ${
                                 newClubIcon === ic.id
@@ -1727,7 +1776,7 @@ export function ClubLeagueModal() {
                           setClubSearch(e.target.value);
                           void socialClient.listClubs(e.target.value, 30);
                         }}
-                        placeholder="Search clubs..."
+                        placeholder={copy.club.searchClubsPlaceholder}
                         className="min-h-[38px] rounded-lg border border-white/15 bg-[#0a0f16] px-3 py-1.5 text-xs text-white"
                       />
                     </div>
@@ -1741,14 +1790,18 @@ export function ClubLeagueModal() {
                             {renderEmblemIcon(c.emblemIcon, c.emblemColor, 'h-5 w-5 shrink-0')}
                             <div className="min-w-0">
                               <div className="truncate font-extrabold text-white">
-                                <span className="font-mono mr-1.5" style={{ color: c.emblemColor }}>
+                                <span className="font-mono me-1.5" style={{ color: c.emblemColor }} dir="ltr">
                                   [{c.tag}]
                                 </span>
                                 {c.name}
                               </div>
                               <div className="font-mono text-[10px] text-slate-400 tabular-nums">
-                                Lv {c.level ?? 1} · {c.region ?? 'GLOBAL'} · {c.memberCount}/
-                                {c.maxMembers ?? 50} · Rating {c.clubRating}
+                                {t('common.levelShort')} {formatNumber(c.level ?? 1)} ·{' '}
+                                {localizeClubRegion(c.region, language)} ·{' '}
+                                <span dir="ltr">
+                                  {c.memberCount}/{c.maxMembers ?? 50}
+                                </span>{' '}
+                                · {copy.notices.ratingMetaPrefix} {formatNumber(c.clubRating)}
                               </div>
                             </div>
                           </div>
@@ -1765,10 +1818,13 @@ export function ClubLeagueModal() {
                                   text:
                                     res.data?.outcome === 'requested'
                                       ? copy.club.pendingRequest
-                                      : `Joined [${c.tag}]!`,
+                                      : t('clubLeagues.notices.inviteAccepted', {
+                                          tag: c.tag,
+                                          name: c.name,
+                                        }),
                                 });
                               } else {
-                                setClubLeagueNotice({ type: 'err', text: res.error ?? 'Failed.' });
+                                setClubLeagueNotice({ type: 'err', text: localizeServerError(res.error, language) });
                               }
                             }}
                             className="min-h-[40px] rounded-lg bg-amber-500 px-3 py-1.5 text-xs font-extrabold text-slate-950 hover:bg-amber-400 cursor-pointer whitespace-nowrap"
@@ -1802,7 +1858,7 @@ export function ClubLeagueModal() {
                 <>
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <h3 className="text-sm font-extrabold text-white">
-                      {copy.teams.title} · [{myClub.tag}]
+                      {copy.teams.title} · <span dir="ltr">[{myClub.tag}]</span>
                     </h3>
                     {canManageTeams && (
                       <button
@@ -1851,7 +1907,7 @@ export function ClubLeagueModal() {
                         >
                           {COMPETITION_REGIONS.map((r) => (
                             <option key={r.id} value={r.id}>
-                              {r.label}
+                              {localizeClubRegion(r.id, language)}
                             </option>
                           ))}
                         </select>
@@ -1895,6 +1951,7 @@ export function ClubLeagueModal() {
                             <button
                               key={c}
                               type="button"
+                              aria-label={t('social.selectColorAria', { color: c })}
                               onClick={() => setTeamColor(c)}
                               className={`h-6 w-6 rounded border-2 cursor-pointer ${
                                 teamColor === c ? 'border-white' : 'border-transparent'
@@ -1906,6 +1963,7 @@ export function ClubLeagueModal() {
                             <button
                               key={ic.id}
                               type="button"
+                              aria-label={t(ic.labelKey)}
                               onClick={() => setTeamIcon(ic.id)}
                               className={`h-7 w-7 inline-flex items-center justify-center rounded border cursor-pointer ${
                                 teamIcon === ic.id
@@ -1936,35 +1994,38 @@ export function ClubLeagueModal() {
                     <div className="grid grid-cols-1 lg:grid-cols-[290px_1fr] gap-4">
                       {/* Teams Selector List */}
                       <div className="space-y-2">
-                        {clubTeams.map((t) => {
-                          const active = selectedTeam?.teamId === t.teamId;
+                        {clubTeams.map((tm) => {
+                          const active = selectedTeam?.teamId === tm.teamId;
                           return (
                             <button
-                              key={t.teamId}
+                              key={tm.teamId}
                               type="button"
-                              onClick={() => setSelectedTeamId(t.teamId)}
-                              className={`w-full min-h-[56px] flex items-center justify-between gap-2 rounded-xl border p-3 text-left transition-colors cursor-pointer ${
+                              onClick={() => setSelectedTeamId(tm.teamId)}
+                              className={`w-full min-h-[56px] flex items-center justify-between gap-2 rounded-xl border p-3 text-start transition-colors cursor-pointer ${
                                 active
                                   ? 'border-amber-400 bg-amber-500/12'
                                   : 'border-white/10 bg-[#0f1620] hover:bg-white/[0.06]'
                               }`}
                             >
                               <div className="flex items-center gap-2.5 min-w-0">
-                                {renderEmblemIcon(t.badgeIcon, t.badgeColor, 'h-5 w-5 shrink-0')}
+                                {renderEmblemIcon(tm.badgeIcon, tm.badgeColor, 'h-5 w-5 shrink-0')}
                                 <div className="min-w-0">
                                   <div className="truncate text-xs font-extrabold text-white">
-                                    <span className="font-mono mr-1" style={{ color: t.badgeColor }}>
-                                      [{t.tag}]
+                                    <span className="font-mono me-1" style={{ color: tm.badgeColor }} dir="ltr">
+                                      [{tm.tag}]
                                     </span>
-                                    {t.name}
+                                    {tm.name}
                                   </div>
                                   <div className="font-mono text-[10px] text-slate-400 tabular-nums">
-                                    {t.elo} ELO · {t.rosterCount}/{t.maxRosterSize}
+                                    {formatNumber(tm.elo)} {t('common.elo')} ·{' '}
+                                    <span dir="ltr">
+                                      {tm.rosterCount}/{tm.maxRosterSize}
+                                    </span>
                                   </div>
                                 </div>
                               </div>
-                              <span className="font-mono text-[11px] font-bold text-amber-300 tabular-nums shrink-0">
-                                {t.wins}-{t.losses}-{t.draws}
+                              <span className="font-mono text-[11px] font-bold text-amber-300 tabular-nums shrink-0" dir="ltr">
+                                {tm.wins}-{tm.losses}-{tm.draws}
                               </span>
                             </button>
                           );
@@ -1977,15 +2038,19 @@ export function ClubLeagueModal() {
                           <div className="flex flex-wrap items-center justify-between gap-2 border-b border-white/10 pb-3">
                             <div>
                               <h4 className="text-sm font-extrabold text-white">
-                                [{selectedTeam.tag}] {selectedTeam.name}
+                                <span dir="ltr">[{selectedTeam.tag}]</span> {selectedTeam.name}
                               </h4>
                               <div className="mt-0.5 font-mono text-[11px] text-slate-400 tabular-nums">
-                                {copy.teams.eloLabel}: {selectedTeam.elo} (Peak {selectedTeam.peakElo}) ·{' '}
-                                {selectedTeam.region} · {selectedTeam.titlesCount} Titles
+                                {copy.teams.eloLabel}: {formatNumber(selectedTeam.elo)} ·{' '}
+                                {localizeClubRegion(selectedTeam.region, language)} ·{' '}
+                                {formatNumber(selectedTeam.titlesCount)} {copy.rankings.titles}
                               </div>
                             </div>
                             <span className="font-mono text-xs font-bold text-emerald-300 tabular-nums">
-                              Roster {selectedTeam.rosterCount}/{selectedTeam.maxRosterSize}
+                              {copy.teams.teamRosterLabel}{' '}
+                              <span dir="ltr">
+                                {selectedTeam.rosterCount}/{selectedTeam.maxRosterSize}
+                              </span>
                             </span>
                           </div>
 
@@ -2003,7 +2068,7 @@ export function ClubLeagueModal() {
                                     .filter((m) => !selectedTeam.roster.some((r) => r.playerId === m.playerId))
                                     .map((m) => (
                                       <option key={m.playerId} value={m.playerId}>
-                                        {m.displayName} ({m.elo} ELO)
+                                        {m.displayName} ({m.elo} {t('common.elo')})
                                       </option>
                                     ))}
                                 </select>
@@ -2028,9 +2093,9 @@ export function ClubLeagueModal() {
                                     setBusyId(null);
                                     if (res.ok) {
                                       setAddMemberPlayerId('');
-                                      setClubLeagueNotice({ type: 'ok', text: 'Player added to squad.' });
+                                      setClubLeagueNotice({ type: 'ok', text: copy.notices.memberAdded });
                                     } else {
-                                      setClubLeagueNotice({ type: 'err', text: res.error ?? 'Failed.' });
+                                      setClubLeagueNotice({ type: 'err', text: localizeServerError(res.error, language) });
                                     }
                                   }}
                                   className="min-h-[38px] rounded-lg bg-amber-500 px-3 py-1.5 text-xs font-extrabold text-slate-950 hover:bg-amber-400 disabled:opacity-50 cursor-pointer whitespace-nowrap"
@@ -2060,7 +2125,10 @@ export function ClubLeagueModal() {
                                           : copy.teams.starter}
                                     </span>
                                     <span className="font-mono text-[10px] text-slate-400 tabular-nums">
-                                      {rm.elo} ELO · {rm.wins}W-{rm.losses}L · {rm.mvpCount} MVP
+                                      {formatNumber(rm.elo)} {t('common.elo')} ·{' '}
+                                      <span dir="ltr">
+                                        {rm.wins}{copy.notices.recordShortW}-{rm.losses}{copy.notices.recordShortL}
+                                      </span>
                                     </span>
                                   </div>
 
@@ -2114,7 +2182,7 @@ export function ClubLeagueModal() {
                                             );
                                             setBusyId(null);
                                             if (!res.ok) {
-                                              setClubLeagueNotice({ type: 'err', text: res.error ?? 'Failed.' });
+                                              setClubLeagueNotice({ type: 'err', text: localizeServerError(res.error, language) });
                                             }
                                           }}
                                           className="min-h-[34px] rounded-md border border-rose-500/35 bg-rose-500/12 px-2 py-1 text-[10px] font-bold text-rose-200 cursor-pointer"
@@ -2161,7 +2229,7 @@ export function ClubLeagueModal() {
                     <option value="ALL">{copy.rankings.allRegions}</option>
                     {COMPETITION_REGIONS.map((r) => (
                       <option key={r.id} value={r.id}>
-                        {r.label}
+                        {localizeClubRegion(r.id, language)}
                       </option>
                     ))}
                   </select>
@@ -2190,7 +2258,7 @@ export function ClubLeagueModal() {
                       maxLength={60}
                       value={leagueTitle}
                       onChange={(e) => setLeagueTitle(e.target.value)}
-                      placeholder="League Title..."
+                      placeholder={copy.leagues.leagueTitlePlaceholder}
                       className="sm:col-span-2 min-h-[40px] rounded-lg border border-white/15 bg-[#0a0f16] px-3 py-2 text-xs text-white"
                     />
                     <select
@@ -2219,7 +2287,7 @@ export function ClubLeagueModal() {
                     >
                       {COMPETITION_REGIONS.map((r) => (
                         <option key={r.id} value={r.id}>
-                          {r.label}
+                          {localizeClubRegion(r.id, language)}
                         </option>
                       ))}
                     </select>
@@ -2238,8 +2306,8 @@ export function ClubLeagueModal() {
                       onChange={(e) => setLeagueRule(e.target.value as RuleProfileId)}
                       className="min-h-[40px] rounded-lg border border-white/15 bg-[#0a0f16] px-2.5 py-2 text-xs text-white"
                     >
-                      <option value="casual">Casual 8-Ball</option>
-                      <option value="wpa">Strict Called (WPA)</option>
+                      <option value="casual">{t('menu.ruleCasual')}</option>
+                      <option value="wpa">{t('menu.ruleWpa')}</option>
                     </select>
                   </div>
                   <div className="flex flex-wrap items-center justify-between gap-2">
@@ -2250,10 +2318,10 @@ export function ClubLeagueModal() {
                           checked={leagueDoubleRr}
                           onChange={(e) => setLeagueDoubleRr(e.target.checked)}
                         />
-                        Home & Away (2x RR)
+                        {copy.leagues.doubleRoundRobinLabel}
                       </label>
                       <label className="inline-flex items-center gap-1">
-                        Max Teams:
+                        {copy.leagues.maxTeamsLabel}:
                         <input
                           type="number"
                           min={2}
@@ -2264,7 +2332,7 @@ export function ClubLeagueModal() {
                         />
                       </label>
                       <label className="inline-flex items-center gap-1">
-                        Promo:
+                        {copy.leagues.promoSlotsLabel}:
                         <input
                           type="number"
                           min={0}
@@ -2275,7 +2343,7 @@ export function ClubLeagueModal() {
                         />
                       </label>
                       <label className="inline-flex items-center gap-1">
-                        Rel:
+                        {copy.leagues.relegationSlotsLabel}:
                         <input
                           type="number"
                           min={0}
@@ -2312,7 +2380,7 @@ export function ClubLeagueModal() {
                           key={l.leagueId}
                           type="button"
                           onClick={() => setSelectedLeagueId(l.leagueId)}
-                          className={`w-full min-h-[60px] rounded-xl border p-3 text-left transition-colors cursor-pointer ${
+                          className={`w-full min-h-[60px] rounded-xl border p-3 text-start transition-colors cursor-pointer ${
                             active
                               ? 'border-amber-400 bg-amber-500/12'
                               : 'border-white/10 bg-[#0f1620] hover:bg-white/[0.06]'
@@ -2325,7 +2393,10 @@ export function ClubLeagueModal() {
                             </span>
                           </div>
                           <div className="mt-1 font-mono text-[10px] text-slate-400 tabular-nums">
-                            {l.region} · {copy.formats[l.matchFormat]} · {l.registeredCount}/{l.maxTeams}
+                            {localizeClubRegion(l.region, language)} · {copy.formats[l.matchFormat]} ·{' '}
+                            <span dir="ltr">
+                              {formatNumber(l.registeredCount)}/{formatNumber(l.maxTeams)}
+                            </span>
                           </div>
                         </button>
                       );
@@ -2348,7 +2419,7 @@ export function ClubLeagueModal() {
                             </span>
                           </div>
                           <div className="mt-0.5 text-xs text-slate-400">
-                            {selectedLeagueDetail.league.region} ·{' '}
+                            {localizeClubRegion(selectedLeagueDetail.league.region, language)} ·{' '}
                             {copy.formats[selectedLeagueDetail.league.matchFormat]} ·{' '}
                             {selectedLeagueDetail.league.seasonLabel}
                           </div>
@@ -2356,7 +2427,7 @@ export function ClubLeagueModal() {
 
                         {selectedLeagueDetail.league.championTeamName && (
                           <div className="rounded-lg border border-amber-400/40 bg-amber-500/15 px-3 py-1.5 text-xs font-extrabold text-amber-200">
-                            <Trophy className="inline h-3.5 w-3.5 mr-1 text-amber-400" />
+                            <Trophy className="inline h-3.5 w-3.5 me-1 text-amber-400" />
                             {selectedLeagueDetail.league.championTeamName}
                           </div>
                         )}
@@ -2371,9 +2442,9 @@ export function ClubLeagueModal() {
                                 onChange={(e) => setLeagueRegisterTeamId(e.target.value)}
                                 className="min-h-[40px] rounded-lg border border-white/15 bg-[#0a0f16] px-2.5 py-1.5 text-xs text-white"
                               >
-                                {clubTeams.map((t) => (
-                                  <option key={t.teamId} value={t.teamId}>
-                                    [{t.tag}] {t.name}
+                                {clubTeams.map((tm) => (
+                                  <option key={tm.teamId} value={tm.teamId}>
+                                    [{tm.tag}] {tm.name}
                                   </option>
                                 ))}
                               </select>
@@ -2389,12 +2460,12 @@ export function ClubLeagueModal() {
                                     );
                                     setBusyId(null);
                                     if (!res.ok) {
-                                      setClubLeagueNotice({ type: 'err', text: res.error ?? 'Failed.' });
+                                      setClubLeagueNotice({ type: 'err', text: localizeServerError(res.error, language) });
                                     }
                                   }}
                                   className="min-h-[40px] rounded-lg border border-rose-500/40 bg-rose-500/15 px-3 py-1.5 text-xs font-bold text-rose-200 cursor-pointer"
                                 >
-                                  Withdraw Team
+                                  {copy.notices.withdrawTeamBtn}
                                 </button>
                               ) : (
                                 <button
@@ -2408,9 +2479,9 @@ export function ClubLeagueModal() {
                                     );
                                     setBusyId(null);
                                     if (res.ok) {
-                                      setClubLeagueNotice({ type: 'ok', text: 'Team registered for league!' });
+                                      setClubLeagueNotice({ type: 'ok', text: copy.notices.teamRegistered });
                                     } else {
-                                      setClubLeagueNotice({ type: 'err', text: res.error ?? 'Failed.' });
+                                      setClubLeagueNotice({ type: 'err', text: localizeServerError(res.error, language) });
                                     }
                                   }}
                                   className="min-h-[40px] rounded-lg bg-emerald-500 px-3 py-1.5 text-xs font-extrabold text-slate-950 hover:bg-emerald-400 cursor-pointer whitespace-nowrap"
@@ -2434,12 +2505,12 @@ export function ClubLeagueModal() {
                                 );
                                 setBusyId(null);
                                 if (res.ok) {
-                                  setClubLeagueNotice({ type: 'ok', text: 'League fixtures generated!' });
+                                  setClubLeagueNotice({ type: 'ok', text: copy.notices.seasonStarted });
                                 } else {
-                                  setClubLeagueNotice({ type: 'err', text: res.error ?? 'Unable to start.' });
+                                  setClubLeagueNotice({ type: 'err', text: localizeServerError(res.error, language) });
                                 }
                               }}
-                              className="min-h-[40px] ml-auto rounded-lg bg-amber-500 px-3 py-1.5 text-xs font-extrabold text-slate-950 hover:bg-amber-400 disabled:opacity-50 cursor-pointer whitespace-nowrap"
+                              className="min-h-[40px] ms-auto rounded-lg bg-amber-500 px-3 py-1.5 text-xs font-extrabold text-slate-950 hover:bg-amber-400 disabled:opacity-50 cursor-pointer whitespace-nowrap"
                             >
                               {copy.leagues.startLeague}
                             </button>
@@ -2453,24 +2524,24 @@ export function ClubLeagueModal() {
                       <h4 className="text-xs font-extrabold uppercase tracking-wider text-amber-400">
                         {copy.leagues.standingsTitle}
                       </h4>
-                      <table className="w-full text-left text-xs font-mono tabular-nums">
+                      <table className="w-full text-start text-xs font-mono tabular-nums">
                         <thead>
                           <tr className="border-b border-white/10 text-[10px] text-slate-400">
-                            <th className="py-1.5 pr-2">#</th>
-                            <th className="py-1.5 pr-2 font-sans">Team</th>
+                            <th className="py-1.5 pe-2">#</th>
+                            <th className="py-1.5 pe-2 font-sans">{copy.championships.colTeam}</th>
                             <th className="py-1.5 px-1.5">{copy.leagues.played}</th>
                             <th className="py-1.5 px-1.5">{copy.leagues.won}</th>
                             <th className="py-1.5 px-1.5">{copy.leagues.drawn}</th>
                             <th className="py-1.5 px-1.5">{copy.leagues.lost}</th>
                             <th className="py-1.5 px-1.5">{copy.leagues.diff}</th>
-                            <th className="py-1.5 pl-1.5 text-right">{copy.leagues.points}</th>
+                            <th className="py-1.5 ps-1.5 text-end">{copy.leagues.points}</th>
                           </tr>
                         </thead>
                         <tbody>
                           {selectedLeagueDetail.standings.map((row) => (
                             <tr key={row.teamId} className="border-b border-white/5">
                               <td
-                                className={`py-2 pr-2 font-bold ${
+                                className={`py-2 pe-2 font-bold ${
                                   row.zone === 'champion' || row.zone === 'promotion'
                                     ? 'text-emerald-300'
                                     : row.zone === 'relegation'
@@ -2478,15 +2549,15 @@ export function ClubLeagueModal() {
                                       : 'text-slate-300'
                                 }`}
                               >
-                                {row.rank}
+                                {formatNumber(row.rank)}
                               </td>
-                              <td className="py-2 pr-2 font-sans">
+                              <td className="py-2 pe-2 font-sans">
                                 <span className="font-bold text-white">
-                                  [{row.teamTag}] {row.teamName}
+                                  <span dir="ltr">[{row.teamTag}]</span> {row.teamName}
                                 </span>
                                 {row.outcomeTag && (
                                   <span
-                                    className={`ml-2 text-[10px] font-bold uppercase ${
+                                    className={`ms-2 text-[10px] font-bold uppercase ${
                                       row.outcomeTag === 'promoted'
                                         ? 'text-emerald-300'
                                         : row.outcomeTag === 'relegated'
@@ -2494,16 +2565,25 @@ export function ClubLeagueModal() {
                                           : 'text-slate-400'
                                     }`}
                                   >
-                                    · {row.outcomeTag}
+                                    ·{' '}
+                                    {row.outcomeTag === 'promoted'
+                                      ? copy.leagues.promotedBadge
+                                      : row.outcomeTag === 'relegated'
+                                        ? copy.leagues.relegatedBadge
+                                        : copy.leagues.stayedBadge}
                                   </span>
                                 )}
                               </td>
-                              <td className="py-2 px-1.5">{row.played}</td>
-                              <td className="py-2 px-1.5 text-emerald-300">{row.won}</td>
-                              <td className="py-2 px-1.5 text-slate-400">{row.drawn}</td>
-                              <td className="py-2 px-1.5 text-rose-300">{row.lost}</td>
-                              <td className="py-2 px-1.5">{row.frameDiff >= 0 ? `+${row.frameDiff}` : row.frameDiff}</td>
-                              <td className="py-2 pl-1.5 text-right font-black text-amber-300">{row.points}</td>
+                              <td className="py-2 px-1.5">{formatNumber(row.played)}</td>
+                              <td className="py-2 px-1.5 text-emerald-300">{formatNumber(row.won)}</td>
+                              <td className="py-2 px-1.5 text-slate-400">{formatNumber(row.drawn)}</td>
+                              <td className="py-2 px-1.5 text-rose-300">{formatNumber(row.lost)}</td>
+                              <td dir="ltr" className="py-2 px-1.5">
+                                {row.frameDiff >= 0 ? `+${row.frameDiff}` : row.frameDiff}
+                              </td>
+                              <td className="py-2 ps-1.5 text-end font-black text-amber-300">
+                                {formatNumber(row.points)}
+                              </td>
                             </tr>
                           ))}
                         </tbody>
@@ -2513,7 +2593,7 @@ export function ClubLeagueModal() {
                     {/* League Fixtures */}
                     <div className="space-y-2.5">
                       <h4 className="text-xs font-extrabold uppercase tracking-wider text-amber-400">
-                        {copy.leagues.fixturesTitle} ({selectedLeagueDetail.fixtures.length})
+                        {copy.leagues.fixturesTitle} ({formatNumber(selectedLeagueDetail.fixtures.length)})
                       </h4>
                       {selectedLeagueDetail.fixtures.map((f: TeamLeagueFixtureRecord) => (
                         <EncounterCard
@@ -2521,7 +2601,10 @@ export function ClubLeagueModal() {
                           competitionKind="league"
                           competitionId={selectedLeagueDetail.league.leagueId}
                           encounterId={f.fixtureId}
-                          headerLabel={`Round ${f.roundNumber} · Leg ${f.legNumber}`}
+                          headerLabel={t('clubLeagues.leagues.roundLegHeader', {
+                            round: f.roundNumber,
+                            leg: f.legNumber,
+                          })}
                           homeTeamId={f.homeTeamId}
                           homeTeamName={f.homeTeamName}
                           homeTeamTag={f.homeTeamTag}
@@ -2546,7 +2629,7 @@ export function ClubLeagueModal() {
                   </div>
                 ) : (
                   <div className="rounded-xl border border-white/10 bg-[#0f1620] p-6 text-center text-xs text-slate-400">
-                    Select a league to inspect standings, fixtures, and lineups.
+                    {copy.leagues.selectLeaguePrompt}
                   </div>
                 )}
               </div>
@@ -2565,7 +2648,7 @@ export function ClubLeagueModal() {
                     }
                     className="min-h-[40px] rounded-lg border border-white/15 bg-[#0f1620] px-2.5 py-1.5 text-xs text-white"
                   >
-                    <option value="all">All Formats</option>
+                    <option value="all">{copy.notices.allFormatsFilter}</option>
                     <option value="single_elimination">{copy.championships.single_elimination}</option>
                     <option value="double_elimination">{copy.championships.double_elimination}</option>
                     <option value="group_knockout">{copy.championships.group_knockout}</option>
@@ -2579,7 +2662,7 @@ export function ClubLeagueModal() {
                     <option value="ALL">{copy.rankings.allRegions}</option>
                     {COMPETITION_REGIONS.map((r) => (
                       <option key={r.id} value={r.id}>
-                        {r.label}
+                        {localizeClubRegion(r.id, language)}
                       </option>
                     ))}
                   </select>
@@ -2608,7 +2691,7 @@ export function ClubLeagueModal() {
                       maxLength={60}
                       value={champTitle}
                       onChange={(e) => setChampTitle(e.target.value)}
-                      placeholder="Championship Title..."
+                      placeholder={copy.championships.championshipTitlePlaceholder}
                       className="sm:col-span-2 min-h-[40px] rounded-lg border border-white/15 bg-[#0a0f16] px-3 py-2 text-xs text-white"
                     />
                     <select
@@ -2630,7 +2713,7 @@ export function ClubLeagueModal() {
                     >
                       {COMPETITION_REGIONS.map((r) => (
                         <option key={r.id} value={r.id}>
-                          {r.label}
+                          {localizeClubRegion(r.id, language)}
                         </option>
                       ))}
                     </select>
@@ -2649,8 +2732,8 @@ export function ClubLeagueModal() {
                       onChange={(e) => setChampRule(e.target.value as RuleProfileId)}
                       className="min-h-[40px] rounded-lg border border-white/15 bg-[#0a0f16] px-2.5 py-2 text-xs text-white"
                     >
-                      <option value="casual">Casual 8-Ball</option>
-                      <option value="wpa">Strict Called (WPA)</option>
+                      <option value="casual">{t('menu.ruleCasual')}</option>
+                      <option value="wpa">{t('menu.ruleWpa')}</option>
                     </select>
                     <input
                       type="number"
@@ -2659,14 +2742,14 @@ export function ClubLeagueModal() {
                       step={100}
                       value={champPrizeCoins}
                       onChange={(e) => setChampPrizeCoins(Math.max(0, Number.parseInt(e.target.value, 10) || 0))}
-                      placeholder="Prize Coins"
+                      placeholder={t('tournaments.adminFirstPrizeLabel')}
                       className="min-h-[40px] rounded-lg border border-white/15 bg-[#0a0f16] px-2.5 py-2 text-xs text-white"
                     />
                   </div>
                   <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-300">
                     <div className="flex flex-wrap items-center gap-3">
                       <label className="inline-flex items-center gap-1">
-                        Max Teams:
+                        {copy.leagues.maxTeamsLabel}:
                         <input
                           type="number"
                           min={2}
@@ -2678,7 +2761,7 @@ export function ClubLeagueModal() {
                       </label>
                       {champFormat === 'swiss' && (
                         <label className="inline-flex items-center gap-1">
-                          Swiss Rounds:
+                          {copy.championships.swissRoundsLabel}:
                           <input
                             type="number"
                             min={2}
@@ -2694,7 +2777,7 @@ export function ClubLeagueModal() {
                       {champFormat === 'group_knockout' && (
                         <>
                           <label className="inline-flex items-center gap-1">
-                            Group Size:
+                            {copy.championships.groupSizeLabel}:
                             <input
                               type="number"
                               min={3}
@@ -2707,7 +2790,7 @@ export function ClubLeagueModal() {
                             />
                           </label>
                           <label className="inline-flex items-center gap-1">
-                            Advance:
+                            {copy.championships.groupAdvanceLabel}:
                             <input
                               type="number"
                               min={1}
@@ -2747,7 +2830,7 @@ export function ClubLeagueModal() {
                           key={c.championshipId}
                           type="button"
                           onClick={() => setSelectedChampionshipId(c.championshipId)}
-                          className={`w-full min-h-[60px] rounded-xl border p-3 text-left transition-colors cursor-pointer ${
+                          className={`w-full min-h-[60px] rounded-xl border p-3 text-start transition-colors cursor-pointer ${
                             active
                               ? 'border-amber-400 bg-amber-500/12'
                               : 'border-white/10 bg-[#0f1620] hover:bg-white/[0.06]'
@@ -2760,8 +2843,11 @@ export function ClubLeagueModal() {
                             </span>
                           </div>
                           <div className="mt-1 font-mono text-[10px] text-slate-400 tabular-nums">
-                            {copy.championships[c.format]} · {c.registeredCount}/{c.maxTeams} ·{' '}
-                            {c.prizeCoinsChampion} Coins
+                            {copy.championships[c.format]} ·{' '}
+                            <span dir="ltr">
+                              {formatNumber(c.registeredCount)}/{formatNumber(c.maxTeams)}
+                            </span>{' '}
+                            · {t('clubLeagues.notices.prizeCoinsUpper', { amount: formatNumber(c.prizeCoinsChampion) })}
                           </div>
                         </button>
                       );
@@ -2789,15 +2875,15 @@ export function ClubLeagueModal() {
                           <div className="mt-0.5 text-xs text-slate-400">
                             {copy.championships[selectedChampionshipDetail.championship.format]} ·{' '}
                             {copy.formats[selectedChampionshipDetail.championship.matchFormat]} ·{' '}
-                            {selectedChampionshipDetail.championship.region} ·{' '}
+                            {localizeClubRegion(selectedChampionshipDetail.championship.region, language)} ·{' '}
                             <Coins className="inline h-3 w-3 text-amber-400" />{' '}
-                            {selectedChampionshipDetail.championship.prizeCoinsChampion}
+                            {formatNumber(selectedChampionshipDetail.championship.prizeCoinsChampion)}
                           </div>
                         </div>
 
                         {selectedChampionshipDetail.championship.championTeamName && (
                           <div className="rounded-lg border border-amber-400/45 bg-amber-500/15 px-3 py-1.5 text-xs font-extrabold text-amber-200">
-                            <Crown className="inline h-3.5 w-3.5 mr-1 text-amber-400" />
+                            <Crown className="inline h-3.5 w-3.5 me-1 text-amber-400" />
                             {copy.championships.championBanner}:{' '}
                             {selectedChampionshipDetail.championship.championTeamName}
                           </div>
@@ -2813,9 +2899,9 @@ export function ClubLeagueModal() {
                                 onChange={(e) => setChampRegisterTeamId(e.target.value)}
                                 className="min-h-[40px] rounded-lg border border-white/15 bg-[#0a0f16] px-2.5 py-1.5 text-xs text-white"
                               >
-                                {clubTeams.map((t) => (
-                                  <option key={t.teamId} value={t.teamId}>
-                                    [{t.tag}] {t.name}
+                                {clubTeams.map((tm) => (
+                                  <option key={tm.teamId} value={tm.teamId}>
+                                    [{tm.tag}] {tm.name}
                                   </option>
                                 ))}
                               </select>
@@ -2831,12 +2917,12 @@ export function ClubLeagueModal() {
                                     );
                                     setBusyId(null);
                                     if (!res.ok) {
-                                      setClubLeagueNotice({ type: 'err', text: res.error ?? 'Failed.' });
+                                      setClubLeagueNotice({ type: 'err', text: localizeServerError(res.error, language) });
                                     }
                                   }}
                                   className="min-h-[40px] rounded-lg border border-rose-500/40 bg-rose-500/15 px-3 py-1.5 text-xs font-bold text-rose-200 cursor-pointer"
                                 >
-                                  Withdraw Team
+                                  {copy.notices.withdrawTeamBtn}
                                 </button>
                               ) : (
                                 <button
@@ -2852,10 +2938,10 @@ export function ClubLeagueModal() {
                                     if (res.ok) {
                                       setClubLeagueNotice({
                                         type: 'ok',
-                                        text: 'Team entered championship!',
+                                        text: copy.notices.teamRegistered,
                                       });
                                     } else {
-                                      setClubLeagueNotice({ type: 'err', text: res.error ?? 'Failed.' });
+                                      setClubLeagueNotice({ type: 'err', text: localizeServerError(res.error, language) });
                                     }
                                   }}
                                   className="min-h-[40px] rounded-lg bg-emerald-500 px-3 py-1.5 text-xs font-extrabold text-slate-950 hover:bg-emerald-400 cursor-pointer whitespace-nowrap"
@@ -2880,12 +2966,12 @@ export function ClubLeagueModal() {
                                 );
                                 setBusyId(null);
                                 if (res.ok) {
-                                  setClubLeagueNotice({ type: 'ok', text: 'Championship seeded & started!' });
+                                  setClubLeagueNotice({ type: 'ok', text: copy.notices.championshipStarted });
                                 } else {
-                                  setClubLeagueNotice({ type: 'err', text: res.error ?? 'Failed.' });
+                                  setClubLeagueNotice({ type: 'err', text: localizeServerError(res.error, language) });
                                 }
                               }}
-                              className="min-h-[40px] ml-auto rounded-lg bg-amber-500 px-3 py-1.5 text-xs font-extrabold text-slate-950 hover:bg-amber-400 disabled:opacity-50 cursor-pointer whitespace-nowrap"
+                              className="min-h-[40px] ms-auto rounded-lg bg-amber-500 px-3 py-1.5 text-xs font-extrabold text-slate-950 hover:bg-amber-400 disabled:opacity-50 cursor-pointer whitespace-nowrap"
                             >
                               {copy.championships.startChampionship}
                             </button>
@@ -2902,41 +2988,43 @@ export function ClubLeagueModal() {
                             ? copy.championships.swissTitle
                             : selectedChampionshipDetail.championship.format === 'group_knockout'
                               ? copy.championships.groupsTitle
-                              : 'Seeded Teams'}{' '}
-                          ({selectedChampionshipDetail.entries.length})
+                              : copy.championships.seededTeamsTitle}{' '}
+                          ({formatNumber(selectedChampionshipDetail.entries.length)})
                         </h4>
-                        <table className="w-full text-left text-xs font-mono tabular-nums">
+                        <table className="w-full text-start text-xs font-mono tabular-nums">
                           <thead>
                             <tr className="border-b border-white/10 text-[10px] text-slate-400">
-                              <th className="py-1.5 pr-2">Seed</th>
-                              <th className="py-1.5 pr-2 font-sans">Team</th>
-                              <th className="py-1.5 px-1.5">W-L</th>
-                              <th className="py-1.5 px-1.5">PTS</th>
-                              <th className="py-1.5 px-1.5">BH</th>
-                              <th className="py-1.5 pl-1.5 text-right">DIFF</th>
+                              <th className="py-1.5 pe-2">{copy.championships.colSeed}</th>
+                              <th className="py-1.5 pe-2 font-sans">{copy.championships.colTeam}</th>
+                              <th className="py-1.5 px-1.5">{copy.championships.colWL}</th>
+                              <th className="py-1.5 px-1.5">{copy.championships.colPts}</th>
+                              <th className="py-1.5 px-1.5">{copy.championships.colBh}</th>
+                              <th className="py-1.5 ps-1.5 text-end">{copy.championships.colDiff}</th>
                             </tr>
                           </thead>
                           <tbody>
                             {selectedChampionshipDetail.entries.map((entry) => (
                               <tr key={entry.teamId} className="border-b border-white/5">
-                                <td className="py-1.5 pr-2 text-amber-300 font-bold">
+                                <td dir="ltr" className="py-1.5 pe-2 text-amber-300 font-bold">
                                   {entry.seed ? `#${entry.seed}` : '—'}
                                   {entry.groupIndex !== null ? ` · G${entry.groupIndex + 1}` : ''}
                                 </td>
-                                <td className="py-1.5 pr-2 font-sans">
+                                <td className="py-1.5 pe-2 font-sans">
                                   <span className="font-bold text-white">
-                                    [{entry.teamTag}] {entry.teamName}
+                                    <span dir="ltr">[{entry.teamTag}]</span> {entry.teamName}
                                   </span>
                                   {entry.disqualified && (
-                                    <span className="ml-2 text-[10px] font-bold text-rose-400">DQ</span>
+                                    <span className="ms-2 text-[10px] font-bold text-rose-400">
+                                      {copy.championships.dqBadge}
+                                    </span>
                                   )}
                                 </td>
-                                <td className="py-1.5 px-1.5">
+                                <td dir="ltr" className="py-1.5 px-1.5">
                                   {entry.wins}-{entry.losses}
                                 </td>
-                                <td className="py-1.5 px-1.5 font-bold text-amber-300">{entry.points}</td>
-                                <td className="py-1.5 px-1.5 text-slate-400">{entry.buchholz}</td>
-                                <td className="py-1.5 pl-1.5 text-right">
+                                <td className="py-1.5 px-1.5 font-bold text-amber-300">{formatNumber(entry.points)}</td>
+                                <td className="py-1.5 px-1.5 text-slate-400">{formatNumber(entry.buchholz)}</td>
+                                <td dir="ltr" className="py-1.5 ps-1.5 text-end">
                                   {entry.frameDiff >= 0 ? `+${entry.frameDiff}` : entry.frameDiff}
                                 </td>
                               </tr>
@@ -2949,42 +3037,55 @@ export function ClubLeagueModal() {
                     {/* Championship Matches */}
                     <div className="space-y-2.5">
                       <h4 className="text-xs font-extrabold uppercase tracking-wider text-amber-400">
-                        {copy.championships.bracketTitle} ({selectedChampionshipDetail.matches.length})
+                        {copy.championships.bracketTitle} ({formatNumber(selectedChampionshipDetail.matches.length)})
                       </h4>
-                      {selectedChampionshipDetail.matches.map((m: ClubChampionshipMatchRecord) => (
-                        <EncounterCard
-                          key={m.matchNodeId}
-                          competitionKind="club_championship"
-                          competitionId={selectedChampionshipDetail.championship.championshipId}
-                          encounterId={m.matchNodeId}
-                          headerLabel={`${m.roundLabel} · ${m.stageType.replace(/_/g, ' ')}`}
-                          homeTeamId={m.homeTeamId}
-                          homeTeamName={m.homeTeamName}
-                          homeTeamTag={m.homeTeamTag}
-                          homeSeed={m.homeSeed}
-                          awayTeamId={m.awayTeamId}
-                          awayTeamName={m.awayTeamName}
-                          awayTeamTag={m.awayTeamTag}
-                          awaySeed={m.awaySeed}
-                          homeScore={m.homeScore}
-                          awayScore={m.awayScore}
-                          status={m.status}
-                          winnerTeamId={m.winnerTeamId}
-                          matchFormat={selectedChampionshipDetail.championship.matchFormat}
-                          subMatches={m.subMatches}
-                          viewerPlayerId={ownProfile?.playerId ?? null}
-                          viewerTeamIds={selectedChampionshipDetail.viewerTeamIds}
-                          clubTeams={clubTeams}
-                          canManage={selectedChampionshipDetail.canManage}
-                          copy={copy}
-                          onNotice={setClubLeagueNotice}
-                        />
-                      ))}
+                      {selectedChampionshipDetail.matches.map((m: ClubChampionshipMatchRecord) => {
+                        const stageLabel =
+                          m.stageType === 'group'
+                            ? copy.championships.stageGroups
+                            : m.stageType === 'knockout' ||
+                                m.stageType === 'winners' ||
+                                m.stageType === 'losers' ||
+                                m.stageType === 'grand_final'
+                              ? copy.championships.stageKnockout
+                              : m.stageType === 'swiss'
+                                ? copy.championships.stageSwiss
+                                : String(m.stageType).replace(/_/g, ' ');
+                        return (
+                          <EncounterCard
+                            key={m.matchNodeId}
+                            competitionKind="club_championship"
+                            competitionId={selectedChampionshipDetail.championship.championshipId}
+                            encounterId={m.matchNodeId}
+                            headerLabel={`${localizeTournamentRoundLabel(m.roundLabel, language)} · ${stageLabel}`}
+                            homeTeamId={m.homeTeamId}
+                            homeTeamName={m.homeTeamName}
+                            homeTeamTag={m.homeTeamTag}
+                            homeSeed={m.homeSeed}
+                            awayTeamId={m.awayTeamId}
+                            awayTeamName={m.awayTeamName}
+                            awayTeamTag={m.awayTeamTag}
+                            awaySeed={m.awaySeed}
+                            homeScore={m.homeScore}
+                            awayScore={m.awayScore}
+                            status={m.status}
+                            winnerTeamId={m.winnerTeamId}
+                            matchFormat={selectedChampionshipDetail.championship.matchFormat}
+                            subMatches={m.subMatches}
+                            viewerPlayerId={ownProfile?.playerId ?? null}
+                            viewerTeamIds={selectedChampionshipDetail.viewerTeamIds}
+                            clubTeams={clubTeams}
+                            canManage={selectedChampionshipDetail.canManage}
+                            copy={copy}
+                            onNotice={setClubLeagueNotice}
+                          />
+                        );
+                      })}
                     </div>
                   </div>
                 ) : (
                   <div className="rounded-xl border border-white/10 bg-[#0f1620] p-6 text-center text-xs text-slate-400">
-                    Select a championship to inspect seeds, groups, brackets, and lineups.
+                    {copy.championships.selectChampionshipPrompt}
                   </div>
                 )}
               </div>
@@ -3030,7 +3131,7 @@ export function ClubLeagueModal() {
                     <option value="ALL">{copy.rankings.allRegions}</option>
                     {COMPETITION_REGIONS.map((r) => (
                       <option key={r.id} value={r.id}>
-                        {r.label}
+                        {localizeClubRegion(r.id, language)}
                       </option>
                     ))}
                   </select>
@@ -3039,39 +3140,47 @@ export function ClubLeagueModal() {
 
               {rankingsSubTab === 'teams' && (
                 <div className="rounded-xl border border-white/12 bg-[#0f1620] p-3.5 overflow-x-auto">
-                  <table className="w-full text-left text-xs font-mono tabular-nums">
+                  <table className="w-full text-start text-xs font-mono tabular-nums">
                     <thead>
                       <tr className="border-b border-white/10 text-[10px] text-slate-400">
-                        <th className="py-2 pr-2">{copy.rankings.rank}</th>
-                        <th className="py-2 pr-2 font-sans">Team</th>
-                        <th className="py-2 px-2">Region</th>
+                        <th className="py-2 pe-2">{copy.rankings.rank}</th>
+                        <th className="py-2 pe-2 font-sans">{copy.championships.colTeam}</th>
+                        <th className="py-2 px-2">{copy.rankings.colRegion}</th>
                         <th className="py-2 px-2">{copy.rankings.record}</th>
                         <th className="py-2 px-2">{copy.rankings.titles}</th>
-                        <th className="py-2 pl-2 text-right">{copy.rankings.rating}</th>
+                        <th className="py-2 ps-2 text-end">{copy.rankings.rating}</th>
                       </tr>
                     </thead>
                     <tbody>
                       {(teamEloRankings?.teams ?? []).map((team) => (
                         <tr key={team.teamId} className="border-b border-white/5">
-                          <td className="py-2 pr-2 font-black text-amber-300">#{team.rank}</td>
-                          <td className="py-2 pr-2 font-sans">
-                            <span className="font-extrabold text-white">
-                              [{team.tag}] {team.name}
-                            </span>
-                            <span className="ml-2 text-[10px] text-slate-400">· [{team.clubTag}]</span>
+                          <td dir="ltr" className="py-2 pe-2 font-black text-amber-300">
+                            #{team.rank}
                           </td>
-                          <td className="py-2 px-2 text-slate-400">{team.region}</td>
-                          <td className="py-2 px-2">
+                          <td className="py-2 pe-2 font-sans">
+                            <span className="font-extrabold text-white">
+                              <span dir="ltr">[{team.tag}]</span> {team.name}
+                            </span>
+                            <span className="ms-2 text-[10px] text-slate-400">
+                              · <span dir="ltr">[{team.clubTag}]</span>
+                            </span>
+                          </td>
+                          <td className="py-2 px-2 text-slate-400">
+                            {localizeClubRegion(team.region, language)}
+                          </td>
+                          <td dir="ltr" className="py-2 px-2">
                             {team.wins}-{team.losses}-{team.draws}
                           </td>
-                          <td className="py-2 px-2 text-amber-300">{team.titlesCount}</td>
-                          <td className="py-2 pl-2 text-right font-black text-emerald-300">{team.elo}</td>
+                          <td className="py-2 px-2 text-amber-300">{formatNumber(team.titlesCount)}</td>
+                          <td className="py-2 ps-2 text-end font-black text-emerald-300">
+                            {formatNumber(team.elo)}
+                          </td>
                         </tr>
                       ))}
                       {(teamEloRankings?.teams ?? []).length === 0 && (
                         <tr>
                           <td colSpan={6} className="py-6 text-center font-sans text-slate-400">
-                            No ranked teams yet.
+                            {copy.rankings.noRankedTeams}
                           </td>
                         </tr>
                       )}
@@ -3082,26 +3191,30 @@ export function ClubLeagueModal() {
 
               {rankingsSubTab === 'clubs' && (
                 <div className="rounded-xl border border-white/12 bg-[#0f1620] p-3.5 overflow-x-auto">
-                  <table className="w-full text-left text-xs font-mono tabular-nums">
+                  <table className="w-full text-start text-xs font-mono tabular-nums">
                     <thead>
                       <tr className="border-b border-white/10 text-[10px] text-slate-400">
-                        <th className="py-2 pr-2">{copy.rankings.rank}</th>
-                        <th className="py-2 pr-2 font-sans">Club</th>
-                        <th className="py-2 px-2">Members</th>
-                        <th className="py-2 px-2">Wins</th>
-                        <th className="py-2 pl-2 text-right">{copy.rankings.rating}</th>
+                        <th className="py-2 pe-2">{copy.rankings.rank}</th>
+                        <th className="py-2 pe-2 font-sans">{copy.rankings.clubRankings}</th>
+                        <th className="py-2 px-2">{copy.rankings.colMembers}</th>
+                        <th className="py-2 px-2">{copy.rankings.colWins}</th>
+                        <th className="py-2 ps-2 text-end">{copy.rankings.rating}</th>
                       </tr>
                     </thead>
                     <tbody>
                       {clubLeaderboard.map((c) => (
                         <tr key={c.clubId} className="border-b border-white/5">
-                          <td className="py-2 pr-2 font-black text-amber-300">#{c.rank}</td>
-                          <td className="py-2 pr-2 font-sans font-bold text-white">
-                            [{c.tag}] {c.name}
+                          <td dir="ltr" className="py-2 pe-2 font-black text-amber-300">
+                            #{c.rank}
                           </td>
-                          <td className="py-2 px-2 text-slate-300">{c.memberCount}</td>
-                          <td className="py-2 px-2 text-emerald-300">{c.totalWins}</td>
-                          <td className="py-2 pl-2 text-right font-black text-amber-300">{c.clubRating}</td>
+                          <td className="py-2 pe-2 font-sans font-bold text-white">
+                            <span dir="ltr">[{c.tag}]</span> {c.name}
+                          </td>
+                          <td className="py-2 px-2 text-slate-300">{formatNumber(c.memberCount)}</td>
+                          <td className="py-2 px-2 text-emerald-300">{formatNumber(c.totalWins)}</td>
+                          <td className="py-2 ps-2 text-end font-black text-amber-300">
+                            {formatNumber(c.clubRating)}
+                          </td>
                         </tr>
                       ))}
                     </tbody>
@@ -3117,19 +3230,19 @@ export function ClubLeagueModal() {
                       {copy.club.noTrophies}
                     </div>
                   ) : (
-                    (teamEloRankings?.trophies ?? []).map((t) => (
+                    (teamEloRankings?.trophies ?? []).map((tr) => (
                       <div
-                        key={t.trophyId}
+                        key={tr.trophyId}
                         className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-white/10 bg-black/30 px-3 py-2 text-xs"
                       >
                         <div>
-                          <span className="font-extrabold text-amber-300">{t.title}</span>
-                          <span className="ml-2 text-slate-300">
-                            · {t.teamName ?? t.clubId} · {t.seasonLabel}
+                          <span className="font-extrabold text-amber-300">{tr.title}</span>
+                          <span className="ms-2 text-slate-300">
+                            · {tr.teamName ?? tr.clubId} · {tr.seasonLabel}
                           </span>
                         </div>
                         <span className="font-mono text-[10px] text-slate-400 tabular-nums">
-                          {formatShortTime(t.awardedAtMs)}
+                          {formatShortTime(tr.awardedAtMs, language)}
                         </span>
                       </div>
                     ))

@@ -4,6 +4,7 @@ import { CUE_SPECS, DRAG_SHOOT_CONFIG } from '../game/utils/constants';
 import { disposeObject3D } from '../game/utils/dispose';
 import { createCueButtTexture } from '../game/utils/ProceduralTextures';
 import { soundEngine } from '../game/utils/SoundEngine';
+import { useTranslation } from '../i18n';
 import { canLocalPlayerAct, useGameStore } from '../store/useGameStore';
 
 interface MiniatureCueControllerProps {
@@ -19,6 +20,7 @@ export function computePowerFromDragPx(dragPx: number): number {
 }
 
 export function MiniatureCueController({ onShoot }: MiniatureCueControllerProps) {
+  const { t } = useTranslation();
   const ballsMoving = useGameStore((s) => s.ballsMoving);
   const isShotAnimating = useGameStore((s) => s.isShotAnimating);
   const matchPhase = useGameStore((s) => s.matchPhase);
@@ -378,7 +380,8 @@ export function MiniatureCueController({ onShoot }: MiniatureCueControllerProps)
       {/* Frameless floating 3D miniature cue stick interaction zone (no border, no box, no background panel) */}
       <div
         role="slider"
-        aria-label="Drag miniature cue stick back and release to shoot"
+        dir="ltr"
+        aria-label={t('aimSpin.miniCueAria')}
         aria-valuemin={0}
         aria-valuemax={100}
         aria-valuenow={displayPower}

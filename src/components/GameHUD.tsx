@@ -20,6 +20,7 @@ import {
 import { useRef } from 'react';
 import type { PocketId } from '../game/rules/types';
 import { soundEngine } from '../game/utils/SoundEngine';
+import { useTranslation } from '../i18n';
 import { multiplayerManager } from '../multiplayer/MultiplayerManager';
 import { canLocalPlayerAct, useGameStore, type CameraPreset } from '../store/useGameStore';
 import { AIOpponentPanel } from './AIOpponentPanel';
@@ -44,11 +45,11 @@ interface GameHUDProps {
   onEnterReplay: (shotId?: string) => void;
 }
 
-const CAMERA_PRESETS: Array<{ id: CameraPreset; label: string }> = [
-  { id: 'threeQuarter', label: '3/4 View' },
-  { id: 'topDown', label: 'Top' },
-  { id: 'cueAim', label: 'Cue Cam' },
-  { id: 'sideView', label: 'Side' },
+const CAMERA_PRESET_KEYS: Array<{ id: CameraPreset; key: string }> = [
+  { id: 'threeQuarter', key: 'hud.preset34' },
+  { id: 'topDown', key: 'hud.presetTop' },
+  { id: 'cueAim', key: 'hud.presetCueCam' },
+  { id: 'sideView', key: 'hud.presetSide' },
 ];
 
 export function GameHUD({
@@ -60,6 +61,7 @@ export function GameHUD({
   onToggleFullscreen,
   onEnterReplay,
 }: GameHUDProps) {
+  const { t } = useTranslation();
   const screen = useGameStore((s) => s.screen);
   const setScreen = useGameStore((s) => s.setScreen);
   const setSettingsOpen = useGameStore((s) => s.setSettingsOpen);
@@ -177,14 +179,18 @@ export function GameHUD({
                 setScreen('menu');
               }
             }}
-            title={isOnline ? 'Leave Match & Return to Menu' : 'Back to Main Menu'}
+            title={isOnline ? t('hud.leaveMatchTooltip') : t('hud.backToMenuTooltip')}
+            aria-label={isOnline ? t('hud.leaveMatchTooltip') : t('hud.backToMenuTooltip')}
             className="inline-flex h-7 w-7 items-center justify-center rounded-lg border border-white/10 bg-white/5 text-slate-300 hover:bg-white/10 hover:text-white transition-colors cursor-pointer"
           >
             <Home className="h-3.5 w-3.5" />
           </button>
 
           <div className="hidden sm:block pr-1">
-            <div className="text-[11px] font-extrabold tracking-wider text-white whitespace-nowrap">
+            <div
+              dir="ltr"
+              className="text-[11px] font-extrabold tracking-wider text-white whitespace-nowrap"
+            >
               ULTIMATE POOL <span className="text-amber-400">3D</span>
             </div>
           </div>
@@ -204,11 +210,11 @@ export function GameHUD({
                 soundEngine.playUiClick();
                 onEnterReplay();
               }}
-              title="Watch Shot Replay & Analysis"
+              title={t('hud.replayAnalysisTooltip')}
               className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-amber-400/40 bg-[#0c1219]/92 px-2.5 text-[11px] font-bold text-amber-300 hover:bg-amber-500/15 transition-colors cursor-pointer whitespace-nowrap shrink-0"
             >
               <Film className="h-3.5 w-3.5 text-amber-400" />
-              <span>Replay</span>
+              <span>{t('hud.replayButton')}</span>
             </button>
           )}
           <button
@@ -218,8 +224,8 @@ export function GameHUD({
               soundEngine.playUiClick();
               setSettingsOpen(true);
             }}
-            title="Settings (Esc)"
-            aria-label="Open Settings"
+            title={t('hud.settingsTooltip')}
+            aria-label={t('hud.openSettingsAria')}
             className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-white/10 bg-[#0c1219]/92 text-slate-200 hover:bg-white/10 transition-colors cursor-pointer shrink-0"
           >
             <Settings className="h-4 w-4" />
@@ -238,8 +244,8 @@ export function GameHUD({
                 soundEngine.unlock();
                 toggleSound();
               }}
-              title={soundEnabled ? 'Mute Audio (M)' : 'Unmute Audio (M)'}
-              aria-label={soundEnabled ? 'Mute Audio' : 'Unmute Audio'}
+              title={soundEnabled ? t('hud.muteTooltip') : t('hud.unmuteTooltip')}
+              aria-label={soundEnabled ? t('hud.muteAria') : t('hud.unmuteAria')}
               className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-white/10 bg-[#0c1219]/92 text-slate-200 hover:bg-white/10 transition-colors cursor-pointer shrink-0"
             >
               {soundEnabled ? (
@@ -252,8 +258,8 @@ export function GameHUD({
               type="button"
               data-testid="hud-fullscreen-btn"
               onClick={onToggleFullscreen}
-              title="Toggle Fullscreen (F)"
-              aria-label={isFullscreen ? 'Exit Fullscreen' : 'Enter Fullscreen'}
+              title={t('hud.fullscreenTooltip')}
+              aria-label={isFullscreen ? t('common.exitFullscreen') : t('common.enterFullscreen')}
               className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-white/10 bg-[#0c1219]/92 text-slate-200 hover:bg-white/10 transition-colors cursor-pointer shrink-0"
             >
               {isFullscreen ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
@@ -278,8 +284,11 @@ export function GameHUD({
       {/* Compact Square Cue Ball Spin Selector */}
       <CueBallSpinControl />
 
-      {/* Right Perimeter Control: Frameless Miniature Cue Stick */}
-      <div className="pointer-events-none fixed right-2 sm:right-4 top-1/2 -translate-y-1/2 z-20 flex flex-col items-center">
+      {/* Right Perimeter Control: Frameless Miniature Cue Stick (fixed screen-right LTR physics axis) */}
+      <div
+        dir="ltr"
+        className="pointer-events-none fixed right-2 sm:right-4 top-1/2 -translate-y-1/2 z-20 flex flex-col items-center"
+      >
         <MiniatureCueController onShoot={onShoot} />
       </div>
 
@@ -293,12 +302,12 @@ export function GameHUD({
           {hudCollapsed ? (
             <>
               <ChevronUp className="h-3.5 w-3.5 text-amber-400" />
-              Show Controls (H)
+              {t('hud.showControlsHint')}
             </>
           ) : (
             <>
               <ChevronDown className="h-3.5 w-3.5 text-amber-400" />
-              Hide Controls (H)
+              {t('hud.hideControlsHint')}
             </>
           )}
         </button>
@@ -306,7 +315,7 @@ export function GameHUD({
         {!hudCollapsed && (
           <div className="pointer-events-auto flex max-w-[96vw] flex-wrap items-center justify-center gap-2 rounded-2xl border border-white/12 bg-[#0c1219]/94 px-2.5 py-2 sm:px-3 shadow-2xl">
             {/* Aiming Direction Group */}
-            <div className="flex items-center gap-1.5">
+            <div dir="ltr" className="flex items-center gap-1.5">
               <button
                 type="button"
                 disabled={aimLocked}
@@ -314,8 +323,8 @@ export function GameHUD({
                   soundEngine.unlock();
                   adjustCueAngle(-0.045);
                 }}
-                title="Rotate Aim Left"
-                aria-label="Rotate Aim Left"
+                title={t('hud.rotateAimLeft')}
+                aria-label={t('hud.rotateAimLeft')}
                 className="inline-flex h-7 w-7 items-center justify-center rounded-lg border border-white/10 bg-white/5 text-slate-200 hover:bg-white/12 disabled:opacity-40 cursor-pointer"
               >
                 <ChevronLeft className="h-3.5 w-3.5" />
@@ -324,7 +333,7 @@ export function GameHUD({
               {/* Endless 360-degree Touch & Mouse Aim Scrubber */}
               <div
                 role="slider"
-                aria-label="Drag left or right to rotate aiming direction 360 degrees"
+                aria-label={t('hud.aimSliderAria')}
                 aria-valuemin={0}
                 aria-valuemax={359}
                 aria-valuenow={angleDeg}
@@ -338,11 +347,11 @@ export function GameHUD({
                     : 'border-white/12 bg-black/40 hover:border-amber-400/50 cursor-ew-resize'
                 }`}
                 style={{ touchAction: 'none' }}
-                title="Drag left/right to aim 360°"
+                title={t('hud.aimSliderTooltip')}
               >
                 <Compass className="h-3.5 w-3.5 text-amber-400 shrink-0" />
                 <span className="text-[10px] font-bold uppercase tracking-wider text-slate-300">
-                  Aim
+                  {t('hud.aimShort')}
                 </span>
                 <span className="text-[11px] font-mono tabular-nums font-bold text-amber-400">
                   {angleDeg}°
@@ -356,8 +365,8 @@ export function GameHUD({
                   soundEngine.unlock();
                   adjustCueAngle(0.045);
                 }}
-                title="Rotate Aim Right"
-                aria-label="Rotate Aim Right"
+                title={t('hud.rotateAimRight')}
+                aria-label={t('hud.rotateAimRight')}
                 className="inline-flex h-7 w-7 items-center justify-center rounded-lg border border-white/10 bg-white/5 text-slate-200 hover:bg-white/12 disabled:opacity-40 cursor-pointer"
               >
                 <ChevronRight className="h-3.5 w-3.5" />
@@ -370,12 +379,12 @@ export function GameHUD({
                   soundEngine.playUiClick();
                   resetCueAngle();
                 }}
-                title="Reset Aiming Direction"
-                aria-label="Reset Aiming Direction"
+                title={t('hud.resetAimTooltip')}
+                aria-label={t('hud.resetAimTooltip')}
                 className="inline-flex h-7 items-center gap-1 rounded-lg border border-white/10 bg-white/5 px-2 text-[11px] font-semibold text-slate-200 hover:bg-white/12 hover:text-amber-400 disabled:opacity-40 transition-colors cursor-pointer whitespace-nowrap shrink-0"
               >
                 <Crosshair className="h-3.5 w-3.5 text-amber-400" />
-                <span className="hidden sm:inline">Reset</span>
+                <span className="hidden sm:inline">{t('hud.resetShort')}</span>
               </button>
 
               <button
@@ -384,8 +393,8 @@ export function GameHUD({
                   soundEngine.playUiClick();
                   toggleShowAimGuide();
                 }}
-                title={showAimGuide ? 'Hide Trajectory Guide' : 'Show Trajectory Guide'}
-                aria-label="Toggle Trajectory Guide"
+                title={showAimGuide ? t('hud.hideGuideTooltip') : t('hud.showGuideTooltip')}
+                aria-label={t('hud.toggleGuideAria')}
                 className={`inline-flex h-7 items-center gap-1 rounded-lg border px-2 text-[11px] font-semibold transition-colors cursor-pointer whitespace-nowrap shrink-0 ${
                   showAimGuide
                     ? 'border-amber-400/50 bg-amber-500/15 text-amber-300'
@@ -397,7 +406,7 @@ export function GameHUD({
                 ) : (
                   <EyeOff className="h-3.5 w-3.5" />
                 )}
-                <span className="hidden md:inline">Guide</span>
+                <span className="hidden md:inline">{t('hud.guideShort')}</span>
               </button>
 
               <button
@@ -408,14 +417,14 @@ export function GameHUD({
                     canvasInteractionMode === 'smart' ? 'aim' : 'smart',
                   );
                 }}
-                title="Switch table drag between Smart Orbit and 360° Aim Lock"
+                title={t('hud.tableDragTooltip')}
                 className={`inline-flex h-7 items-center rounded-lg border px-2 text-[11px] font-semibold transition-colors cursor-pointer whitespace-nowrap shrink-0 ${
                   canvasInteractionMode === 'aim'
                     ? 'border-amber-400 bg-amber-500 text-slate-950'
                     : 'border-white/10 bg-white/5 text-slate-300 hover:bg-white/12'
                 }`}
               >
-                {canvasInteractionMode === 'aim' ? 'Table: Aim' : 'Table: Smart'}
+                {canvasInteractionMode === 'aim' ? t('hud.tableAim') : t('hud.tableSmart')}
               </button>
             </div>
 
@@ -425,7 +434,7 @@ export function GameHUD({
             <div className="flex items-center gap-1.5">
               <Camera className="h-3.5 w-3.5 text-amber-400 shrink-0 hidden md:block" />
               <div className="flex items-center rounded-lg border border-white/10 bg-black/30 p-0.5">
-                {CAMERA_PRESETS.map((preset) => {
+                {CAMERA_PRESET_KEYS.map((preset) => {
                   const active = cameraPreset === preset.id;
                   return (
                     <button
@@ -441,7 +450,7 @@ export function GameHUD({
                           : 'text-slate-300 hover:text-white'
                       }`}
                     >
-                      {preset.label}
+                      {t(preset.key)}
                     </button>
                   );
                 })}
@@ -452,11 +461,11 @@ export function GameHUD({
               <button
                 type="button"
                 onClick={onResetRack}
-                title="Restart Match / Re-Rack (R)"
+                title={t('hud.reRackTooltip')}
                 className="inline-flex h-7 items-center gap-1.5 rounded-lg border border-white/12 bg-white/5 px-2.5 text-[11px] font-semibold text-slate-200 hover:bg-white/10 transition-colors cursor-pointer whitespace-nowrap shrink-0"
               >
                 <RotateCcw className="h-3.5 w-3.5 text-amber-400" />
-                <span>Re-Rack</span>
+                <span>{t('hud.reRackShort')}</span>
               </button>
             )}
           </div>
@@ -465,3 +474,4 @@ export function GameHUD({
     </div>
   );
 }
+

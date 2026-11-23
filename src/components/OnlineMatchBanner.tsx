@@ -1,10 +1,12 @@
 import { Crown, LogOut, RefreshCw, Wifi, WifiOff } from 'lucide-react';
 import { useEffect, useState } from 'react';
+import { localizeTournamentRoundLabel, useTranslation } from '../i18n';
 import { multiplayerManager } from '../multiplayer/MultiplayerManager';
 import { getAvatarVisualMeta } from '../multiplayer/shared/economy';
 import { useGameStore } from '../store/useGameStore';
 
 export function OnlineMatchBanner() {
+  const { t, lang } = useTranslation();
   const screen = useGameStore((s) => s.screen);
   const matchConfig = useGameStore((s) => s.matchConfig);
   const matchPhase = useGameStore((s) => s.matchPhase);
@@ -53,7 +55,9 @@ export function OnlineMatchBanner() {
           <Crown className="h-3 w-3 text-amber-400 shrink-0" />
           <span className="truncate max-w-[200px]">{onlineRoom.tournament.tournamentTitle}</span>
           <span className="text-amber-500">·</span>
-          <span className="text-amber-300 shrink-0">{onlineRoom.tournament.roundLabel}</span>
+          <span className="text-amber-300 shrink-0">
+            {localizeTournamentRoundLabel(onlineRoom.tournament.roundLabel, lang)}
+          </span>
         </div>
       )}
       <div className="pointer-events-auto inline-flex items-center gap-2 rounded-lg border border-white/12 bg-[#0b1017]/88 px-2.5 py-1 shadow-md">
@@ -76,12 +80,14 @@ export function OnlineMatchBanner() {
         {onlineOpponentStatus.state === 'disconnected' ? (
           <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-amber-300 whitespace-nowrap">
             <WifiOff className="h-3 w-3 text-amber-400" />
-            Opponent offline{graceRemainingSec !== null ? ` · ${graceRemainingSec}s` : ''}
+            {t('hud.opponentOffline', {
+              sec: graceRemainingSec !== null ? ` · ${graceRemainingSec}s` : '',
+            })}
           </span>
         ) : onlineOpponentStatus.state === 'reconnected' ? (
           <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-emerald-300 whitespace-nowrap">
             <Wifi className="h-3 w-3 text-emerald-400" />
-            Opponent reconnected
+            {t('hud.opponentReconnected')}
           </span>
         ) : (
           <span className="inline-flex items-center gap-1 text-[10px] font-mono tabular-nums text-slate-300 whitespace-nowrap">
@@ -90,7 +96,7 @@ export function OnlineMatchBanner() {
                 onlineConnectionStatus === 'connected' ? 'bg-emerald-400' : 'bg-amber-400'
               }`}
             />
-            {onlineLatencyMs !== null ? `${onlineLatencyMs}ms` : 'Online'}
+            {onlineLatencyMs !== null ? t('lobby.latencyMs', { ms: onlineLatencyMs }) : t('hud.onlineLabel')}
           </span>
         )}
 
@@ -100,11 +106,11 @@ export function OnlineMatchBanner() {
             <button
               type="button"
               onClick={() => multiplayerManager.leaveMatchOrRoom()}
-              title="Leave Online Match"
+              title={t('hud.leaveOnlineMatchTooltip')}
               className="inline-flex items-center gap-1 text-[10px] font-semibold text-rose-300 hover:text-rose-200 transition-colors cursor-pointer whitespace-nowrap"
             >
               <LogOut className="h-3 w-3" />
-              Leave
+              {t('hud.leaveShort')}
             </button>
           </>
         )}
@@ -115,8 +121,8 @@ export function OnlineMatchBanner() {
           <RefreshCw className="h-3.5 w-3.5 text-amber-400 animate-spin" />
           <span>
             {onlineConnectionStatus === 'connecting'
-              ? 'Connecting to match server...'
-              : 'Connection interrupted · Reconnecting...'}
+              ? t('hud.connectingMatchServer')
+              : t('hud.reconnectingMatchServer')}
           </span>
         </div>
       )}

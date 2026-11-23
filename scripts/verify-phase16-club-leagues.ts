@@ -499,7 +499,11 @@ async function runBrowserUiSuite(baseUrl: string): Promise<void> {
         const modalDir: string | null = await cdp.eval<string | null>(
           `document.querySelector('[data-testid="club-league-modal"]')?.getAttribute('dir') ?? null`,
         );
-        assert.equal(modalDir, 'ltr', `${vp.label}: Expected initial dir="ltr"`);
+        const arHeading = await cdp.eval<string>(
+          `document.querySelector('[data-testid="club-league-modal"] h2')?.textContent ?? ''`,
+        );
+        assert.equal(modalDir, 'rtl', `${vp.label}: Expected initial default dir="rtl" (Arabic default)`);
+        assert.ok(arHeading.includes('الأندية'), `${vp.label}: Expected Arabic title, got "${arHeading}"`);
 
         for (const tabId of ['teams', 'leagues', 'championships', 'rankings', 'club_hq']) {
           await cdp.eval(
@@ -508,19 +512,19 @@ async function runBrowserUiSuite(baseUrl: string): Promise<void> {
           await sleep(120);
         }
 
-        // Toggle Arabic RTL
+        // Toggle English LTR
         await cdp.eval(`document.querySelector('[data-testid="club-league-lang-toggle"]')?.click()`);
         await sleep(150);
-        const rtlDir: string | null = await cdp.eval<string | null>(
+        const ltrDir: string | null = await cdp.eval<string | null>(
           `document.querySelector('[data-testid="club-league-modal"]')?.getAttribute('dir') ?? null`,
         );
-        const arHeading = await cdp.eval<string>(
+        const enHeading = await cdp.eval<string>(
           `document.querySelector('[data-testid="club-league-modal"] h2')?.textContent ?? ''`,
         );
-        assert.equal(rtlDir, 'rtl', `${vp.label}: Expected RTL mode after language toggle`);
-        assert.ok(arHeading.includes('الأندية'), `${vp.label}: Expected Arabic title, got "${arHeading}"`);
+        assert.equal(ltrDir, 'ltr', `${vp.label}: Expected LTR mode after language toggle`);
+        assert.ok(enHeading.includes('Clubs & Team Leagues'), `${vp.label}: Expected English title, got "${enHeading}"`);
 
-        // Switch back to English LTR
+        // Switch back to Arabic RTL default for clean next cycle
         await cdp.eval(`document.querySelector('[data-testid="club-league-lang-toggle"]')?.click()`);
         await sleep(100);
 

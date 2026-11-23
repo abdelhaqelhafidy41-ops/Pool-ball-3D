@@ -1,8 +1,10 @@
 import { AlertTriangle, Award, Info, X } from 'lucide-react';
 import { useEffect } from 'react';
+import { localizeMatchBanner, useTranslation } from '../i18n';
 import { useGameStore } from '../store/useGameStore';
 
 export function MatchNotificationBanner() {
+  const { t, lang } = useTranslation();
   const screen = useGameStore((s) => s.screen);
   const matchPhase = useGameStore((s) => s.matchPhase);
   const matchBanner = useGameStore((s) => s.matchBanner);
@@ -16,17 +18,19 @@ export function MatchNotificationBanner() {
     return () => window.clearTimeout(timer);
   }, [matchBanner, dismissMatchBanner]);
 
+  const localizedBanner = localizeMatchBanner(matchBanner, lang);
+
   if (
     screen !== 'playing' ||
-    !matchBanner ||
+    !localizedBanner ||
     matchPhase === 'BALL_IN_HAND' ||
     matchPhase === 'GAME_OVER'
   ) {
     return null;
   }
 
-  const isFoul = matchBanner.kind === 'foul';
-  const isGroup = matchBanner.kind === 'group';
+  const isFoul = localizedBanner.kind === 'foul';
+  const isGroup = localizedBanner.kind === 'group';
 
   return (
     <div className="pointer-events-none fixed top-[84px] sm:top-[92px] left-1/2 -translate-x-1/2 z-20 px-3 w-full max-w-md flex justify-center">
@@ -51,16 +55,16 @@ export function MatchNotificationBanner() {
         </div>
         <div className="min-w-0 flex-1">
           <div className="text-xs font-extrabold tracking-wide text-white">
-            {matchBanner.title}
+            {localizedBanner.title}
           </div>
           <div className="text-[11px] text-slate-300 leading-snug">
-            {matchBanner.detail}
+            {localizedBanner.detail}
           </div>
         </div>
         <button
           type="button"
           onClick={dismissMatchBanner}
-          aria-label="Dismiss notification"
+          aria-label={t('common.dismissNotification')}
           className="text-slate-400 hover:text-white cursor-pointer shrink-0"
         >
           <X className="h-3.5 w-3.5" />
@@ -69,3 +73,4 @@ export function MatchNotificationBanner() {
     </div>
   );
 }
+

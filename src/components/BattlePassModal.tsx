@@ -14,6 +14,16 @@ import {
   X,
 } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
+import {
+  getActiveRuntimeLanguage,
+  localizeCosmeticItem,
+  localizeMission,
+  localizeRarity,
+  localizeSeasonNameAndTheme,
+  localizeServerError,
+  tLang,
+  useTranslation,
+} from '../i18n';
 import { soundEngine } from '../game/utils/SoundEngine';
 import { battlePassClient } from '../multiplayer/BattlePassClient';
 import { RARITY_META } from '../multiplayer/shared/economy';
@@ -25,14 +35,22 @@ import type {
 import { type BattlePassTab, useGameStore } from '../store/useGameStore';
 import { formatCountdown } from './StoreModal';
 
-function formatLongCountdown(targetMs: number, nowMs: number): string {
+function formatLongCountdown(
+  targetMs: number,
+  nowMs: number,
+  lang = getActiveRuntimeLanguage(),
+): string {
   const diffSec = Math.max(0, Math.floor((targetMs - nowMs) / 1000));
   const d = Math.floor(diffSec / 86400);
   const h = Math.floor((diffSec % 86400) / 3600);
   const m = Math.floor((diffSec % 3600) / 60);
   const s = diffSec % 60;
   if (d > 0) {
-    return `${d}d ${String(h).padStart(2, '0')}h ${String(m).padStart(2, '0')}m`;
+    return tLang(lang, 'common.countdownDaysHoursMins', {
+      d,
+      h: String(h).padStart(2, '0'),
+      m: String(m).padStart(2, '0'),
+    });
   }
   return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
 }
@@ -46,6 +64,8 @@ function MissionCard({
   busyId: string | null;
   onClaim: (m: MissionProgressRecord) => void;
 }) {
+  const { t, language, formatNumber } = useTranslation();
+  const locMission = localizeMission(mission.missionId, mission.title, mission.description, language);
   const pct =
     mission.requiredProgress > 0
       ? Math.min(100, Math.round((mission.progress / mission.requiredProgress) * 100))
@@ -66,9 +86,9 @@ function MissionCard({
       <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-2.5">
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
-            <h4 className="text-sm font-extrabold text-white">{mission.title}</h4>
+            <h4 className="text-sm font-extrabold text-white">{locMission.title}</h4>
             <span className="text-[11px] font-medium text-slate-400">
-              {mission.cadence === 'daily' ? 'Daily UTC' : 'Weekly UTC'}
+              {mission.cadence === 'daily' ? t('battlePass.dailyUtc') : t('battlePass.weeklyUtc')}
             </span>
             <span aria-hidden="true" className="text-slate-600">
               ·
@@ -82,10 +102,14 @@ function MissionCard({
                     : 'text-amber-300'
               }`}
             >
-              {mission.claimed ? 'Claimed' : mission.completed ? 'Completed' : 'In Progress'}
+              {mission.claimed
+                ? t('battlePass.statusClaimed')
+                : mission.completed
+                  ? t('battlePass.statusCompleted')
+                  : t('battlePass.statusInProgress')}
             </span>
           </div>
-          <p className="mt-1 text-xs text-slate-300 leading-relaxed">{mission.description}</p>
+          <p className="mt-1 text-xs text-slate-300 leading-relaxed">{locMission.description}</p>
 
           <div className="mt-2.5 flex items-center gap-2.5">
             <div className="h-2 flex-1 overflow-hidden rounded bg-black/50 border border-white/10">
@@ -96,17 +120,22 @@ function MissionCard({
                 style={{ width: `${pct}%` }}
               />
             </div>
-            <span className="font-mono text-xs font-bold tabular-nums text-slate-200 shrink-0">
+            <span
+              dir="ltr"
+              className="font-mono text-xs font-bold tabular-nums text-slate-200 shrink-0"
+            >
               {mission.progress}/{mission.requiredProgress}
             </span>
           </div>
         </div>
 
         <div className="flex sm:flex-col items-center sm:items-end justify-between gap-2 shrink-0 sm:min-w-[152px]">
-          <div className="text-left sm:text-right font-mono text-xs tabular-nums">
-            <div className="font-extrabold text-amber-300">+{mission.rewardCoins} POOL COINS</div>
+          <div className="text-start sm:text-end font-mono text-xs tabular-nums">
+            <div className="font-extrabold text-amber-300">
+              {t('battlePass.rewardCoins', { coins: formatNumber(mission.rewardCoins) })}
+            </div>
             <div className="text-[11px] font-semibold text-emerald-300">
-              +{mission.rewardSeasonXp} Season XP
+              {t('battlePass.rewardSeasonXp', { xp: formatNumber(mission.rewardSeasonXp) })}
             </div>
           </div>
 
@@ -119,16 +148,18 @@ function MissionCard({
               className="inline-flex min-h-[44px] sm:min-h-0 items-center justify-center gap-1.5 rounded-lg bg-amber-500 px-3.5 py-2 text-xs font-extrabold text-slate-950 hover:bg-amber-400 disabled:opacity-50 transition-colors cursor-pointer whitespace-nowrap"
             >
               <Check className="h-3.5 w-3.5" />
-              {isBusy ? 'Claiming...' : 'Claim Reward'}
+              {isBusy ? t('common.claiming') : t('battlePass.claimRewardBtn')}
             </button>
           ) : mission.claimed ? (
             <span className="inline-flex min-h-[36px] items-center gap-1 rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 text-xs font-bold text-slate-400 whitespace-nowrap">
               <Check className="h-3.5 w-3.5 text-emerald-400" />
-              Claimed
+              {t('battlePass.statusClaimed')}
             </span>
           ) : (
             <span className="text-[11px] font-semibold text-slate-400 whitespace-nowrap">
-              {mission.requiredProgress - mission.progress} remaining
+              {t('battlePass.remainingProgress', {
+                count: Math.max(0, mission.requiredProgress - mission.progress),
+              })}
             </span>
           )}
         </div>
@@ -152,17 +183,19 @@ function TierTrackCell({
   busyKey: string | null;
   onClaim: (level: number, track: BattlePassTrack) => void;
 }) {
+  const { t, language, formatNumber } = useTranslation();
   const isPremiumTrack = track === 'premium';
   const lockedByPremium = 'lockedByPremium' in spec && spec.lockedByPremium;
   const cellKey = `tier:${level}:${track}`;
   const isBusy = busyKey === cellKey;
   const rarity = spec.item ? RARITY_META[spec.item.rarity] : null;
+  const locItem = spec.item ? localizeCosmeticItem(spec.item, language) : null;
 
   if (!spec.hasReward) {
     return (
       <div className="flex items-center justify-between rounded-lg border border-white/8 bg-black/25 px-3 py-2.5 text-xs text-slate-500">
-        <span>{isPremiumTrack ? 'Premium' : 'Free'} Track</span>
-        <span>No reward at this tier</span>
+        <span>{isPremiumTrack ? t('battlePass.premiumTrackLabel') : t('battlePass.freeTrackLabel')}</span>
+        <span>{t('battlePass.noRewardAtTier')}</span>
       </div>
     );
   }
@@ -184,33 +217,33 @@ function TierTrackCell({
         <div className="min-w-0">
           <div className="flex items-center gap-1.5 text-[11px] font-bold">
             <span className={isPremiumTrack ? 'text-amber-300' : 'text-slate-300'}>
-              {isPremiumTrack ? 'Premium' : 'Free'}
+              {isPremiumTrack ? t('battlePass.trackPremium') : t('battlePass.trackFree')}
             </span>
             {rarity && spec.item && (
               <>
                 <span aria-hidden="true" className="text-slate-600">
                   ·
                 </span>
-                <span className={rarity.textClass}>{rarity.label}</span>
+                <span className={rarity.textClass}>{localizeRarity(spec.item.rarity, language)}</span>
               </>
             )}
           </div>
 
-          {spec.item ? (
+          {spec.item && locItem ? (
             <div className="mt-1 flex items-center gap-2">
               <span
                 className="inline-block h-3.5 w-3.5 shrink-0 rounded border border-white/20"
                 style={{ backgroundColor: spec.item.previewColors[0] }}
                 aria-hidden="true"
               />
-              <span className="text-xs font-extrabold text-white truncate">{spec.item.name}</span>
+              <span className="text-xs font-extrabold text-white truncate">{locItem.name}</span>
             </div>
           ) : null}
 
           {spec.coins > 0 && (
             <div className="mt-1 flex items-center gap-1 font-mono text-xs font-extrabold tabular-nums text-amber-300">
               <Coins className="h-3.5 w-3.5 text-amber-400 shrink-0" />
-              <span>+{spec.coins} POOL COINS</span>
+              <span>{t('battlePass.rewardCoins', { coins: formatNumber(spec.coins) })}</span>
             </div>
           )}
         </div>
@@ -219,7 +252,7 @@ function TierTrackCell({
           {spec.claimed ? (
             <span className="inline-flex items-center gap-1 rounded-md border border-emerald-400/30 bg-emerald-500/10 px-2 py-1 text-[11px] font-bold text-emerald-300">
               <Check className="h-3 w-3" />
-              Claimed
+              {t('battlePass.claimedBadge')}
             </span>
           ) : spec.canClaim ? (
             <button
@@ -229,17 +262,17 @@ function TierTrackCell({
               data-testid={`claim-tier-${level}-${track}`}
               className="inline-flex min-h-[40px] sm:min-h-0 items-center justify-center gap-1 rounded-lg bg-amber-500 px-3 py-1.5 text-xs font-extrabold text-slate-950 hover:bg-amber-400 disabled:opacity-50 transition-colors cursor-pointer whitespace-nowrap"
             >
-              {isBusy ? 'Claiming...' : 'Claim'}
+              {isBusy ? t('common.claiming') : t('battlePass.claimBtn')}
             </button>
           ) : lockedByPremium ? (
             <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-slate-400">
               <Lock className="h-3 w-3 text-amber-400/80" />
-              Premium Locked
+              {t('battlePass.premiumLocked')}
             </span>
           ) : !unlocked ? (
             <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-slate-500">
               <Lock className="h-3 w-3" />
-              Lv {level}
+              {t('battlePass.levelShortValue', { level })}
             </span>
           ) : null}
         </div>
@@ -249,6 +282,7 @@ function TierTrackCell({
 }
 
 export function BattlePassModal() {
+  const { t, language, formatNumber } = useTranslation();
   const open = useGameStore((s) => s.battlePassModalOpen);
   const closeBattlePassModal = useGameStore((s) => s.closeBattlePassModal);
   const tab = useGameStore((s) => s.battlePassTab);
@@ -296,10 +330,10 @@ export function BattlePassModal() {
 
   const filteredTiers = useMemo(() => {
     if (!overview) return [];
-    return overview.tiers.filter((t) => {
-      if (tierFilter === 'unlocked') return t.unlocked;
-      if (tierFilter === 'claimable') return t.free.canClaim || t.premium.canClaim;
-      if (tierFilter === 'cosmetics') return Boolean(t.free.item || t.premium.item);
+    return overview.tiers.filter((tier) => {
+      if (tierFilter === 'unlocked') return tier.unlocked;
+      if (tierFilter === 'claimable') return tier.free.canClaim || tier.premium.canClaim;
+      if (tierFilter === 'cosmetics') return Boolean(tier.free.item || tier.premium.item);
       return true;
     });
   }, [overview, tierFilter]);
@@ -307,6 +341,14 @@ export function BattlePassModal() {
   if (!open) return null;
 
   const coinBalance = wallet?.balance ?? 0;
+  const seasonMeta = overview
+    ? localizeSeasonNameAndTheme(
+        overview.season.seasonNumber,
+        overview.season.name,
+        overview.season.theme,
+        language,
+      )
+    : null;
 
   const handleClaimMission = async (mission: MissionProgressRecord) => {
     soundEngine.unlock();
@@ -320,14 +362,20 @@ export function BattlePassModal() {
     );
     setBusyKey(null);
     if (!res.ok || !res.data) {
-      setNotice({ type: 'err', text: res.error ?? 'Could not claim mission reward.' });
+      setNotice({
+        type: 'err',
+        text: localizeServerError(res.error, language) || t('common.actionFailed'),
+      });
       return;
     }
     setNotice({
       type: 'ok',
       text: res.data.alreadyClaimed
-        ? 'Reward already claimed.'
-        : `Claimed +${res.data.coinsAwarded} POOL COINS and +${res.data.seasonXpAwarded} Season XP.`,
+        ? t('battlePass.noticeAlreadyClaimed')
+        : t('battlePass.noticeMissionClaimed', {
+            coins: formatNumber(res.data.coinsAwarded),
+            xp: formatNumber(res.data.seasonXpAwarded),
+          }),
     });
   };
 
@@ -339,14 +387,20 @@ export function BattlePassModal() {
     const res = await battlePassClient.claimTierReward(level, track);
     setBusyKey(null);
     if (!res.ok || !res.data) {
-      setNotice({ type: 'err', text: res.error ?? 'Could not claim tier reward.' });
+      setNotice({
+        type: 'err',
+        text: localizeServerError(res.error, language) || t('common.actionFailed'),
+      });
       return;
     }
     setNotice({
       type: 'ok',
       text: res.data.alreadyClaimed
-        ? 'Tier reward already claimed.'
-        : `Tier ${level} (${track}) reward delivered to your account.`,
+        ? t('battlePass.noticeAlreadyClaimed')
+        : t('battlePass.noticeTierClaimed', {
+            level,
+            track: track === 'premium' ? t('battlePass.trackPremium') : t('battlePass.trackFree'),
+          }),
     });
   };
 
@@ -358,14 +412,21 @@ export function BattlePassModal() {
     const res = await battlePassClient.claimAllAvailable();
     setBusyKey(null);
     if (!res.ok || !res.data) {
-      setNotice({ type: 'err', text: res.error ?? 'Could not claim pending rewards.' });
+      setNotice({
+        type: 'err',
+        text: localizeServerError(res.error, language) || t('common.actionFailed'),
+      });
       return;
     }
     setNotice({
       type: 'ok',
       text: res.data.alreadyClaimed
-        ? 'All unlocked rewards have already been claimed.'
-        : `Claimed +${res.data.coinsAwarded} POOL COINS, +${res.data.seasonXpAwarded} Season XP, and ${res.data.grantedItemIds.length} cosmetic item(s).`,
+        ? t('battlePass.noticeAllClaimed')
+        : t('battlePass.noticeClaimAllSuccess', {
+            coins: formatNumber(res.data.coinsAwarded),
+            xp: formatNumber(res.data.seasonXpAwarded),
+            items: formatNumber(res.data.grantedItemIds.length),
+          }),
     });
   };
 
@@ -378,12 +439,15 @@ export function BattlePassModal() {
     setBusyKey(null);
     setConfirmPremiumOpen(false);
     if (!res.ok || !res.data) {
-      setNotice({ type: 'err', text: res.error ?? 'Unable to unlock Premium Battle Pass.' });
+      setNotice({
+        type: 'err',
+        text: localizeServerError(res.error, language) || t('common.actionFailed'),
+      });
       return;
     }
     setNotice({
       type: 'ok',
-      text: 'Premium Battle Pass unlocked! Claim your unlocked Premium tier rewards below.',
+      text: t('battlePass.noticePremiumUnlocked'),
     });
   };
 
@@ -395,7 +459,7 @@ export function BattlePassModal() {
   }> = [
     {
       id: 'pass',
-      label: 'Battle Pass',
+      label: t('battlePass.tabShortPass'),
       badge:
         (overview?.claimableCounts.battlePassFree ?? 0) +
         (overview?.claimableCounts.battlePassPremium ?? 0),
@@ -403,19 +467,19 @@ export function BattlePassModal() {
     },
     {
       id: 'daily',
-      label: 'Daily Missions',
+      label: t('battlePass.tabDailyMissions'),
       badge: overview?.claimableCounts.daily ?? 0,
       icon: Target,
     },
     {
       id: 'weekly',
-      label: 'Weekly Challenges',
+      label: t('battlePass.tabWeeklyChallenges'),
       badge: overview?.claimableCounts.weekly ?? 0,
       icon: Flame,
     },
     {
       id: 'stats',
-      label: 'Season Stats',
+      label: t('battlePass.tabShortStats'),
       badge: 0,
       icon: Trophy,
     },
@@ -425,7 +489,7 @@ export function BattlePassModal() {
     <div
       role="dialog"
       aria-modal="true"
-      aria-label="Seasonal Battle Pass and Daily Missions"
+      aria-label={t('battlePass.dialogAria')}
       data-testid="battle-pass-modal-backdrop"
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-1.5 sm:p-4 pt-[max(0.375rem,env(safe-area-inset-top))] pb-[max(0.375rem,env(safe-area-inset-bottom))]"
     >
@@ -442,10 +506,10 @@ export function BattlePassModal() {
               </div>
               <div className="min-w-0">
                 <h2 className="text-sm sm:text-lg font-extrabold tracking-tight text-white truncate">
-                  {overview?.season.name ?? 'SEASONAL BATTLE PASS'}
+                  {seasonMeta?.name ?? t('battlePass.defaultTitle')}
                 </h2>
                 <p className="text-[11px] text-slate-400 truncate">
-                  {overview?.season.theme ?? 'Missions, Weekly Challenges & 30-Tier Progression'}
+                  {seasonMeta?.theme ?? t('battlePass.defaultSubtitle')}
                 </p>
               </div>
             </div>
@@ -454,12 +518,12 @@ export function BattlePassModal() {
               <div className="flex items-center gap-1 rounded-lg border border-amber-400/40 bg-amber-500/12 px-2.5 py-1">
                 <Coins className="h-3.5 w-3.5 text-amber-400" />
                 <span className="font-mono text-xs font-black tabular-nums text-amber-300">
-                  {coinBalance.toLocaleString()}
+                  {formatNumber(coinBalance)}
                 </span>
               </div>
               <button
                 type="button"
-                aria-label="Close Battle Pass"
+                aria-label={t('battlePass.closeAria')}
                 onClick={() => {
                   soundEngine.playUiClick();
                   closeBattlePassModal();
@@ -473,17 +537,17 @@ export function BattlePassModal() {
 
           {/* Navigation Tabs */}
           <div className="modal-scroll-x flex items-center gap-1 rounded-lg border border-white/10 bg-black/40 p-1">
-            {tabs.map((t) => {
-              const Icon = t.icon;
-              const active = tab === t.id;
+            {tabs.map((tabItem) => {
+              const Icon = tabItem.icon;
+              const active = tab === tabItem.id;
               return (
                 <button
-                  key={t.id}
+                  key={tabItem.id}
                   type="button"
-                  data-testid={`bp-tab-${t.id}`}
+                  data-testid={`bp-tab-${tabItem.id}`}
                   onClick={() => {
                     soundEngine.playUiClick();
-                    setTab(t.id);
+                    setTab(tabItem.id);
                   }}
                   className={`inline-flex min-h-[40px] sm:min-h-0 items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-bold transition-colors cursor-pointer whitespace-nowrap shrink-0 ${
                     active
@@ -492,14 +556,14 @@ export function BattlePassModal() {
                   }`}
                 >
                   <Icon className={`h-3.5 w-3.5 ${active ? 'text-slate-950' : 'text-amber-400'}`} />
-                  <span>{t.label}</span>
-                  {t.badge > 0 && (
+                  <span>{tabItem.label}</span>
+                  {tabItem.badge > 0 && (
                     <span
                       className={`rounded px-1.5 py-0.2 font-mono text-[10px] font-black tabular-nums ${
                         active ? 'bg-slate-950/20 text-slate-950' : 'bg-amber-500 text-slate-950'
                       }`}
                     >
-                      {t.badge}
+                      {tabItem.badge}
                     </span>
                   )}
                 </button>
@@ -519,19 +583,19 @@ export function BattlePassModal() {
               >
                 <Sparkles className="h-3.5 w-3.5" />
                 {busyKey === 'claim_all'
-                  ? 'Claiming...'
-                  : `Claim All (${overview.claimableCounts.total})`}
+                  ? t('common.claiming')
+                  : t('battlePass.claimAllBtn', { count: overview.claimableCounts.total })}
               </button>
             )}
             <div className="flex items-center gap-1.5 rounded-lg border border-amber-400/45 bg-amber-500/12 px-3 py-1.5">
               <Coins className="h-3.5 w-3.5 text-amber-400" />
               <span className="font-mono text-xs font-black tabular-nums text-amber-300">
-                {coinBalance.toLocaleString()}
+                {formatNumber(coinBalance)}
               </span>
             </div>
             <button
               type="button"
-              aria-label="Close Battle Pass"
+              aria-label={t('battlePass.closeAria')}
               onClick={() => {
                 soundEngine.playUiClick();
                 closeBattlePassModal();
@@ -547,7 +611,7 @@ export function BattlePassModal() {
         {overview && overview.claimableCounts.total > 0 && (
           <div className="lg:hidden shrink-0 border-b border-white/10 bg-[#0d1620] px-3 py-2 flex items-center justify-between gap-2">
             <span className="text-xs font-semibold text-emerald-300">
-              {overview.claimableCounts.total} reward(s) ready to claim
+              {t('battlePass.rewardsReadyToClaim', { count: overview.claimableCounts.total })}
             </span>
             <button
               type="button"
@@ -556,7 +620,7 @@ export function BattlePassModal() {
               className="inline-flex min-h-[40px] items-center gap-1.5 rounded-lg bg-emerald-500 px-3 py-1.5 text-xs font-extrabold text-slate-950 hover:bg-emerald-400 disabled:opacity-50 cursor-pointer whitespace-nowrap"
             >
               <Sparkles className="h-3.5 w-3.5" />
-              {busyKey === 'claim_all' ? 'Claiming...' : 'Claim All'}
+              {busyKey === 'claim_all' ? t('common.claiming') : t('battlePass.claimAllShort')}
             </button>
           </div>
         )}
@@ -575,7 +639,7 @@ export function BattlePassModal() {
               type="button"
               onClick={() => setNotice(null)}
               className="text-current/70 hover:text-current cursor-pointer"
-              aria-label="Dismiss notice"
+              aria-label={t('battlePass.dismissNoticeAria')}
             >
               <X className="h-3.5 w-3.5" />
             </button>
@@ -586,7 +650,7 @@ export function BattlePassModal() {
         <div className="modal-scroll-y flex-1 p-3 sm:p-6 space-y-5">
           {!overview ? (
             <div className="flex flex-col items-center justify-center py-16 text-center text-sm text-slate-400">
-              Loading seasonal Battle Pass and mission objectives...
+              {t('battlePass.loadingOverview')}
             </div>
           ) : tab === 'pass' ? (
             <>
@@ -596,20 +660,27 @@ export function BattlePassModal() {
                   <div className="min-w-0 flex-1 space-y-2">
                     <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1 text-xs text-slate-300">
                       <span className="font-extrabold text-amber-300">
-                        Tier {overview.playerState.seasonLevel} / {overview.season.maxLevel}
+                        {t('battlePass.tierOfMax', {
+                          level: overview.playerState.seasonLevel,
+                          max: overview.season.maxLevel,
+                        })}
                       </span>
                       <span aria-hidden="true" className="text-slate-600">
                         ·
                       </span>
                       <span className="font-mono tabular-nums">
-                        {overview.playerState.seasonXp.toLocaleString()} Season XP
+                        {t('battlePass.seasonXpTotal', {
+                          xp: formatNumber(overview.playerState.seasonXp),
+                        })}
                       </span>
                       <span aria-hidden="true" className="text-slate-600">
                         ·
                       </span>
                       <span className="inline-flex items-center gap-1 font-mono tabular-nums text-slate-300">
                         <Clock className="h-3 w-3 text-amber-400" />
-                        Season ends in {formatLongCountdown(overview.season.endsAtMs, nowMs)}
+                        {t('battlePass.seasonEndsIn', {
+                          time: formatLongCountdown(overview.season.endsAtMs, nowMs, language),
+                        })}
                       </span>
                     </div>
 
@@ -625,14 +696,19 @@ export function BattlePassModal() {
                     <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] font-mono tabular-nums text-slate-400">
                       <span>
                         {overview.playerState.xpForNextLevel !== null
-                          ? `Next Tier: ${overview.playerState.xpIntoCurrentLevel} / ${overview.playerState.xpForNextLevel} XP`
-                          : 'Maximum Season Tier Reached'}
+                          ? t('battlePass.nextTierProgress', {
+                              into: formatNumber(overview.playerState.xpIntoCurrentLevel),
+                              next: formatNumber(overview.playerState.xpForNextLevel),
+                            })
+                          : t('battlePass.maxSeasonTierReached')}
                       </span>
                       <span>
-                        Daily Match XP: {overview.playerState.dailyMatchXpEarned} /{' '}
-                        {overview.config.dailyMatchXpCap} · AI XP:{' '}
-                        {overview.playerState.dailyAiXpEarned} /{' '}
-                        {overview.config.dailyAiMatchXpCap}
+                        {t('battlePass.dailyXpSummary', {
+                          earned: overview.playerState.dailyMatchXpEarned,
+                          cap: overview.config.dailyMatchXpCap,
+                          aiEarned: overview.playerState.dailyAiXpEarned,
+                          aiCap: overview.config.dailyAiMatchXpCap,
+                        })}
                       </span>
                     </div>
                   </div>
@@ -642,7 +718,7 @@ export function BattlePassModal() {
                     {overview.playerState.premiumUnlocked ? (
                       <div className="inline-flex items-center gap-2 rounded-lg border border-amber-400/50 bg-amber-500/15 px-4 py-2.5 text-xs font-extrabold text-amber-200">
                         <ShieldCheck className="h-4 w-4 text-amber-400" />
-                        Premium Battle Pass Active
+                        {t('battlePass.premiumActiveBadge')}
                       </div>
                     ) : (
                       <button
@@ -656,7 +732,9 @@ export function BattlePassModal() {
                         className="inline-flex w-full lg:w-auto min-h-[44px] items-center justify-center gap-2 rounded-lg bg-amber-500 px-5 py-2.5 text-xs font-extrabold text-slate-950 hover:bg-amber-400 disabled:opacity-50 transition-colors cursor-pointer whitespace-nowrap"
                       >
                         <Crown className="h-4 w-4" />
-                        Unlock Premium · {overview.season.premiumPriceCoins.toLocaleString()} POOL COINS
+                        {t('battlePass.unlockPremiumCta', {
+                          price: formatNumber(overview.season.premiumPriceCoins),
+                        })}
                       </button>
                     )}
                   </div>
@@ -668,10 +746,10 @@ export function BattlePassModal() {
                 <div className="flex flex-wrap items-center gap-1.5">
                   {(
                     [
-                      { id: 'all', label: 'All 30 Tiers' },
-                      { id: 'unlocked', label: 'Unlocked' },
-                      { id: 'claimable', label: 'Claimable' },
-                      { id: 'cosmetics', label: 'Exclusive Cosmetics' },
+                      { id: 'all', label: t('battlePass.filterAllTiers') },
+                      { id: 'unlocked', label: t('battlePass.filterUnlocked') },
+                      { id: 'claimable', label: t('battlePass.filterClaimable') },
+                      { id: 'cosmetics', label: t('battlePass.filterCosmetics') },
                     ] as const
                   ).map((f) => (
                     <button
@@ -691,15 +769,13 @@ export function BattlePassModal() {
                     </button>
                   ))}
                 </div>
-                <span className="text-xs text-slate-400">
-                  Earn Season XP from Online Matches, Tournaments, Validated AI Matches &amp; Missions
-                </span>
+                <span className="text-xs text-slate-400">{t('battlePass.earnXpHint')}</span>
               </div>
 
               {/* 30-Tier Track List */}
               {filteredTiers.length === 0 ? (
                 <div className="rounded-xl border border-white/10 bg-white/[0.02] p-8 text-center text-sm text-slate-400">
-                  No tiers match the selected filter yet.
+                  {t('battlePass.noTiersMatch')}
                 </div>
               ) : (
                 <div className="space-y-2.5">
@@ -724,11 +800,11 @@ export function BattlePassModal() {
                             {tier.level}
                           </span>
                           <span className="text-xs font-bold text-slate-200 md:hidden">
-                            Tier {tier.level}
+                            {t('battlePass.tierNumberLabel', { level: tier.level })}
                           </span>
                         </div>
                         <span className="font-mono text-[11px] tabular-nums text-slate-400">
-                          {tier.cumulativeXpRequired.toLocaleString()} XP
+                          {t('common.xpAmount', { count: formatNumber(tier.cumulativeXpRequired) })}
                         </span>
                       </div>
 
@@ -758,14 +834,14 @@ export function BattlePassModal() {
             <>
               <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 rounded-xl border border-white/10 bg-[#101822] px-4 py-3">
                 <div>
-                  <h3 className="text-sm font-extrabold text-white">Daily Missions</h3>
-                  <p className="text-xs text-slate-400">
-                    Objectives rotate daily at 00:00 UTC. Progress is verified automatically by the server.
-                  </p>
+                  <h3 className="text-sm font-extrabold text-white">
+                    {t('battlePass.dailyMissionsTitle')}
+                  </h3>
+                  <p className="text-xs text-slate-400">{t('battlePass.dailyMissionsDesc')}</p>
                 </div>
                 <div className="inline-flex items-center gap-1.5 font-mono text-xs font-bold tabular-nums text-amber-300 shrink-0">
                   <Calendar className="h-3.5 w-3.5 text-amber-400" />
-                  Resets in {formatCountdown(overview.dailyResetAtMs, nowMs)} UTC
+                  <span dir="ltr">{t('battlePass.resetsInUtc', { time: formatCountdown(overview.dailyResetAtMs, nowMs) })}</span>
                 </div>
               </div>
 
@@ -784,14 +860,16 @@ export function BattlePassModal() {
             <>
               <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 rounded-xl border border-white/10 bg-[#101822] px-4 py-3">
                 <div>
-                  <h3 className="text-sm font-extrabold text-white">Weekly Challenges</h3>
-                  <p className="text-xs text-slate-400">
-                    High-value competitive objectives reset every Monday at 00:00 UTC.
-                  </p>
+                  <h3 className="text-sm font-extrabold text-white">
+                    {t('battlePass.weeklyChallengesTitle')}
+                  </h3>
+                  <p className="text-xs text-slate-400">{t('battlePass.weeklyChallengesDesc')}</p>
                 </div>
                 <div className="inline-flex items-center gap-1.5 font-mono text-xs font-bold tabular-nums text-amber-300 shrink-0">
                   <Clock className="h-3.5 w-3.5 text-amber-400" />
-                  Resets in {formatLongCountdown(overview.weeklyResetAtMs, nowMs)}
+                  {t('battlePass.resetsIn', {
+                    time: formatLongCountdown(overview.weeklyResetAtMs, nowMs, language),
+                  })}
                 </div>
               </div>
 
@@ -811,59 +889,78 @@ export function BattlePassModal() {
             <div className="space-y-5">
               <div className="rounded-xl border border-white/10 bg-[#101822] p-4 sm:p-5">
                 <h3 className="text-sm font-extrabold text-white">
-                  Current Season Summary · {overview.season.name}
+                  {t('battlePass.currentSeasonSummaryTitle', {
+                    season: seasonMeta?.name ?? overview.season.name,
+                  })}
                 </h3>
-                <p className="mt-1 text-xs text-slate-400">
-                  Seasonal Battle Pass progress resets on season rollover. Your lifetime XP, level, ELO ranking, achievements, POOL COINS, and cosmetics are always preserved.
-                </p>
+                <p className="mt-1 text-xs text-slate-400">{t('battlePass.seasonResetNote')}</p>
 
                 <div className="mt-4 grid grid-cols-2 sm:grid-cols-4 gap-3 font-mono tabular-nums">
                   <div className="rounded-lg border border-white/10 bg-black/30 p-3">
-                    <div className="text-[11px] font-sans text-slate-400">Battle Pass Level</div>
-                    <div className="mt-1 text-lg font-black text-amber-300">
+                    <div className="text-[11px] font-sans text-slate-400">
+                      {t('battlePass.statBpLevel')}
+                    </div>
+                    <div dir="ltr" className="mt-1 text-lg font-black text-amber-300">
                       {overview.playerState.seasonLevel} / {overview.season.maxLevel}
                     </div>
                   </div>
                   <div className="rounded-lg border border-white/10 bg-black/30 p-3">
-                    <div className="text-[11px] font-sans text-slate-400">Season XP</div>
+                    <div className="text-[11px] font-sans text-slate-400">
+                      {t('battlePass.statSeasonXp')}
+                    </div>
                     <div className="mt-1 text-lg font-black text-white">
-                      {overview.playerState.seasonXp.toLocaleString()}
+                      {formatNumber(overview.playerState.seasonXp)}
                     </div>
                   </div>
                   <div className="rounded-lg border border-white/10 bg-black/30 p-3">
-                    <div className="text-[11px] font-sans text-slate-400">Matches (W–L)</div>
+                    <div className="text-[11px] font-sans text-slate-400">
+                      {t('battlePass.statMatchesWl')}
+                    </div>
                     <div className="mt-1 text-lg font-black text-white">
-                      {overview.playerState.wins}W–{overview.playerState.losses}L
+                      {t('menu.statsWinsLosses', {
+                        wins: overview.playerState.wins,
+                        losses: overview.playerState.losses,
+                      })}
                     </div>
                   </div>
                   <div className="rounded-lg border border-white/10 bg-black/30 p-3">
-                    <div className="text-[11px] font-sans text-slate-400">Best Win Streak</div>
+                    <div className="text-[11px] font-sans text-slate-400">
+                      {t('battlePass.statBestWinStreak')}
+                    </div>
                     <div className="mt-1 text-lg font-black text-emerald-300">
-                      {overview.playerState.bestWinStreak}
+                      {formatNumber(overview.playerState.bestWinStreak)}
                     </div>
                   </div>
                   <div className="rounded-lg border border-white/10 bg-black/30 p-3">
-                    <div className="text-[11px] font-sans text-slate-400">Balls Pocketed</div>
+                    <div className="text-[11px] font-sans text-slate-400">
+                      {t('battlePass.statBallsPocketed')}
+                    </div>
                     <div className="mt-1 text-lg font-black text-white">
-                      {overview.playerState.ballsPocketed}
+                      {formatNumber(overview.playerState.ballsPocketed)}
                     </div>
                   </div>
                   <div className="rounded-lg border border-white/10 bg-black/30 p-3">
-                    <div className="text-[11px] font-sans text-slate-400">Daily Missions</div>
+                    <div className="text-[11px] font-sans text-slate-400">
+                      {t('battlePass.statDailyMissions')}
+                    </div>
                     <div className="mt-1 text-lg font-black text-amber-300">
-                      {overview.playerState.dailyMissionsCompleted}
+                      {formatNumber(overview.playerState.dailyMissionsCompleted)}
                     </div>
                   </div>
                   <div className="rounded-lg border border-white/10 bg-black/30 p-3">
-                    <div className="text-[11px] font-sans text-slate-400">Weekly Challenges</div>
+                    <div className="text-[11px] font-sans text-slate-400">
+                      {t('battlePass.statWeeklyChallenges')}
+                    </div>
                     <div className="mt-1 text-lg font-black text-amber-300">
-                      {overview.playerState.weeklyChallengesCompleted}
+                      {formatNumber(overview.playerState.weeklyChallengesCompleted)}
                     </div>
                   </div>
                   <div className="rounded-lg border border-white/10 bg-black/30 p-3">
-                    <div className="text-[11px] font-sans text-slate-400">Tournaments</div>
+                    <div className="text-[11px] font-sans text-slate-400">
+                      {t('battlePass.statTournaments')}
+                    </div>
                     <div className="mt-1 text-lg font-black text-white">
-                      {overview.playerState.tournamentsPlayed}
+                      {formatNumber(overview.playerState.tournamentsPlayed)}
                     </div>
                   </div>
                 </div>
@@ -872,37 +969,59 @@ export function BattlePassModal() {
               <div className="rounded-xl border border-white/10 bg-[#101822] p-4 sm:p-5">
                 <div className="flex items-center gap-2">
                   <Award className="h-4 w-4 text-amber-400" />
-                  <h3 className="text-sm font-extrabold text-white">Past Seasons Archive</h3>
+                  <h3 className="text-sm font-extrabold text-white">
+                    {t('battlePass.pastSeasonsArchiveTitle')}
+                  </h3>
                 </div>
                 {overview.pastSeasons.length === 0 ? (
                   <p className="mt-3 text-xs text-slate-400">
-                    No completed Battle Pass seasons yet. Your record from {overview.season.name} will be archived here when the season concludes.
+                    {t('battlePass.noPastSeasonsLong', {
+                      season: seasonMeta?.name ?? overview.season.name,
+                    })}
                   </p>
                 ) : (
                   <div className="mt-3 space-y-2.5">
-                    {overview.pastSeasons.map((past) => (
-                      <div
-                        key={past.season.seasonId}
-                        className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 rounded-lg border border-white/10 bg-black/30 px-3.5 py-2.5"
-                      >
-                        <div>
-                          <div className="text-xs font-extrabold text-white">{past.season.name}</div>
-                          <div className="text-[11px] text-slate-400">{past.season.theme}</div>
+                    {overview.pastSeasons.map((past) => {
+                      const pastMeta = localizeSeasonNameAndTheme(
+                        past.season.seasonNumber,
+                        past.season.name,
+                        past.season.theme,
+                        language,
+                      );
+                      return (
+                        <div
+                          key={past.season.seasonId}
+                          className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 rounded-lg border border-white/10 bg-black/30 px-3.5 py-2.5"
+                        >
+                          <div>
+                            <div className="text-xs font-extrabold text-white">{pastMeta.name}</div>
+                            <div className="text-[11px] text-slate-400">{pastMeta.theme}</div>
+                          </div>
+                          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-xs tabular-nums text-slate-300">
+                            <span className="text-amber-300 font-bold">
+                              {t('battlePass.tierOfMax', {
+                                level: past.seasonLevel,
+                                max: past.season.maxLevel,
+                              })}
+                            </span>
+                            <span>
+                              {t('common.xpAmount', { count: formatNumber(past.seasonXp) })}
+                            </span>
+                            <span>
+                              {t('battlePass.pastWinsMatches', {
+                                wins: past.wins,
+                                matches: past.matchesPlayed,
+                              })}
+                            </span>
+                            {past.premiumUnlocked && (
+                              <span className="text-emerald-300 font-semibold">
+                                {t('battlePass.pastPremium')}
+                              </span>
+                            )}
+                          </div>
                         </div>
-                        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-xs tabular-nums text-slate-300">
-                          <span className="text-amber-300 font-bold">
-                            Tier {past.seasonLevel}/{past.season.maxLevel}
-                          </span>
-                          <span>{past.seasonXp.toLocaleString()} XP</span>
-                          <span>
-                            {past.wins}W / {past.matchesPlayed}M
-                          </span>
-                          {past.premiumUnlocked && (
-                            <span className="text-emerald-300 font-semibold">Premium</span>
-                          )}
-                        </div>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 )}
               </div>
@@ -917,18 +1036,19 @@ export function BattlePassModal() {
               <div className="flex items-center gap-2.5">
                 <Crown className="h-5 w-5 text-amber-400" />
                 <h3 className="text-base font-extrabold text-white">
-                  Unlock Premium Battle Pass
+                  {t('battlePass.confirmPremiumTitle')}
                 </h3>
               </div>
               <p className="text-xs text-slate-300 leading-relaxed">
-                Unlock every Premium Track cosmetic and POOL COINS reward for{' '}
-                <strong className="text-white">{overview.season.name}</strong> using your in-game virtual balance. All already-earned tiers up to Level{' '}
-                {overview.playerState.seasonLevel} become immediately claimable.
+                {t('battlePass.confirmPremiumBody', {
+                  season: seasonMeta?.name ?? overview.season.name,
+                  level: overview.playerState.seasonLevel,
+                })}
               </p>
               <div className="flex items-center justify-between rounded-lg border border-white/10 bg-black/35 px-3.5 py-2.5 text-xs font-mono tabular-nums">
-                <span className="font-sans text-slate-300">Price</span>
+                <span className="font-sans text-slate-300">{t('battlePass.priceLabel')}</span>
                 <span className="font-extrabold text-amber-300">
-                  {overview.season.premiumPriceCoins.toLocaleString()} POOL COINS
+                  {formatNumber(overview.season.premiumPriceCoins)}
                 </span>
               </div>
               <div className="flex items-center justify-end gap-2">
@@ -938,7 +1058,7 @@ export function BattlePassModal() {
                   onClick={() => setConfirmPremiumOpen(false)}
                   className="min-h-[40px] rounded-lg border border-white/15 bg-white/5 px-4 py-2 text-xs font-bold text-slate-200 hover:bg-white/10 cursor-pointer"
                 >
-                  Cancel
+                  {t('common.cancel')}
                 </button>
                 <button
                   type="button"
@@ -947,7 +1067,9 @@ export function BattlePassModal() {
                   data-testid="bp-confirm-premium-btn"
                   className="min-h-[40px] rounded-lg bg-amber-500 px-4 py-2 text-xs font-extrabold text-slate-950 hover:bg-amber-400 disabled:opacity-50 cursor-pointer"
                 >
-                  {busyKey === 'unlock_premium' ? 'Unlocking...' : 'Confirm Unlock'}
+                  {busyKey === 'unlock_premium'
+                    ? t('battlePass.unlockingBtn')
+                    : t('battlePass.confirmUnlockBtn')}
                 </button>
               </div>
             </div>

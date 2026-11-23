@@ -13,37 +13,45 @@ import {
 } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { soundEngine } from '../game/utils/SoundEngine';
+import {
+  formatLocalizedDateTime,
+  formatLocalizedNumber,
+  localizeCosmeticCategory,
+  localizeCosmeticItem,
+  localizeRarity,
+  localizeServerError,
+  localizeTxReason,
+  useTranslation,
+} from '../i18n';
 import { economyClient } from '../multiplayer/EconomyClient';
 import {
-  COSMETIC_CATEGORY_LABELS,
   DAILY_LOGIN_SCHEDULE,
   RARITY_META,
   categorySlotKey,
   getCategoryDefaultItemId,
-  type CoinTransactionReason,
   type CosmeticItemDef,
   type ItemRarity,
 } from '../multiplayer/shared/economy';
 import { type StoreCategoryFilter, type StoreTab, useGameStore } from '../store/useGameStore';
 
-const CATEGORY_TABS: Array<{ id: StoreCategoryFilter; label: string }> = [
-  { id: 'all', label: 'All Items' },
-  { id: 'cue', label: COSMETIC_CATEGORY_LABELS.cue },
-  { id: 'ball', label: COSMETIC_CATEGORY_LABELS.ball },
-  { id: 'table', label: COSMETIC_CATEGORY_LABELS.table },
-  { id: 'avatar', label: COSMETIC_CATEGORY_LABELS.avatar },
-  { id: 'nameplate', label: COSMETIC_CATEGORY_LABELS.nameplate },
-  { id: 'badge', label: COSMETIC_CATEGORY_LABELS.badge },
-  { id: 'victory', label: COSMETIC_CATEGORY_LABELS.victory },
-  { id: 'decoration', label: COSMETIC_CATEGORY_LABELS.decoration },
+const CATEGORY_FILTER_IDS: StoreCategoryFilter[] = [
+  'all',
+  'cue',
+  'ball',
+  'table',
+  'avatar',
+  'nameplate',
+  'badge',
+  'victory',
+  'decoration',
 ];
 
-const RARITY_FILTERS: Array<{ id: 'all' | ItemRarity; label: string }> = [
-  { id: 'all', label: 'All Rarities' },
-  { id: 'common', label: 'Common' },
-  { id: 'rare', label: 'Rare' },
-  { id: 'epic', label: 'Epic' },
-  { id: 'legendary', label: 'Legendary' },
+const RARITY_FILTER_IDS: Array<'all' | ItemRarity> = [
+  'all',
+  'common',
+  'rare',
+  'epic',
+  'legendary',
 ];
 
 export function formatCountdown(targetMs: number, nowMs: number): string {
@@ -54,56 +62,6 @@ export function formatCountdown(targetMs: number, nowMs: number): string {
   return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
 }
 
-function formatTxReason(reason: CoinTransactionReason): string {
-  switch (reason) {
-    case 'online_match_win':
-      return 'Online Match Victory';
-    case 'online_match_play':
-      return 'Online Match Completion';
-    case 'achievement_unlock':
-      return 'Achievement Bonus';
-    case 'ai_match_win':
-      return 'AI Match Victory';
-    case 'daily_login':
-      return 'Daily Login Streak';
-    case 'mission_reward':
-      return 'Daily Mission Reward';
-    case 'weekly_challenge_reward':
-      return 'Weekly Challenge Reward';
-    case 'battle_pass_reward':
-      return 'Battle Pass Tier Reward';
-    case 'battle_pass_premium':
-      return 'Battle Pass Premium Unlock';
-    case 'tournament_reward':
-      return 'Tournament Payout';
-    case 'tournament_entry':
-      return 'Tournament Entry Fee';
-    case 'tournament_refund':
-      return 'Tournament Entry Refund';
-    case 'season_reward':
-      return 'Season End Reward';
-    case 'store_purchase':
-      return 'Store Purchase';
-    case 'purchase_refund':
-      return 'Purchase Refund';
-    default:
-      return reason;
-  }
-}
-
-function formatTxTime(ms: number): string {
-  try {
-    return new Date(ms).toLocaleString(undefined, {
-      month: 'short',
-      day: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit',
-    });
-  } catch {
-    return '';
-  }
-}
-
 function CosmeticArtwork({
   item,
   size = 'card',
@@ -111,6 +69,8 @@ function CosmeticArtwork({
   item: CosmeticItemDef;
   size?: 'card' | 'inspector';
 }) {
+  const { t, language } = useTranslation();
+  const localizedItem = localizeCosmeticItem(item, language);
   const [c1, c2, c3] = item.previewColors;
   const hClass = size === 'inspector' ? 'h-28 w-full' : 'h-16 sm:h-20 w-full';
 
@@ -199,15 +159,17 @@ function CosmeticArtwork({
     return (
       <div className={`${hClass} flex items-center justify-center px-3`}>
         <div
-          className="w-full max-w-[146px] rounded-lg border-2 px-3 py-2 text-left"
+          className="w-full max-w-[146px] rounded-lg border-2 px-3 py-2 text-start"
           style={{
             backgroundColor: c2,
             borderColor: c1,
           }}
         >
-          <div className="text-[11px] font-extrabold text-white tracking-tight">PLAYER</div>
+          <div className="text-[11px] font-extrabold text-white tracking-tight">
+            {t('store.nameplatePreviewPlayer')}
+          </div>
           <div className="mt-0.5 text-[9px] font-mono uppercase" style={{ color: c3 }}>
-            SOLIDS · TURN
+            {t('store.nameplatePreviewMeta')}
           </div>
         </div>
       </div>
@@ -226,7 +188,7 @@ function CosmeticArtwork({
           }}
         >
           <span>{item.glyph ?? '★'}</span>
-          <span>{item.name.split(' ')[0]}</span>
+          <span className="truncate max-w-[110px]">{localizedItem.name}</span>
         </div>
       </div>
     );
@@ -259,6 +221,7 @@ function CosmeticArtwork({
 }
 
 export function StoreModal() {
+  const { t, language } = useTranslation();
   const storeModalOpen = useGameStore((s) => s.storeModalOpen);
   const closeStoreModal = useGameStore((s) => s.closeStoreModal);
   const storeTab = useGameStore((s) => s.storeTab);
@@ -326,12 +289,13 @@ export function StoreModal() {
       if (storeCategory !== 'all' && item.category !== storeCategory) return false;
       if (rarityFilter !== 'all' && item.rarity !== rarityFilter) return false;
       if (q) {
-        const hay = `${item.name} ${item.subCategory} ${item.description}`.toLowerCase();
+        const loc = localizeCosmeticItem(item, language);
+        const hay = `${loc.name} ${loc.subCategory} ${loc.description} ${item.name}`.toLowerCase();
         if (!hay.includes(q)) return false;
       }
       return true;
     });
-  }, [storeCatalog, storeTab, ownedSet, storeCategory, rarityFilter, searchQuery]);
+  }, [storeCatalog, storeTab, ownedSet, storeCategory, rarityFilter, searchQuery, language]);
 
   const selectedItem = useMemo(() => {
     return (
@@ -360,6 +324,7 @@ export function StoreModal() {
     const currentlyEquipped = isEquipped(item);
     const defaultId = getCategoryDefaultItemId(item.category);
     const targetId = currentlyEquipped && item.id !== defaultId ? defaultId : item.id;
+    const locName = localizeCosmeticItem(item, language).name;
 
     const res = await economyClient.equipItem(item.category, targetId);
     setBusyAction(false);
@@ -369,11 +334,14 @@ export function StoreModal() {
         type: 'ok',
         text:
           targetId === item.id
-            ? `Equipped ${item.name}.`
-            : `Unequipped ${item.name}; reverted to default.`,
+            ? t('store.equippedNotice', { name: locName })
+            : t('store.unequippedNotice', { name: locName }),
       });
     } else {
-      setStoreNotice({ type: 'err', text: res.error ?? 'Failed to update equipment.' });
+      setStoreNotice({
+        type: 'err',
+        text: res.error ? localizeServerError(res.error, language) : t('store.equipFailedErr'),
+      });
     }
   };
 
@@ -383,6 +351,7 @@ export function StoreModal() {
     setBusyAction(true);
     setStoreNotice(null);
     const item = confirmPurchaseItem;
+    const locName = localizeCosmeticItem(item, language).name;
     const res = await economyClient.purchaseItem(item.id);
     setBusyAction(false);
     setConfirmPurchaseItem(null);
@@ -390,10 +359,16 @@ export function StoreModal() {
     if (res.ok) {
       setStoreNotice({
         type: 'ok',
-        text: `Purchased ${item.name} for ${item.price.toLocaleString()} POOL COINS.`,
+        text: t('store.purchasedNotice', {
+          name: locName,
+          price: formatLocalizedNumber(item.price, language),
+        }),
       });
     } else {
-      setStoreNotice({ type: 'err', text: res.error ?? 'Purchase failed.' });
+      setStoreNotice({
+        type: 'err',
+        text: res.error ? localizeServerError(res.error, language) : t('store.purchaseFailedErr'),
+      });
     }
   };
 
@@ -408,10 +383,16 @@ export function StoreModal() {
     if (res.ok && res.data) {
       setStoreNotice({
         type: 'ok',
-        text: `Claimed Day ${res.data.streak} Daily Reward: +${res.data.claimedAmount} POOL COINS!`,
+        text: t('store.dailyClaimedNotice', {
+          streak: res.data.streak,
+          amount: formatLocalizedNumber(res.data.claimedAmount, language),
+        }),
       });
     } else {
-      setStoreNotice({ type: 'err', text: res.error ?? 'Unable to claim daily reward.' });
+      setStoreNotice({
+        type: 'err',
+        text: res.error ? localizeServerError(res.error, language) : t('store.dailyClaimFailedErr'),
+      });
     }
   };
 
@@ -419,6 +400,7 @@ export function StoreModal() {
     const owned = ownedSet.has(item.id);
     const equipped = isEquipped(item);
     const rarity = RARITY_META[item.rarity];
+    const localizedItem = localizeCosmeticItem(item, language);
     const canAfford = balance >= item.price;
     const isDefault = getCategoryDefaultItemId(item.category) === item.id;
 
@@ -433,29 +415,33 @@ export function StoreModal() {
 
         <div>
           <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
-            <span className={rarity.textClass}>{rarity.label}</span>
+            <span className={rarity.textClass}>{localizeRarity(item.rarity, language)}</span>
             {' · '}
-            {COSMETIC_CATEGORY_LABELS[item.category]}
+            {localizeCosmeticCategory(item.category, language)}
             {' · '}
-            {item.subCategory}
+            {localizedItem.subCategory}
           </div>
-          <h3 className="mt-1 text-base font-extrabold text-white">{item.name}</h3>
-          <p className="mt-1.5 text-xs text-slate-300 leading-relaxed">{item.description}</p>
+          <h3 className="mt-1 text-base font-extrabold text-white">{localizedItem.name}</h3>
+          <p className="mt-1.5 text-xs text-slate-300 leading-relaxed">{localizedItem.description}</p>
         </div>
 
         <div className="rounded-lg border border-white/10 bg-black/30 px-3 py-2 text-[11px] text-slate-400">
           <div className="flex items-center justify-between">
-            <span>Gameplay Stat Bonus</span>
-            <span className="font-mono font-bold text-slate-200">Cosmetic Only</span>
+            <span>{t('store.gameplayStatBonus')}</span>
+            <span className="font-mono font-bold text-slate-200">{t('store.cosmeticOnly')}</span>
           </div>
           <div className="mt-1 flex items-center justify-between">
-            <span>Status</span>
+            <span>{t('store.statusLabel')}</span>
             <span
               className={`font-bold ${
                 equipped ? 'text-emerald-300' : owned ? 'text-sky-300' : 'text-amber-300'
               }`}
             >
-              {equipped ? 'Equipped' : owned ? 'In Inventory' : 'Available'}
+              {equipped
+                ? t('store.statusEquipped')
+                : owned
+                  ? t('store.statusInInventory')
+                  : t('store.statusAvailable')}
             </span>
           </div>
         </div>
@@ -475,15 +461,15 @@ export function StoreModal() {
               <Check className="h-4 w-4" />
               {equipped
                 ? isDefault
-                  ? 'Default Equipped'
-                  : 'Unequip to Default'
-                : 'Equip Cosmetic'}
+                  ? t('store.defaultEquippedBtn')
+                  : t('store.unequipToDefaultBtn')
+                : t('store.equipCosmeticBtn')}
             </button>
           ) : item.isRewardExclusive ? (
             <div className="rounded-lg border border-amber-400/35 bg-amber-500/10 px-3 py-2.5 text-center text-xs font-bold text-amber-200">
               {item.subCategory.includes('Battle Pass')
-                ? 'Unlocked exclusively via Seasonal Battle Pass Tiers.'
-                : 'Unlocked exclusively through Championship & Tournament placements.'}
+                ? t('store.exclusiveBattlePassDesc')
+                : t('store.exclusiveTournamentDesc')}
             </div>
           ) : (
             <div className="space-y-2">
@@ -498,11 +484,13 @@ export function StoreModal() {
                 className="inline-flex w-full items-center justify-center gap-2 rounded-lg bg-amber-500 px-4 py-2.5 text-xs font-extrabold uppercase tracking-wider text-slate-950 hover:bg-amber-400 disabled:opacity-45 disabled:cursor-not-allowed transition-colors cursor-pointer whitespace-nowrap"
               >
                 <Coins className="h-4 w-4" />
-                Buy for {item.price.toLocaleString()} POOL COINS
+                {t('store.buyForCoins', { price: formatLocalizedNumber(item.price, language) })}
               </button>
               {!canAfford && (
                 <p className="text-center text-[11px] font-semibold text-rose-300">
-                  Need {(item.price - balance).toLocaleString()} more POOL COINS
+                  {t('store.needMoreCoins', {
+                    amount: formatLocalizedNumber(item.price - balance, language),
+                  })}
                 </p>
               )}
             </div>
@@ -516,7 +504,7 @@ export function StoreModal() {
     <div
       role="dialog"
       aria-modal="true"
-      aria-label="Pool Coins Store and Cosmetic Inventory"
+      aria-label={t('store.dialogAria')}
       data-testid="store-modal-backdrop"
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-1.5 sm:p-4 pt-[max(0.375rem,env(safe-area-inset-top))] pb-[max(0.375rem,env(safe-area-inset-bottom))]"
     >
@@ -533,10 +521,10 @@ export function StoreModal() {
               </div>
               <div className="min-w-0">
                 <h2 className="text-sm sm:text-lg font-extrabold tracking-tight text-white truncate">
-                  COSMETIC ARMORY &amp; STORE
+                  {t('store.armoryTitle')}
                 </h2>
                 <p className="hidden sm:block text-[11px] text-slate-400">
-                  Visual customizations only · Zero gameplay advantages
+                  {t('store.armorySubtitle')}
                 </p>
               </div>
             </div>
@@ -549,12 +537,12 @@ export function StoreModal() {
               >
                 <Coins className="h-3.5 w-3.5 text-amber-400" />
                 <span className="font-mono text-xs font-black tabular-nums text-amber-300">
-                  {balance.toLocaleString()}
+                  {formatLocalizedNumber(balance, language)}
                 </span>
               </div>
               <button
                 type="button"
-                aria-label="Close Store"
+                aria-label={t('store.closeAria')}
                 onClick={() => {
                   soundEngine.playUiClick();
                   closeStoreModal();
@@ -570,22 +558,22 @@ export function StoreModal() {
           <div className="modal-scroll-x flex items-center gap-1 rounded-lg border border-white/10 bg-black/40 p-1">
             {(
               [
-                { id: 'store', label: 'Store', icon: ShoppingBag },
-                { id: 'inventory', label: 'Inventory', icon: Package },
-                { id: 'daily', label: 'Daily Rewards', icon: Calendar },
-                { id: 'ledger', label: 'Coin Ledger', icon: Coins },
+                { id: 'store', label: t('store.tabShop'), icon: ShoppingBag },
+                { id: 'inventory', label: t('store.tabInventory'), icon: Package },
+                { id: 'daily', label: t('store.tabDaily'), icon: Calendar },
+                { id: 'ledger', label: t('store.tabLedger'), icon: Coins },
               ] as Array<{ id: StoreTab; label: string; icon: typeof ShoppingBag }>
-            ).map((t) => {
-              const Icon = t.icon;
-              const active = storeTab === t.id;
+            ).map((tabItem) => {
+              const Icon = tabItem.icon;
+              const active = storeTab === tabItem.id;
               return (
                 <button
-                  key={t.id}
+                  key={tabItem.id}
                   type="button"
-                  data-testid={`store-tab-${t.id}`}
+                  data-testid={`store-tab-${tabItem.id}`}
                   onClick={() => {
                     soundEngine.playUiClick();
-                    setStoreTab(t.id);
+                    setStoreTab(tabItem.id);
                   }}
                   className={`relative inline-flex items-center gap-1.5 rounded-md px-2.5 sm:px-3 py-1.5 text-[11px] sm:text-xs font-bold transition-colors cursor-pointer whitespace-nowrap shrink-0 ${
                     active
@@ -594,9 +582,9 @@ export function StoreModal() {
                   }`}
                 >
                   <Icon className="h-3.5 w-3.5" />
-                  <span>{t.label}</span>
-                  {t.id === 'daily' && dailyReward?.canClaim && (
-                    <span className="ml-0.5 h-2 w-2 rounded-full bg-emerald-400" />
+                  <span>{tabItem.label}</span>
+                  {tabItem.id === 'daily' && dailyReward?.canClaim && (
+                    <span className="ms-0.5 h-2 w-2 rounded-full bg-emerald-400" />
                   )}
                 </button>
               );
@@ -610,18 +598,18 @@ export function StoreModal() {
               className="flex items-center gap-2 rounded-lg border border-amber-400/45 bg-amber-500/12 px-3 py-1.5"
             >
               <Coins className="h-4 w-4 text-amber-400" />
-              <div className="text-right">
+              <div className="text-end">
                 <div className="text-[9px] font-bold uppercase tracking-wider text-amber-300/80">
-                  POOL COINS
+                  {t('common.coins')}
                 </div>
                 <div className="font-mono text-sm font-black tabular-nums leading-none text-amber-300">
-                  {balance.toLocaleString()}
+                  {formatLocalizedNumber(balance, language)}
                 </div>
               </div>
             </div>
             <button
               type="button"
-              aria-label="Close Store"
+              aria-label={t('store.closeAria')}
               onClick={() => {
                 soundEngine.playUiClick();
                 closeStoreModal();
@@ -665,33 +653,33 @@ export function StoreModal() {
               <div className="shrink-0 space-y-2 pb-3 border-b border-white/10">
                 <div className="flex flex-col sm:flex-row sm:items-center gap-2">
                   <div className="relative flex-1 min-w-0">
-                    <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" />
+                    <Search className="pointer-events-none absolute start-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" />
                     <input
                       type="text"
                       value={searchQuery}
                       onChange={(e) => setSearchQuery(e.target.value)}
-                      placeholder="Search cues, ball skins, tables, badges..."
-                      className="w-full rounded-lg border border-white/12 bg-[#080d13] pl-8 pr-3 py-1.5 text-xs text-white placeholder:text-slate-500 focus:border-amber-400 focus:outline-none"
+                      placeholder={t('store.searchPlaceholder')}
+                      className="w-full rounded-lg border border-white/12 bg-[#080d13] ps-8 pe-3 py-1.5 text-xs text-white placeholder:text-slate-500 focus:border-amber-400 focus:outline-none"
                     />
                   </div>
 
                   <div className="modal-scroll-x flex items-center gap-1 rounded-lg border border-white/10 bg-[#080d13] p-1">
-                    <Filter className="ml-1.5 h-3 w-3 shrink-0 text-slate-400" />
-                    {RARITY_FILTERS.map((rf) => (
+                    <Filter className="ms-1.5 h-3 w-3 shrink-0 text-slate-400" />
+                    {RARITY_FILTER_IDS.map((rfId) => (
                       <button
-                        key={rf.id}
+                        key={rfId}
                         type="button"
                         onClick={() => {
                           soundEngine.playUiClick();
-                          setRarityFilter(rf.id);
+                          setRarityFilter(rfId);
                         }}
                         className={`rounded px-2 py-1 text-[11px] font-bold transition-colors cursor-pointer whitespace-nowrap shrink-0 ${
-                          rarityFilter === rf.id
+                          rarityFilter === rfId
                             ? 'bg-amber-500 text-slate-950'
                             : 'text-slate-400 hover:text-white'
                         }`}
                       >
-                        {rf.label}
+                        {rfId === 'all' ? t('store.rarityAll') : localizeRarity(rfId, language)}
                       </button>
                     ))}
                   </div>
@@ -699,16 +687,16 @@ export function StoreModal() {
 
                 {/* Category Tabs */}
                 <div className="modal-scroll-x flex items-center gap-1 pb-0.5">
-                  {CATEGORY_TABS.map((cat) => {
-                    const active = storeCategory === cat.id;
+                  {CATEGORY_FILTER_IDS.map((catId) => {
+                    const active = storeCategory === catId;
                     return (
                       <button
-                        key={cat.id}
+                        key={catId}
                         type="button"
-                        data-testid={`store-category-${cat.id}`}
+                        data-testid={`store-category-${catId}`}
                         onClick={() => {
                           soundEngine.playUiClick();
-                          setStoreCategory(cat.id);
+                          setStoreCategory(catId);
                         }}
                         className={`rounded-md border px-2.5 py-1 text-[11px] font-bold transition-colors cursor-pointer whitespace-nowrap shrink-0 ${
                           active
@@ -716,7 +704,9 @@ export function StoreModal() {
                             : 'border-white/10 bg-white/[0.03] text-slate-300 hover:bg-white/10'
                         }`}
                       >
-                        {cat.label}
+                        {catId === 'all'
+                          ? t('store.categoryAll')
+                          : localizeCosmeticCategory(catId, language)}
                       </button>
                     );
                   })}
@@ -724,10 +714,10 @@ export function StoreModal() {
               </div>
 
               {/* Card Grid (scrolls inside lg:flex-1 on desktop, flows inside single pane on <lg) */}
-              <div className="mt-3 lg:min-h-0 lg:flex-1 lg:overflow-y-auto lg:pr-1 lg:overscroll-contain">
+              <div className="mt-3 lg:min-h-0 lg:flex-1 lg:overflow-y-auto lg:pe-1 lg:overscroll-contain">
                 {filteredItems.length === 0 ? (
                   <div className="rounded-xl border border-white/10 bg-black/25 py-12 text-center text-xs text-slate-400">
-                    No cosmetic items match the current filters.
+                    {t('store.noFilterMatch')}
                   </div>
                 ) : (
                   <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-2.5 pb-4">
@@ -736,6 +726,7 @@ export function StoreModal() {
                       const equipped = isEquipped(item);
                       const selected = selectedItem?.id === item.id;
                       const rarity = RARITY_META[item.rarity];
+                      const localizedItem = localizeCosmeticItem(item, language);
                       const canAfford = balance >= item.price;
                       const isDefault = getCategoryDefaultItemId(item.category) === item.id;
 
@@ -747,7 +738,7 @@ export function StoreModal() {
                             soundEngine.playUiClick();
                             setSelectedItemId(item.id);
                           }}
-                          className={`group relative flex flex-col overflow-hidden rounded-lg border text-left transition-colors cursor-pointer ${
+                          className={`group relative flex flex-col overflow-hidden rounded-lg border text-start transition-colors cursor-pointer ${
                             selected
                               ? 'border-amber-400 bg-[#151e2a]'
                               : equipped
@@ -762,14 +753,14 @@ export function StoreModal() {
                             <CosmeticArtwork item={item} size="card" />
                             <button
                               type="button"
-                              aria-label={`Inspect ${item.name}`}
+                              aria-label={t('store.inspectAria', { name: localizedItem.name })}
                               onClick={(e) => {
                                 e.stopPropagation();
                                 soundEngine.playUiClick();
                                 setSelectedItemId(item.id);
                                 setMobileInspectOpen(true);
                               }}
-                              className="lg:hidden absolute right-2 top-2 inline-flex h-6 w-6 items-center justify-center rounded-md border border-white/12 bg-black/50 text-slate-300 hover:text-white cursor-pointer"
+                              className="lg:hidden absolute end-2 top-2 inline-flex h-6 w-6 items-center justify-center rounded-md border border-white/12 bg-black/50 text-slate-300 hover:text-white cursor-pointer"
                             >
                               <Info className="h-3.5 w-3.5" />
                             </button>
@@ -778,14 +769,14 @@ export function StoreModal() {
                           <div className="flex flex-1 flex-col justify-between px-3 pb-3 pt-1 gap-2">
                             <div>
                               <div className="text-xs font-extrabold text-white leading-snug">
-                                {item.name}
+                                {localizedItem.name}
                               </div>
                               <div className="mt-0.5 text-[10px] text-slate-400">
                                 <span className={`font-bold ${rarity.textClass}`}>
-                                  {rarity.label}
+                                  {localizeRarity(item.rarity, language)}
                                 </span>
                                 {' · '}
-                                <span>{item.subCategory}</span>
+                                <span>{localizedItem.subCategory}</span>
                               </div>
                             </div>
 
@@ -793,22 +784,22 @@ export function StoreModal() {
                               {equipped ? (
                                 <span className="inline-flex items-center gap-1 text-[11px] font-extrabold uppercase tracking-wider text-emerald-300 whitespace-nowrap">
                                   <Check className="h-3 w-3" />
-                                  Equipped
+                                  {t('store.equippedBadge')}
                                 </span>
                               ) : owned ? (
                                 <span className="text-[11px] font-bold uppercase tracking-wider text-sky-300 whitespace-nowrap">
-                                  Owned
+                                  {t('store.ownedBadge')}
                                 </span>
                               ) : item.isRewardExclusive ? (
                                 <span className="text-[10px] font-bold uppercase tracking-wider text-amber-300 whitespace-nowrap">
                                   {item.subCategory.includes('Battle Pass')
-                                    ? 'Battle Pass'
-                                    : 'Tournament Prize'}
+                                    ? t('store.badgeBattlePass')
+                                    : t('store.badgeTournamentPrize')}
                                 </span>
                               ) : (
                                 <span className="inline-flex items-center gap-1 font-mono text-xs font-black tabular-nums text-amber-300 whitespace-nowrap">
                                   <Coins className="h-3.5 w-3.5 text-amber-400" />
-                                  {item.price.toLocaleString()}
+                                  {formatLocalizedNumber(item.price, language)}
                                 </span>
                               )}
 
@@ -830,11 +821,15 @@ export function StoreModal() {
                                       : 'bg-emerald-500 text-slate-950 hover:bg-emerald-400'
                                   }`}
                                 >
-                                  {equipped ? (isDefault ? 'Default' : 'Unequip') : 'Equip'}
+                                  {equipped
+                                    ? isDefault
+                                      ? t('common.defaultLabel')
+                                      : t('store.unequipShortBtn')
+                                    : t('store.equipButton')}
                                 </button>
                               ) : item.isRewardExclusive ? (
                                 <span className="text-[10px] font-semibold text-slate-400 whitespace-nowrap">
-                                  Locked
+                                  {t('common.locked')}
                                 </span>
                               ) : (
                                 <button
@@ -849,7 +844,7 @@ export function StoreModal() {
                                   }}
                                   className="rounded-md bg-amber-500 px-2.5 py-1 text-[10px] font-extrabold uppercase tracking-wider text-slate-950 hover:bg-amber-400 disabled:opacity-40 disabled:cursor-not-allowed transition-colors cursor-pointer whitespace-nowrap"
                                 >
-                                  Buy
+                                  {t('store.buyButton')}
                                 </button>
                               )}
                             </div>
@@ -863,15 +858,15 @@ export function StoreModal() {
             </div>
 
             {/* Desktop Sticky Right Inspector Panel */}
-            <div className="hidden lg:flex lg:w-80 lg:shrink-0 lg:flex-col lg:justify-between border-l border-white/10 bg-[#090e14] p-5 modal-scroll-y">
+            <div className="hidden lg:flex lg:w-80 lg:shrink-0 lg:flex-col lg:justify-between border-s border-white/10 bg-[#090e14] p-5 modal-scroll-y">
               {selectedItem ? (
                 renderInspectorDetails(selectedItem)
               ) : (
-                <div className="text-xs text-slate-400">Select an item to inspect details.</div>
+                <div className="text-xs text-slate-400">{t('store.selectItemPrompt')}</div>
               )}
 
               <div className="mt-4 border-t border-white/10 pt-3 text-[10px] text-slate-400">
-                Earn POOL COINS via Online Wins (+120/+150), AI Wins (+25–110), Achievements, Tournaments, and Daily Login Streaks.
+                {t('store.earnCoinsHint')}
               </div>
             </div>
           </div>
@@ -886,14 +881,13 @@ export function StoreModal() {
             <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-400/35 bg-[#101824] p-3.5 sm:p-4">
               <div className="min-w-0 flex-1">
                 <div className="text-[11px] font-bold uppercase tracking-wider text-amber-400">
-                  7-Day Check-In Streak
+                  {t('store.dailyBannerTag')}
                 </div>
                 <h3 className="mt-0.5 text-base sm:text-lg font-extrabold text-white">
-                  Current Streak: {dailyReward?.streak ?? 0} Day
-                  {(dailyReward?.streak ?? 0) === 1 ? '' : 's'}
+                  {t('store.dailyStreakPlural', { count: dailyReward?.streak ?? 0 })}
                 </h3>
                 <p className="mt-0.5 text-xs text-slate-300">
-                  Log in daily to escalate rewards up to +400 POOL COINS on Day 7. Resets if a UTC day is missed.
+                  {t('store.dailyRulesDesc')}
                 </p>
               </div>
 
@@ -907,23 +901,24 @@ export function StoreModal() {
                     className="inline-flex items-center gap-2 rounded-lg bg-emerald-500 px-4 sm:px-5 py-2.5 text-xs font-extrabold uppercase tracking-wider text-slate-950 hover:bg-emerald-400 disabled:opacity-50 cursor-pointer whitespace-nowrap"
                   >
                     <Sparkles className="h-4 w-4" />
-                    Claim +{dailyReward.nextRewardCoins} POOL COINS
+                    {t('store.dailyClaimCoinsBtn', { coins: dailyReward.nextRewardCoins })}
                   </button>
                 ) : (
                   <div
                     data-testid="daily-countdown-box"
-                    className="rounded-lg border border-white/12 bg-black/35 px-4 py-2 text-right"
+                    className="rounded-lg border border-white/12 bg-black/35 px-4 py-2 text-end"
                   >
                     <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
-                      Next Reward Available In
+                      {t('store.dailyNextAvailableIn')}
                     </div>
                     <div
+                      dir="ltr"
                       data-testid="daily-countdown-timer"
                       className="font-mono text-sm font-black tabular-nums text-amber-300"
                     >
                       {dailyReward
                         ? formatCountdown(dailyReward.nextClaimAtMs, nowMs)
-                        : 'Syncing...'}
+                        : t('common.syncing')}
                     </div>
                   </div>
                 )}
@@ -952,21 +947,23 @@ export function StoreModal() {
                     }`}
                   >
                     <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
-                      {tier.label}
+                      {tier.day === 7
+                        ? t('store.dailyDayBonusLabel', { day: tier.day })
+                        : t('store.dailyDayLabel', { day: tier.day })}
                     </div>
                     <div className="my-2.5 flex h-9 w-9 sm:h-10 sm:w-10 items-center justify-center rounded-lg border border-amber-400/35 bg-amber-500/12">
                       <Coins className="h-4 w-4 sm:h-5 sm:w-5 text-amber-400" />
                     </div>
-                    <div className="font-mono text-sm font-black tabular-nums text-amber-300">
-                      +{tier.coins}
+                    <div dir="ltr" className="font-mono text-sm font-black tabular-nums text-amber-300">
+                      +{formatLocalizedNumber(tier.coins, language)}
                     </div>
                     <div className="mt-1.5 text-[10px] font-bold uppercase tracking-wider">
                       {isNextReady ? (
-                        <span className="text-emerald-300">Ready</span>
+                        <span className="text-emerald-300">{t('store.dailyReadyBadge')}</span>
                       ) : isClaimedPast ? (
-                        <span className="text-amber-300">Claimed</span>
+                        <span className="text-amber-300">{t('store.dailyClaimedBadge')}</span>
                       ) : (
-                        <span className="text-slate-500">Locked</span>
+                        <span className="text-slate-500">{t('store.dailyLockedBadge')}</span>
                       )}
                     </div>
                   </div>
@@ -984,14 +981,14 @@ export function StoreModal() {
           >
             <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-white/10 bg-black/25 px-4 py-3 text-xs">
               <div className="font-mono tabular-nums text-slate-300">
-                Total Earned:{' '}
-                <span className="font-bold text-emerald-300">
-                  +{(wallet?.totalEarned ?? 0).toLocaleString()}
+                {t('store.totalEarnedLabel')}:{' '}
+                <span dir="ltr" className="font-bold text-emerald-300">
+                  +{formatLocalizedNumber(wallet?.totalEarned ?? 0, language)}
                 </span>
                 {' · '}
-                Total Spent:{' '}
-                <span className="font-bold text-rose-300">
-                  -{(wallet?.totalSpent ?? 0).toLocaleString()}
+                {t('store.totalSpentLabel')}:{' '}
+                <span dir="ltr" className="font-bold text-rose-300">
+                  -{formatLocalizedNumber(wallet?.totalSpent ?? 0, language)}
                 </span>
               </div>
               <button
@@ -1002,13 +999,13 @@ export function StoreModal() {
                 }}
                 className="rounded-lg border border-white/12 bg-white/5 px-3 py-1 text-xs font-bold text-slate-200 hover:bg-white/10 cursor-pointer"
               >
-                Refresh
+                {t('common.refresh')}
               </button>
             </div>
 
             {coinTransactions.length === 0 ? (
               <div className="rounded-xl border border-white/10 bg-black/25 py-12 text-center text-xs text-slate-400">
-                No coin transactions recorded yet. Claim your daily login reward or complete a match!
+                {t('store.ledgerEmptyLong')}
               </div>
             ) : (
               <div className="divide-y divide-white/8 rounded-xl border border-white/10 bg-[#0a1017]">
@@ -1020,24 +1017,31 @@ export function StoreModal() {
                       className="flex flex-wrap items-center justify-between gap-2 px-4 py-2.5 text-xs"
                     >
                       <div className="min-w-0">
-                        <div className="font-bold text-white">{formatTxReason(tx.reason)}</div>
+                        <div className="font-bold text-white">
+                          {localizeTxReason(tx.reason, language)}
+                        </div>
                         <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-[10px] text-slate-400">
                           <Clock className="h-3 w-3 shrink-0" />
-                          <span>{formatTxTime(tx.createdAtMs)}</span>
+                          <span>{formatLocalizedDateTime(tx.createdAtMs, language)}</span>
                           {' · '}
-                          <span className="font-mono break-all">{tx.referenceId}</span>
+                          <span dir="ltr" className="font-mono break-all">{tx.referenceId}</span>
                         </div>
                       </div>
-                      <div className="text-right font-mono tabular-nums">
+                      <div className="text-end font-mono tabular-nums">
                         <div
+                          dir="ltr"
                           className={`text-sm font-black ${
                             isCredit ? 'text-emerald-300' : 'text-rose-300'
                           }`}
                         >
-                          {isCredit ? `+${tx.amount.toLocaleString()}` : tx.amount.toLocaleString()}
+                          {isCredit
+                            ? `+${formatLocalizedNumber(tx.amount, language)}`
+                            : formatLocalizedNumber(tx.amount, language)}
                         </div>
                         <div className="text-[10px] text-slate-400">
-                          Bal: {tx.balanceAfter.toLocaleString()}
+                          {t('store.ledgerBalancePrefix', {
+                            balance: formatLocalizedNumber(tx.balanceAfter, language),
+                          })}
                         </div>
                       </div>
                     </div>
@@ -1053,19 +1057,21 @@ export function StoreModal() {
           <div
             role="dialog"
             aria-modal="true"
-            aria-label={`Inspect ${selectedItem.name}`}
+            aria-label={t('store.inspectAria', {
+              name: localizeCosmeticItem(selectedItem, language).name,
+            })}
             className="lg:hidden absolute inset-0 z-10 flex items-center justify-center bg-black/80 p-3"
           >
             <div className="modal-scroll-y relative w-full max-w-sm max-h-[85dvh] rounded-xl border border-amber-400/40 bg-[#090e14] p-4 shadow-2xl">
               <button
                 type="button"
-                aria-label="Close Details"
+                aria-label={t('store.closeDetailsAria')}
                 onClick={() => setMobileInspectOpen(false)}
-                className="absolute right-3 top-3 inline-flex h-8 w-8 items-center justify-center rounded-lg border border-white/10 bg-white/5 text-slate-300 hover:text-white cursor-pointer"
+                className="absolute end-3 top-3 inline-flex h-8 w-8 items-center justify-center rounded-lg border border-white/10 bg-white/5 text-slate-300 hover:text-white cursor-pointer"
               >
                 <X className="h-4 w-4" />
               </button>
-              <div className="pr-8">{renderInspectorDetails(selectedItem)}</div>
+              <div className="pe-8">{renderInspectorDetails(selectedItem)}</div>
             </div>
           </div>
         )}
@@ -1075,33 +1081,38 @@ export function StoreModal() {
           <div
             role="dialog"
             aria-modal="true"
-            aria-label="Confirm Purchase"
+            aria-label={t('store.confirmPurchaseAria')}
             className="absolute inset-0 z-20 flex items-center justify-center bg-black/80 p-4"
           >
             <div className="w-full max-w-sm rounded-xl border border-amber-400/50 bg-[#0e151e] p-5 shadow-2xl">
               <div className="text-[10px] font-bold uppercase tracking-wider text-amber-400">
-                Confirm Cosmetic Purchase
+                {t('store.confirmPurchaseTitle')}
               </div>
               <h3 className="mt-1 text-base font-extrabold text-white">
-                {confirmPurchaseItem.name}
+                {localizeCosmeticItem(confirmPurchaseItem, language).name}
               </h3>
               <p className="mt-1 text-xs text-slate-300">
-                {COSMETIC_CATEGORY_LABELS[confirmPurchaseItem.category]} ·{' '}
-                {RARITY_META[confirmPurchaseItem.rarity].label}
+                {localizeCosmeticCategory(confirmPurchaseItem.category, language)} ·{' '}
+                {localizeRarity(confirmPurchaseItem.rarity, language)}
               </p>
 
               <div className="mt-4 space-y-1.5 rounded-lg border border-white/10 bg-black/35 p-3 font-mono text-xs tabular-nums">
                 <div className="flex justify-between text-slate-300">
-                  <span>Current Balance</span>
-                  <span>{balance.toLocaleString()}</span>
+                  <span>{t('store.confirmCurrentBalance')}</span>
+                  <span>{formatLocalizedNumber(balance, language)}</span>
                 </div>
                 <div className="flex justify-between text-amber-300">
-                  <span>Item Price</span>
-                  <span>-{confirmPurchaseItem.price.toLocaleString()}</span>
+                  <span>{t('store.confirmItemPrice')}</span>
+                  <span dir="ltr">-{formatLocalizedNumber(confirmPurchaseItem.price, language)}</span>
                 </div>
                 <div className="flex justify-between border-t border-white/10 pt-1.5 font-extrabold text-white">
-                  <span>Balance After</span>
-                  <span>{Math.max(0, balance - confirmPurchaseItem.price).toLocaleString()}</span>
+                  <span>{t('store.confirmBalanceAfter')}</span>
+                  <span>
+                    {formatLocalizedNumber(
+                      Math.max(0, balance - confirmPurchaseItem.price),
+                      language,
+                    )}
+                  </span>
                 </div>
               </div>
 
@@ -1112,7 +1123,7 @@ export function StoreModal() {
                   onClick={() => setConfirmPurchaseItem(null)}
                   className="flex-1 rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-xs font-bold text-slate-200 hover:bg-white/10 cursor-pointer"
                 >
-                  Cancel
+                  {t('common.cancel')}
                 </button>
                 <button
                   type="button"
@@ -1121,7 +1132,7 @@ export function StoreModal() {
                   onClick={() => void handleConfirmPurchase()}
                   className="flex-1 rounded-lg bg-amber-500 px-3 py-2 text-xs font-extrabold uppercase tracking-wider text-slate-950 hover:bg-amber-400 disabled:opacity-50 cursor-pointer"
                 >
-                  {busyAction ? 'Processing...' : 'Confirm Buy'}
+                  {busyAction ? t('common.processing') : t('store.confirmBuyBtn')}
                 </button>
               </div>
             </div>

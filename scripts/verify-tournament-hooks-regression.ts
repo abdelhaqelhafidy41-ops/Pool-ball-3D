@@ -515,10 +515,12 @@ async function runBrowserSuite(opts: {
       );
     };
 
-    // 1. Load main menu
+    // 1. Load main menu (defaults to Arabic RTL on fresh browser, verify no crash, then switch to English via menu selector)
     await cdp.call('Page.navigate', { url: opts.url });
     await waitForSelector('[data-testid="open-tournaments-btn"]', 15000);
-    await assertNoRecoveryCrash('initial-menu');
+    await assertNoRecoveryCrash('initial-menu-ar');
+    await cdp.eval(`document.querySelector('[data-testid="menu-lang-en"]')?.click()`);
+    await waitForText('Global Tournaments');
 
     // 2. Main menu -> Tournament screen (populated list)
     scenario = 'populated';
@@ -550,7 +552,7 @@ async function runBrowserSuite(opts: {
     // 5. Empty state
     scenario = 'empty';
     await cdp.eval(`document.querySelector('[aria-label="Refresh tournaments"]').click()`);
-    await waitForText('No tournaments match the selected filters.');
+    await waitForText('No tournaments match your current filter.');
     await assertNoRecoveryCrash('empty-list');
 
     // 6. Network failure state -> does not crash app
@@ -619,7 +621,7 @@ async function runBrowserSuite(opts: {
       Array.from(document.querySelectorAll('button'))
         .find((b) => b.textContent && b.textContent.trim() === 'Profile')?.click();
     `);
-    await waitForText('Competitive Career & Rankings');
+    await waitForText('Player Profile & Career');
     await assertNoRecoveryCrash('player-profile');
     await cdp.eval(`document.querySelector('[aria-label="Close competitive hub"]')?.click()`);
     await sleep(100);

@@ -1,12 +1,19 @@
 import { Check, Clock, Crown, Eye, Swords, X } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { soundEngine } from '../game/utils/SoundEngine';
+import {
+  localizeRuleProfile,
+  localizeServerError,
+  localizeTournamentRoundLabel,
+  useTranslation,
+} from '../i18n';
 import { multiplayerManager } from '../multiplayer/MultiplayerManager';
 import { socialClient } from '../multiplayer/SocialClient';
 import { getAvatarVisualMeta } from '../multiplayer/shared/economy';
 import { useGameStore } from '../store/useGameStore';
 
 export function InviteNotificationBanner() {
+  const { t, lang } = useTranslation();
   const incomingInvitations = useGameStore((s) => s.incomingInvitations);
   const tournamentMatchAlert = useGameStore((s) => s.tournamentMatchAlert);
   const setTournamentMatchAlert = useGameStore((s) => s.setTournamentMatchAlert);
@@ -58,17 +65,22 @@ export function InviteNotificationBanner() {
             </div>
             <div className="min-w-0">
               <div className="text-[10px] font-bold uppercase tracking-wider text-amber-300">
-                Tournament Match Ready · {match.roundLabel}
+                {t('social.inviteTournamentReadyLabel', {
+                  round: localizeTournamentRoundLabel(match.roundLabel, lang),
+                })}
               </div>
               <div className="truncate text-xs font-extrabold text-white">{tournamentTitle}</div>
               <div className="flex items-center gap-1.5 text-[10px] text-slate-300 truncate">
                 <span>
-                  {match.player1Name ?? 'TBD'} vs {match.player2Name ?? 'TBD'}
+                  {t('social.inviteMatchupVs', {
+                    p1: match.player1Name ?? t('tournaments.tbdSlot'),
+                    p2: match.player2Name ?? t('tournaments.tbdSlot'),
+                  })}
                 </span>
                 {deadlineSec !== null && (
                   <>
                     <span>·</span>
-                    <span className="inline-flex items-center gap-0.5 font-mono tabular-nums text-amber-300 shrink-0">
+                    <span className="inline-flex items-center gap-0.5 font-mono tabular-nums text-amber-300 shrink-0" dir="ltr">
                       <Clock className="h-2.5 w-2.5" />
                       {deadlineSec}s
                     </span>
@@ -81,7 +93,7 @@ export function InviteNotificationBanner() {
           <button
             type="button"
             onClick={() => setTournamentMatchAlert(null)}
-            aria-label="Dismiss tournament match alert"
+            aria-label={t('social.inviteDismissTournamentAria')}
             className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md border border-white/10 bg-white/5 text-slate-400 hover:text-white cursor-pointer"
           >
             <X className="h-3.5 w-3.5" />
@@ -102,7 +114,7 @@ export function InviteNotificationBanner() {
             className="inline-flex items-center justify-center gap-1 rounded-lg bg-amber-500 px-3 py-1.5 text-[11px] font-extrabold text-slate-950 hover:bg-amber-400 disabled:opacity-50 cursor-pointer whitespace-nowrap"
           >
             <Swords className="h-3.5 w-3.5" />
-            {joiningTournament ? 'Entering...' : 'Enter Match'}
+            {joiningTournament ? t('social.inviteEnteringBtn') : t('social.inviteEnterMatchBtn')}
           </button>
           <button
             type="button"
@@ -113,7 +125,7 @@ export function InviteNotificationBanner() {
             }}
             className="inline-flex items-center justify-center rounded-lg border border-white/15 bg-white/5 px-3 py-1.5 text-[11px] font-bold text-slate-200 hover:bg-white/10 cursor-pointer whitespace-nowrap"
           >
-            View Bracket
+            {t('social.inviteViewBracketBtn')}
           </button>
         </div>
       </div>
@@ -135,7 +147,7 @@ export function InviteNotificationBanner() {
     const res = await socialClient.respondInvite(topInvite.inviteId, action);
     if (!res.ok) {
       setBusyInviteId(null);
-      const msg = res.error ?? 'Invitation unavailable.';
+      const msg = res.error ? localizeServerError(res.error, lang) : t('social.inviteUnavailableErr');
       setOnlineError({ code: res.code ?? 'INVITE_EXPIRED', message: msg });
       setSocialNotice({ type: 'err', text: msg });
       openSocialModal('friends');
@@ -155,7 +167,7 @@ export function InviteNotificationBanner() {
         if (!specRes.ok) {
           setSocialNotice({
             type: 'err',
-            text: specRes.error ?? 'Unable to enter spectator view.',
+            text: specRes.error ? localizeServerError(specRes.error, lang) : t('social.inviteSpectateFailedErr'),
           });
         }
         return;
@@ -187,18 +199,18 @@ export function InviteNotificationBanner() {
           <div className="min-w-0">
             <div className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-amber-300">
               {isSpectateInvite ? <Eye className="h-3 w-3" /> : <Swords className="h-3 w-3" />}
-              {isSpectateInvite ? 'Spectate Match Invite' : 'Match Invitation'}
+              {isSpectateInvite ? t('social.inviteBannerSpectateTitle') : t('social.inviteBannerMatchTitle')}
             </div>
             <div className="truncate text-xs font-extrabold text-white">
               {topInvite.senderName}{' '}
               <span className="font-mono text-[10px] text-slate-400">
-                ({topInvite.senderElo} ELO)
+                ({t('spectator.eloBadge', { elo: topInvite.senderElo })})
               </span>
             </div>
             <div className="flex items-center gap-1.5 text-[10px] text-slate-300">
-              <span>{topInvite.ruleProfileId === 'wpa' ? 'Strict WPA' : 'Standard Casual'}</span>
+              <span>{localizeRuleProfile(topInvite.ruleProfileId, lang, false)}</span>
               <span>·</span>
-              <span className="inline-flex items-center gap-0.5 font-mono tabular-nums text-amber-300">
+              <span className="inline-flex items-center gap-0.5 font-mono tabular-nums text-amber-300" dir="ltr">
                 <Clock className="h-2.5 w-2.5" />
                 {remainingSec}s
               </span>
@@ -210,7 +222,7 @@ export function InviteNotificationBanner() {
           type="button"
           disabled={busyInviteId === topInvite.inviteId}
           onClick={() => handleRespond('reject')}
-          aria-label="Decline match invitation"
+          aria-label={t('social.inviteDismissAria')}
           className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md border border-white/10 bg-white/5 text-slate-400 hover:text-white cursor-pointer"
         >
           <X className="h-3.5 w-3.5" />
@@ -227,11 +239,11 @@ export function InviteNotificationBanner() {
           {isSpectateInvite ? <Eye className="h-3.5 w-3.5" /> : <Check className="h-3.5 w-3.5" />}
           {busyInviteId === topInvite.inviteId
             ? isSpectateInvite
-              ? 'Opening...'
-              : 'Joining...'
+              ? t('social.inviteOpeningBtn')
+              : t('social.inviteJoiningBtn')
             : isSpectateInvite
-              ? 'Watch Match'
-              : 'Accept 1v1'}
+              ? t('social.inviteWatchMatchBtn')
+              : t('social.inviteAccept1v1Btn')}
         </button>
         <button
           type="button"
@@ -239,7 +251,7 @@ export function InviteNotificationBanner() {
           onClick={() => handleRespond('reject')}
           className="inline-flex items-center justify-center rounded-lg border border-white/15 bg-white/5 px-3 py-1.5 text-[11px] font-bold text-slate-200 hover:bg-white/10 disabled:opacity-50 cursor-pointer whitespace-nowrap"
         >
-          Decline
+          {t('social.inviteDeclineBtn')}
         </button>
       </div>
     </div>

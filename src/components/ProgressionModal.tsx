@@ -65,53 +65,58 @@ import {
   type PenaltyType,
 } from '../multiplayer/shared/ranked';
 import type { PresenceStatus, SocialReportReason } from '../multiplayer/shared/social';
+import {
+  formatLocalizedDuration,
+  getActiveRuntimeLanguage,
+  localizeAchievement,
+  localizeAiDifficulty,
+  localizeAvatarLabel,
+  localizeCosmeticItem,
+  localizeFoulOrReason,
+  localizeOnlineMatchType,
+  localizePlayerName,
+  localizePresence,
+  localizeRankTierName,
+  localizeReplayError,
+  localizeRuleProfile,
+  localizeSeasonNameAndTheme,
+  localizeServerError,
+  tLang,
+  useTranslation,
+} from '../i18n';
+import type { AppLanguage } from '../i18n';
 import { type ProgressionTab, useGameStore } from '../store/useGameStore';
 import { RankBadge, RankProgressCard } from './RankBadge';
-import { presenceDotClass, presenceLabel } from './SocialModal';
+import { presenceDotClass } from './SocialModal';
 
-function formatDuration(sec: number): string {
-  const safe = Math.max(0, Math.round(sec));
-  if (safe < 60) return `${safe}s`;
-  const m = Math.floor(safe / 60);
-  const s = safe % 60;
-  return `${m}m ${s.toString().padStart(2, '0')}s`;
-}
-
-function formatShortDate(ms: number): string {
-  try {
-    return new Date(ms).toLocaleDateString(undefined, {
-      month: 'short',
-      day: 'numeric',
-      year: 'numeric',
-    });
-  } catch {
-    return '';
+function localizeSeasonLabel(name: string, lang: AppLanguage, seasonNumHint?: number): string {
+  if (lang === 'en') return name;
+  if (seasonNumHint) {
+    return localizeSeasonNameAndTheme(seasonNumHint, name, '', lang).name;
   }
+  const romanMap: Record<string, number> = { I: 1, II: 2, III: 3, IV: 4 };
+  const romanMatch = name.match(/Season\s+(IV|III|II|I)\b/i);
+  if (romanMatch) {
+    const num = romanMap[romanMatch[1].toUpperCase()] ?? 1;
+    return localizeSeasonNameAndTheme(num, name, '', lang).name;
+  }
+  const numMatch = name.match(/Season\s+(\d+)/i);
+  if (numMatch) {
+    return localizeSeasonNameAndTheme(Number(numMatch[1]), name, '', lang).name;
+  }
+  return name;
 }
 
-function formatPenaltyType(t: PenaltyType): string {
+function formatPenaltyType(t: PenaltyType, lang: AppLanguage = getActiveRuntimeLanguage()): string {
   switch (t) {
     case 'warning':
-      return 'Fair Play Warning';
+      return tLang(lang, 'progression.penaltyTypeWarning');
     case 'ranked_restriction':
-      return 'Ranked Queue Restriction';
+      return tLang(lang, 'progression.penaltyTypeRankedRestriction');
     case 'temp_suspension':
-      return 'Temporary Suspension';
+      return tLang(lang, 'progression.penaltyTypeTempSuspension');
     case 'permanent_suspension':
-      return 'Permanent Suspension';
-  }
-}
-
-function formatMatchTypeLabel(t?: OnlineMatchType): string {
-  switch (t) {
-    case 'ranked':
-      return 'Ranked';
-    case 'tournament':
-      return 'Tournament';
-    case 'private':
-      return 'Private';
-    default:
-      return 'Quick';
+      return tLang(lang, 'progression.penaltyTypePermanentSuspension');
   }
 }
 
@@ -163,15 +168,19 @@ function renderAchievementIcon(icon: AchievementIconId, unlocked: boolean) {
   }
 }
 
-function formatLastSeenCompact(lastSeenAtMs: number | null | undefined, presence?: PresenceStatus): string {
-  if (presence && presence !== 'offline') return presenceLabel(presence);
-  if (!lastSeenAtMs || lastSeenAtMs <= 0) return 'Last seen hidden or offline';
+function formatLastSeenCompact(
+  lastSeenAtMs: number | null | undefined,
+  presence: PresenceStatus | undefined,
+  lang: AppLanguage,
+): string {
+  if (presence && presence !== 'offline') return localizePresence(presence, lang);
+  if (!lastSeenAtMs || lastSeenAtMs <= 0) return tLang(lang, 'progression.lastSeenHidden');
   const diffMin = Math.max(0, Math.floor((Date.now() - lastSeenAtMs) / 60_000));
-  if (diffMin < 1) return 'Last seen just now';
-  if (diffMin < 60) return `Last seen ${diffMin}m ago`;
+  if (diffMin < 1) return tLang(lang, 'progression.lastSeenJustNow');
+  if (diffMin < 60) return tLang(lang, 'progression.lastSeenMinAgo', { count: diffMin });
   const diffHr = Math.floor(diffMin / 60);
-  if (diffHr < 24) return `Last seen ${diffHr}h ago`;
-  return `Last seen ${Math.floor(diffHr / 24)}d ago`;
+  if (diffHr < 24) return tLang(lang, 'progression.lastSeenHrAgo', { count: diffHr });
+  return tLang(lang, 'progression.lastSeenDayAgo', { count: Math.floor(diffHr / 24) });
 }
 
 function ProfileDetailsView({
@@ -181,6 +190,7 @@ function ProfileDetailsView({
   profile: PublicPlayerProfile;
   isOwn: boolean;
 }) {
+  const { t, language, formatNumber, formatDate } = useTranslation();
   const avatar = getAvatarVisualMeta(profile.avatarId);
   const { stats, levelProgress } = profile;
 
@@ -207,7 +217,9 @@ function ProfileDetailsView({
     setSocialFeedback(null);
     const res = await fn();
     setSocialBusy(false);
-    setSocialFeedback(res.ok ? okText : res.error ?? 'Action failed.');
+    setSocialFeedback(
+      res.ok ? okText : localizeServerError(res.error, language) || t('common.actionFailed'),
+    );
   };
 
   const presence = profile.presence ?? 'offline';
@@ -237,10 +249,11 @@ function ProfileDetailsView({
             <div className="min-w-0">
               <div className="flex flex-wrap items-center gap-1.5">
                 <h3 className="truncate text-lg font-extrabold text-white">
-                  {profile.displayName}
+                  {localizePlayerName(profile.displayName, null, language)}
                 </h3>
                 {profile.club && (
                   <span
+                    dir="ltr"
                     className="rounded-md border px-1.5 py-0.5 font-mono text-[10px] font-black"
                     style={{
                       borderColor: `${profile.club.emblemColor}66`,
@@ -266,20 +279,20 @@ function ProfileDetailsView({
                       : 'border-emerald-400/40 bg-emerald-500/15 text-emerald-300'
                   }`}
                 >
-                  {profile.isGuest ? 'Guest' : `@${profile.username}`}
+                  {profile.isGuest ? t('progression.publicGuestBadge') : `@${profile.username}`}
                 </span>
                 {isOwn && (
                   <span className="rounded-md border border-amber-400/40 bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-amber-300">
-                    You
+                    {t('common.you')}
                   </span>
                 )}
               </div>
               <div className="mt-1 flex flex-wrap items-center gap-2 font-mono text-[11px] text-slate-400">
-                <span>ID: {profile.playerId}</span>
+                <span>{t('progression.idPrefix', { id: profile.playerId })}</span>
                 <span>·</span>
                 <span className="inline-flex items-center gap-1 font-sans font-semibold text-slate-300">
                   <span className={`h-2 w-2 rounded-full ${presenceDotClass(presence)}`} />
-                  {formatLastSeenCompact(profile.lastSeenAtMs, presence)}
+                  {formatLastSeenCompact(profile.lastSeenAtMs, presence, language)}
                 </span>
               </div>
             </div>
@@ -287,20 +300,20 @@ function ProfileDetailsView({
 
           <div className="flex flex-wrap items-center gap-2">
             <RankBadge elo={profile.elo} tier={profile.rankTier} size="sm" />
-            <div className="rounded-lg border border-white/10 bg-[#0b1017] px-3 py-1.5 text-right">
+            <div className="rounded-lg border border-white/10 bg-[#0b1017] px-3 py-1.5 text-end">
               <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
-                Global Rank
+                {t('progression.globalRankLabel')}
               </div>
-              <div className="font-mono text-sm font-extrabold tabular-nums text-white">
+              <div dir="ltr" className="font-mono text-sm font-extrabold tabular-nums text-white">
                 {profile.rank ? `#${profile.rank}` : '—'}
               </div>
             </div>
-            <div className="rounded-lg border border-amber-400/35 bg-amber-500/10 px-3 py-1.5 text-right">
+            <div className="rounded-lg border border-amber-400/35 bg-amber-500/10 px-3 py-1.5 text-end">
               <div className="text-[10px] font-bold uppercase tracking-wider text-amber-300">
-                ELO Rating
+                {t('progression.eloRatingLabel')}
               </div>
-              <div className="font-mono text-base font-black tabular-nums text-amber-300">
-                {profile.elo}
+              <div dir="ltr" className="font-mono text-base font-black tabular-nums text-amber-300">
+                {formatNumber(profile.elo)}
               </div>
             </div>
           </div>
@@ -317,12 +330,12 @@ function ProfileDetailsView({
                   onClick={() =>
                     runSocialAction(
                       () => socialClient.unblockPlayer(profile.playerId),
-                      'Player unblocked.',
+                      t('progression.playerUnblockedNotice'),
                     )
                   }
                   className="inline-flex items-center gap-1 rounded-lg border border-rose-400/35 bg-rose-500/12 px-2.5 py-1 text-[11px] font-bold text-rose-200 hover:bg-rose-500/20 cursor-pointer"
                 >
-                  Unblock Player
+                  {t('progression.unblockPlayerBtn')}
                 </button>
               ) : (
                 <>
@@ -339,13 +352,13 @@ function ProfileDetailsView({
                                 ruleProfileId: 'casual',
                                 calledShotsEnabled: false,
                               }),
-                            'Match invitation sent!',
+                            t('progression.inviteSentNotice'),
                           )
                         }
                         className="inline-flex items-center gap-1 rounded-lg bg-amber-500 px-2.5 py-1 text-[11px] font-extrabold text-slate-950 hover:bg-amber-400 cursor-pointer"
                       >
                         <Swords className="h-3 w-3" />
-                        Invite 1v1
+                        {t('progression.invite1v1Btn')}
                       </button>
                       <button
                         type="button"
@@ -357,7 +370,7 @@ function ProfileDetailsView({
                         className="inline-flex items-center gap-1 rounded-lg border border-white/15 bg-white/5 px-2.5 py-1 text-[11px] font-bold text-slate-200 hover:bg-white/10 cursor-pointer"
                       >
                         <MessageSquare className="h-3 w-3 text-amber-400" />
-                        Message
+                        {t('social.directMessageBtn')}
                       </button>
                       <button
                         type="button"
@@ -365,13 +378,13 @@ function ProfileDetailsView({
                         onClick={() =>
                           runSocialAction(
                             () => socialClient.removeFriend(profile.playerId),
-                            'Removed from friends.',
+                            t('progression.removedFriendNotice'),
                           )
                         }
                         className="inline-flex items-center gap-1 rounded-lg border border-white/12 bg-white/5 px-2.5 py-1 text-[11px] font-bold text-slate-300 hover:border-rose-400/40 hover:text-rose-200 cursor-pointer"
                       >
                         <UserMinus className="h-3 w-3" />
-                        Remove Friend
+                        {t('progression.removeFriendBtn')}
                       </button>
                     </>
                   ) : hasIncoming ? (
@@ -381,13 +394,13 @@ function ProfileDetailsView({
                       onClick={() =>
                         runSocialAction(
                           () => socialClient.respondFriendRequest(profile.playerId, 'accept'),
-                          'Friend request accepted!',
+                          t('progression.acceptedFriendNotice'),
                         )
                       }
                       className="inline-flex items-center gap-1 rounded-lg bg-emerald-500 px-2.5 py-1 text-[11px] font-extrabold text-slate-950 hover:bg-emerald-400 cursor-pointer"
                     >
                       <Check className="h-3 w-3" />
-                      Accept Friend Request
+                      {t('progression.acceptFriendBtn')}
                     </button>
                   ) : hasOutgoing ? (
                     <button
@@ -396,12 +409,12 @@ function ProfileDetailsView({
                       onClick={() =>
                         runSocialAction(
                           () => socialClient.respondFriendRequest(profile.playerId, 'cancel'),
-                          'Friend request cancelled.',
+                          t('progression.cancelledRequestNotice'),
                         )
                       }
                       className="inline-flex items-center gap-1 rounded-lg border border-white/15 bg-white/5 px-2.5 py-1 text-[11px] font-bold text-slate-300 hover:bg-white/10 cursor-pointer"
                     >
-                      Cancel Friend Request
+                      {t('progression.cancelRequestBtn')}
                     </button>
                   ) : (
                     <button
@@ -410,13 +423,13 @@ function ProfileDetailsView({
                       onClick={() =>
                         runSocialAction(
                           () => socialClient.sendFriendRequest(profile.playerId),
-                          'Friend request sent!',
+                          t('progression.friendRequestSentNotice'),
                         )
                       }
                       className="inline-flex items-center gap-1 rounded-lg bg-amber-500 px-2.5 py-1 text-[11px] font-extrabold text-slate-950 hover:bg-amber-400 cursor-pointer"
                     >
                       <UserPlus className="h-3 w-3" />
-                      Add Friend
+                      {t('social.addFriendBtn')}
                     </button>
                   )}
 
@@ -426,13 +439,13 @@ function ProfileDetailsView({
                     onClick={() =>
                       runSocialAction(
                         () => socialClient.blockPlayer(profile.playerId),
-                        'Player blocked.',
+                        t('progression.playerBlockedNotice'),
                       )
                     }
                     className="inline-flex items-center gap-1 rounded-lg border border-white/12 bg-white/5 px-2.5 py-1 text-[11px] font-bold text-slate-300 hover:border-rose-400/40 hover:text-rose-200 cursor-pointer"
                   >
                     <Ban className="h-3 w-3" />
-                    Block
+                    {t('social.blockBtn')}
                   </button>
                 </>
               )}
@@ -443,7 +456,7 @@ function ProfileDetailsView({
                 className="inline-flex items-center gap-1 rounded-lg border border-white/12 bg-white/5 px-2.5 py-1 text-[11px] font-bold text-slate-300 hover:border-rose-400/40 hover:text-rose-200 cursor-pointer"
               >
                 <Flag className="h-3 w-3" />
-                Report
+                {t('social.reportBtn')}
               </button>
             </div>
 
@@ -454,11 +467,11 @@ function ProfileDetailsView({
                   onChange={(e) => setReportReason(e.target.value as SocialReportReason)}
                   className="rounded border border-white/15 bg-[#0b1017] px-2 py-1 text-[11px] text-white"
                 >
-                  <option value="harassment">Harassment</option>
-                  <option value="spam">Spam</option>
-                  <option value="inappropriate_name">Inappropriate Name</option>
-                  <option value="cheating">Cheating</option>
-                  <option value="other">Other</option>
+                  <option value="harassment">{t('social.reportReasonHarassment')}</option>
+                  <option value="spam">{t('social.reportReasonSpam')}</option>
+                  <option value="inappropriate_name">{t('social.reportReasonInappropriateName')}</option>
+                  <option value="cheating">{t('social.reportReasonCheating')}</option>
+                  <option value="other">{t('social.reportReasonOther')}</option>
                 </select>
                 <button
                   type="button"
@@ -471,13 +484,13 @@ function ProfileDetailsView({
                           contextType: 'profile',
                           reason: reportReason,
                         }),
-                      'Player report submitted.',
+                      t('progression.reportSubmittedNotice'),
                     );
                     setReportOpen(false);
                   }}
                   className="rounded bg-rose-500 px-2.5 py-1 text-[11px] font-bold text-white hover:bg-rose-400 cursor-pointer"
                 >
-                  Submit Report
+                  {t('social.submitReportBtn')}
                 </button>
               </div>
             )}
@@ -492,11 +505,14 @@ function ProfileDetailsView({
         <div className="mt-4 pt-3 border-t border-white/10">
           <div className="flex items-center justify-between text-xs mb-1.5">
             <span className="font-extrabold text-white">
-              Level {levelProgress.level}
+              {t('common.level')} {levelProgress.level}
             </span>
             <span className="font-mono tabular-nums text-[11px] text-slate-300">
-              {levelProgress.currentLevelXp} / {levelProgress.xpForNextLevel} XP (Total{' '}
-              {levelProgress.totalXp.toLocaleString()} XP)
+              {t('progression.totalXpSuffix', {
+                cur: formatNumber(levelProgress.currentLevelXp),
+                next: formatNumber(levelProgress.xpForNextLevel),
+                total: formatNumber(levelProgress.totalXp),
+              })}
             </span>
           </div>
           <div className="h-2 w-full overflow-hidden rounded-md bg-white/10">
@@ -512,7 +528,11 @@ function ProfileDetailsView({
       <RankProgressCard
         elo={profile.elo}
         peakElo={profile.peakElo}
-        seasonName={profile.seasonStanding?.seasonName}
+        seasonName={
+          profile.seasonStanding?.seasonName
+            ? localizeSeasonLabel(profile.seasonStanding.seasonName, language)
+            : undefined
+        }
         seasonElo={profile.seasonStanding?.seasonElo}
       />
 
@@ -520,29 +540,40 @@ function ProfileDetailsView({
         <div className="rounded-xl border border-amber-400/25 bg-amber-500/5 px-3.5 py-2.5">
           <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
             <div className="font-bold text-amber-300">
-              {profile.seasonStanding.seasonName}
+              {localizeSeasonLabel(profile.seasonStanding.seasonName, language)}
             </div>
             <div className="font-mono tabular-nums text-[11px] text-slate-300">
               {profile.seasonStanding.leaderboardRank
-                ? `Season Rank #${profile.seasonStanding.leaderboardRank}`
-                : 'Unplaced this season'}
+                ? t('progression.seasonRankHash', { rank: profile.seasonStanding.leaderboardRank })
+                : t('progression.unplacedSeason')}
               {' · '}
-              {profile.seasonStanding.wins}W–{profile.seasonStanding.losses}L
+              {t('menu.statsWinsLosses', {
+                wins: profile.seasonStanding.wins,
+                losses: profile.seasonStanding.losses,
+              })}
               {' · '}
-              Peak {profile.seasonStanding.peakSeasonElo} ELO
+              {t('progression.peakEloValue', {
+                elo: formatNumber(profile.seasonStanding.peakSeasonElo),
+              })}
             </div>
           </div>
           <div className="mt-1 flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-400">
             <span>
-              Highest Division:{' '}
+              {t('progression.highestDivisionLabel')}{' '}
               <span className="font-bold text-slate-200">
-                {getRankById(profile.seasonStanding.highestRankTier).name}
+                {localizeRankTierName(
+                  profile.seasonStanding.highestRankTier,
+                  language,
+                  getRankById(profile.seasonStanding.highestRankTier).name,
+                )}
               </span>
             </span>
             <span className="font-mono tabular-nums text-amber-200">
-              Season Tier Reward: +
-              {SEASON_CONFIG.rewardsByTier[profile.seasonStanding.highestRankTier].coins}{' '}
-              POOL COINS
+              {t('progression.seasonTierRewardValue', {
+                coins: formatNumber(
+                  SEASON_CONFIG.rewardsByTier[profile.seasonStanding.highestRankTier].coins,
+                ),
+              })}
             </span>
           </div>
         </div>
@@ -554,12 +585,9 @@ function ProfileDetailsView({
           className="rounded-xl border border-white/10 bg-black/25 px-4 py-6 text-center space-y-1.5"
         >
           <div className="text-xs font-extrabold text-slate-200">
-            Detailed Match Statistics Hidden
+            {t('progression.statsHiddenTitle')}
           </div>
-          <p className="text-[11px] text-slate-400">
-            This player has set their detailed career stats, equipped loadout, and recent match
-            history to private.
-          </p>
+          <p className="text-[11px] text-slate-400">{t('progression.statsHiddenDesc')}</p>
         </div>
       ) : (
         <>
@@ -567,13 +595,13 @@ function ProfileDetailsView({
           {(cueDef || ballDef || tableDef) && (
             <div className="rounded-xl border border-white/10 bg-black/25 p-3">
               <div className="text-[10px] font-bold uppercase tracking-wider text-amber-400 mb-2">
-                Equipped Loadout
+                {t('progression.equippedLoadoutTitle')}
               </div>
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
                 {[
-                  { label: 'Cue Stick', item: cueDef },
-                  { label: 'Ball Set', item: ballDef },
-                  { label: 'Table Cloth', item: tableDef },
+                  { label: t('progression.slotCueStick'), item: cueDef },
+                  { label: t('progression.slotBallSet'), item: ballDef },
+                  { label: t('progression.slotTableCloth'), item: tableDef },
                 ].map((slot) => (
                   <div
                     key={slot.label}
@@ -584,7 +612,9 @@ function ProfileDetailsView({
                         {slot.label}
                       </div>
                       <div className="truncate text-xs font-bold text-white">
-                        {slot.item?.name ?? 'Standard Issue'}
+                        {slot.item
+                          ? localizeCosmeticItem(slot.item, language).name
+                          : t('progression.standardIssue')}
                       </div>
                     </div>
                     {slot.item && (
@@ -602,18 +632,31 @@ function ProfileDetailsView({
           {/* Career Metrics Grid */}
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
             {[
-              { label: 'Total Matches', value: String(stats.totalMatches) },
-              { label: 'Wins / Losses', value: `${stats.wins}W – ${stats.losses}L` },
-              { label: 'Win Rate', value: `${stats.winRate.toFixed(1)}%` },
-              { label: 'Peak ELO', value: String(profile.peakElo) },
-              { label: 'Current Streak', value: `${stats.currentStreak}` },
-              { label: 'Best Streak', value: `${stats.bestStreak}` },
-              { label: 'Total Shots', value: `${stats.totalShots}` },
-              { label: 'Successful Shots', value: `${stats.successfulShots}` },
-              { label: 'Balls Pocketed', value: `${stats.ballsPocketed}` },
-              { label: 'Break Success', value: `${stats.breakSuccessRate.toFixed(1)}%` },
-              { label: '8-Ball Wins', value: `${stats.eightBallWins}` },
-              { label: 'Avg Match Time', value: formatDuration(stats.avgMatchDurationSec) },
+              { label: t('progression.metricTotalMatches'), value: formatNumber(stats.totalMatches) },
+              {
+                label: t('progression.metricWinsLosses'),
+                value: t('menu.statsWinsLosses', { wins: stats.wins, losses: stats.losses }),
+              },
+              { label: t('progression.statWinRate'), value: `${stats.winRate.toFixed(1)}%` },
+              { label: t('progression.metricPeakElo'), value: formatNumber(profile.peakElo) },
+              { label: t('progression.statStreak'), value: formatNumber(stats.currentStreak) },
+              { label: t('progression.statBestStreak'), value: formatNumber(stats.bestStreak) },
+              { label: t('progression.metricTotalShots'), value: formatNumber(stats.totalShots) },
+              {
+                label: t('progression.metricSuccessfulShots'),
+                value: formatNumber(stats.successfulShots),
+              },
+              { label: t('progression.statPocketed'), value: formatNumber(stats.ballsPocketed) },
+              {
+                label: t('progression.statBreakSuccess'),
+                value: `${stats.breakSuccessRate.toFixed(1)}%`,
+              },
+              { label: t('progression.metricEightBallWins'), value: formatNumber(stats.eightBallWins) },
+              {
+                label: t('progression.metricAvgMatchTime'),
+                value: formatLocalizedDuration(stats.avgMatchDurationSec),
+                ltr: true,
+              },
             ].map((metric) => (
               <div
                 key={metric.label}
@@ -622,7 +665,10 @@ function ProfileDetailsView({
                 <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
                   {metric.label}
                 </div>
-                <div className="mt-0.5 font-mono text-sm font-bold tabular-nums text-white">
+                <div
+                  dir={'ltr' in metric && metric.ltr ? 'ltr' : undefined}
+                  className="mt-0.5 font-mono text-sm font-bold tabular-nums text-white"
+                >
                   {metric.value}
                 </div>
               </div>
@@ -633,11 +679,11 @@ function ProfileDetailsView({
           <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
             {(
               [
-                { label: 'Ranked', data: stats.byMatchType.ranked ?? { matches: 0, wins: 0 } },
-                { label: 'Quick Match', data: stats.byMatchType.quick },
-                { label: 'Private Room', data: stats.byMatchType.private },
-                { label: 'Strict WPA', data: stats.byMatchType.wpa },
-                { label: 'Casual Rules', data: stats.byMatchType.casual },
+                { label: t('lobby.tabRanked'), data: stats.byMatchType.ranked ?? { matches: 0, wins: 0 } },
+                { label: t('lobby.tabQuick'), data: stats.byMatchType.quick },
+                { label: t('progression.modePrivateRoom'), data: stats.byMatchType.private },
+                { label: t('progression.modeStrictWpa'), data: stats.byMatchType.wpa },
+                { label: t('progression.modeCasualRules'), data: stats.byMatchType.casual },
               ] as const
             ).map((m) => (
               <div
@@ -648,7 +694,10 @@ function ProfileDetailsView({
                   {m.label}
                 </div>
                 <div className="mt-0.5 font-mono text-xs font-semibold tabular-nums text-slate-200">
-                  {m.data.wins}W / {m.data.matches}M
+                  {t('battlePass.pastWinsMatches', {
+                    wins: m.data.wins,
+                    matches: m.data.matches,
+                  })}
                 </div>
               </div>
             ))}
@@ -658,13 +707,17 @@ function ProfileDetailsView({
           {profile.recentMatches && profile.recentMatches.length > 0 && (
             <div className="rounded-xl border border-white/10 bg-black/25 p-3">
               <div className="text-[11px] font-bold uppercase tracking-wider text-amber-400 mb-2">
-                Recent Match History ({profile.recentMatches.length})
+                {t('progression.recentMatchHistoryCount', { count: profile.recentMatches.length })}
               </div>
               <div className="space-y-1.5">
                 {profile.recentMatches.map((m) => {
                   const won = m.winnerId === profile.playerId;
                   const isP1 = m.player1Id === profile.playerId;
-                  const opponentName = isP1 ? m.player2Name : m.player1Name;
+                  const opponentName = localizePlayerName(
+                    isP1 ? m.player2Name : m.player1Name,
+                    null,
+                    language,
+                  );
                   const eloDelta = isP1 ? m.p1EloDelta : m.p2EloDelta;
                   return (
                     <div
@@ -679,22 +732,26 @@ function ProfileDetailsView({
                               : 'bg-rose-500/20 text-rose-300'
                           }`}
                         >
-                          {won ? 'WIN' : 'LOSS'}
+                          {won ? t('progression.winBadge') : t('progression.lossBadge')}
                         </span>
                         <span className="truncate font-semibold text-white">
-                          vs {opponentName}
+                          {t('progression.vsOpponent', { name: opponentName })}
                         </span>
                         <span className="text-[10px] text-slate-400">
-                          {formatMatchTypeLabel(m.matchType)} · {m.totalShots} shots
+                          {localizeOnlineMatchType(m.matchType, language)} ·{' '}
+                          {t('common.shotsCount', { count: m.totalShots })}
                         </span>
                       </div>
                       <div className="flex items-center gap-2 font-mono text-[10px] tabular-nums text-slate-400">
                         {typeof eloDelta === 'number' && eloDelta !== 0 && (
-                          <span className={eloDelta > 0 ? 'text-emerald-300' : 'text-rose-300'}>
-                            {eloDelta > 0 ? `+${eloDelta}` : eloDelta} ELO
+                          <span
+                            dir="ltr"
+                            className={eloDelta > 0 ? 'text-emerald-300' : 'text-rose-300'}
+                          >
+                            {eloDelta > 0 ? `+${eloDelta}` : eloDelta} {t('common.elo')}
                           </span>
                         )}
-                        <span>{formatShortDate(m.endedAtMs)}</span>
+                        <span>{formatDate(m.endedAtMs)}</span>
                       </div>
                     </div>
                   );
@@ -707,29 +764,35 @@ function ProfileDetailsView({
           <div className="rounded-xl border border-white/10 bg-black/25 p-3">
             <div className="flex items-center justify-between mb-2">
               <span className="text-[11px] font-bold uppercase tracking-wider text-amber-400">
-                Achievements & Trophies ({profile.achievements.length} / {ACHIEVEMENTS_CATALOG.length})
+                {t('progression.achievementsCountTitle', {
+                  unlocked: profile.achievements.length,
+                  total: ACHIEVEMENTS_CATALOG.length,
+                })}
               </span>
             </div>
             {profile.achievements.length === 0 ? (
               <div className="py-2 text-xs text-slate-400">
-                No competitive achievements unlocked yet.
+                {t('progression.noAchievementsYet')}
               </div>
             ) : (
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                {profile.achievements.map((ach) => (
-                  <div
-                    key={ach.id}
-                    className="flex items-center gap-2.5 rounded-lg border border-amber-400/25 bg-amber-500/8 px-2.5 py-2"
-                  >
-                    <div className="shrink-0">{renderAchievementIcon(ach.icon, true)}</div>
-                    <div className="min-w-0">
-                      <div className="truncate text-xs font-bold text-white">{ach.name}</div>
-                      <div className="text-[10px] text-slate-400">
-                        Unlocked {formatShortDate(ach.unlockedAtMs)}
+                {profile.achievements.map((ach) => {
+                  const locAch = localizeAchievement(ach.id, ach.name, ach.description, language);
+                  return (
+                    <div
+                      key={ach.id}
+                      className="flex items-center gap-2.5 rounded-lg border border-amber-400/25 bg-amber-500/8 px-2.5 py-2"
+                    >
+                      <div className="shrink-0">{renderAchievementIcon(ach.icon, true)}</div>
+                      <div className="min-w-0">
+                        <div className="truncate text-xs font-bold text-white">{locAch.name}</div>
+                        <div className="text-[10px] text-slate-400">
+                          {t('progression.unlockedOnDate', { date: formatDate(ach.unlockedAtMs) })}
+                        </div>
                       </div>
                     </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
           </div>
@@ -740,6 +803,7 @@ function ProfileDetailsView({
 }
 
 export function ProgressionModal() {
+  const { t, language, isRtl, formatNumber, formatDate } = useTranslation();
   const progressionModalOpen = useGameStore((s) => s.progressionModalOpen);
   const closeProgressionModal = useGameStore((s) => s.closeProgressionModal);
   const progressionTab = useGameStore((s) => s.progressionTab);
@@ -818,13 +882,14 @@ export function ProgressionModal() {
       : await progressionClient.ensurePlayerSession();
     setSessionLoading(false);
     if (!prof) {
+      const rawErr = progressionClient.getLastSessionError();
       setSessionError(
-        progressionClient.getLastSessionError() ?? 'Unable to reach competitive profile service.',
+        rawErr ? localizeServerError(rawErr, language) : tLang(language, 'errors.connectionFailed'),
       );
     }
     void progressionClient.fetchRankedSeasons();
     void progressionClient.fetchModerationStatus();
-  }, [ownProfile]);
+  }, [ownProfile, language]);
 
   useEffect(() => {
     if (!progressionModalOpen) return;
@@ -945,7 +1010,7 @@ export function ProgressionModal() {
 
   const handleSaveProfile = async () => {
     soundEngine.playUiClick();
-    const cleanName = displayNameInput.trim().slice(0, 16) || 'Player';
+    const cleanName = displayNameInput.trim().slice(0, 16) || t('common.player1');
     setSavingProfile(true);
     setProfileFeedback(null);
     multiplayerManager.updateProfile(cleanName, selectedAvatar, { syncProgression: false });
@@ -953,9 +1018,12 @@ export function ProgressionModal() {
     setSavingProfile(false);
     if (res.ok) {
       setSessionError(null);
-      setProfileFeedback({ type: 'ok', text: 'Profile updated.' });
+      setProfileFeedback({ type: 'ok', text: t('progression.profileUpdatedNotice') });
     } else {
-      setProfileFeedback({ type: 'err', text: res.error ?? 'Unable to save profile.' });
+      setProfileFeedback({
+        type: 'err',
+        text: localizeServerError(res.error, language) || t('progression.profileSaveFailedErr'),
+      });
     }
   };
 
@@ -987,13 +1055,18 @@ export function ProgressionModal() {
       if (res.ok) {
         setAuthMessage({
           type: 'ok',
-          text: `Account @${res.data?.username} secured and linked.`,
+          text: t('progression.accountSecuredNotice', {
+            username: res.data?.username ?? authUsername,
+          }),
         });
         setAuthMode('none');
         setAuthPassword('');
         multiplayerManager.reauthenticateSocketIdentity();
       } else {
-        setAuthMessage({ type: 'err', text: res.error ?? 'Registration failed.' });
+        setAuthMessage({
+          type: 'err',
+          text: localizeServerError(res.error, language) || t('progression.registrationFailedErr'),
+        });
       }
     } else if (authMode === 'login') {
       const res = await progressionClient.loginAccount({
@@ -1004,13 +1077,19 @@ export function ProgressionModal() {
       if (res.ok) {
         setAuthMessage({
           type: 'ok',
-          text: `Signed in as ${res.data?.displayName} (@${res.data?.username}).`,
+          text: t('progression.signedInNotice', {
+            displayName: res.data?.displayName ?? '',
+            username: res.data?.username ?? authUsername,
+          }),
         });
         setAuthMode('none');
         setAuthPassword('');
         multiplayerManager.reauthenticateSocketIdentity();
       } else {
-        setAuthMessage({ type: 'err', text: res.error ?? 'Sign in failed.' });
+        setAuthMessage({
+          type: 'err',
+          text: localizeServerError(res.error, language) || t('progression.signInFailedErr'),
+        });
       }
     }
   };
@@ -1020,13 +1099,16 @@ export function ProgressionModal() {
     setAuthBusy(true);
     setAuthMessage(null);
     const prof = await progressionClient.ensurePlayerSession({
-      displayName: 'Player',
+      displayName: t('common.player1'),
       avatarId: 'cue_gold',
       forceNewGuest: true,
     });
     setAuthBusy(false);
     if (prof) {
-      setAuthMessage({ type: 'ok', text: `Switched to fresh guest identity (${prof.playerId}).` });
+      setAuthMessage({
+        type: 'ok',
+        text: t('progression.switchedGuestNotice', { playerId: prof.playerId }),
+      });
       multiplayerManager.reauthenticateSocketIdentity();
     }
   };
@@ -1035,11 +1117,36 @@ export function ProgressionModal() {
     (ownProfile?.achievements ?? []).map((a) => [a.id, a.unlockedAtMs]),
   );
 
+  const tabDefinitions: Array<{ id: ProgressionTab; label: string; icon: typeof User }> = [
+    { id: 'profile', label: t('progression.tabProfile'), icon: User },
+    { id: 'leaderboard', label: t('progression.tabLeaderboard'), icon: Trophy },
+    { id: 'achievements', label: t('progression.tabAchievements'), icon: Award },
+    { id: 'history', label: t('progression.tabHistory'), icon: History },
+    { id: 'fairplay', label: t('progression.tabFairPlay'), icon: Scale },
+  ];
+
+  const activeTabLabel =
+    tabDefinitions.find((td) => td.id === progressionTab)?.label ?? t('progression.tabProfile');
+
+  const localizeAchCategory = (cat: 'victories' | 'skill' | 'streaks' | 'competitive') => {
+    switch (cat) {
+      case 'victories':
+        return t('progression.victoriesTab');
+      case 'streaks':
+        return t('progression.statStreak');
+      case 'competitive':
+        return t('menu.competeBadge');
+      case 'skill':
+      default:
+        return language === 'ar' ? 'المهارة' : 'Skill';
+    }
+  };
+
   return (
     <div
       role="dialog"
       aria-modal="true"
-      aria-label="Competitive Profile & Leaderboard"
+      aria-label={t('progression.dialogAria')}
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-3 sm:p-4"
     >
       <div className="w-full max-w-3xl max-h-[92dvh] modal-scroll-y rounded-2xl border border-white/15 bg-[#0c1219] p-4 sm:p-6 text-slate-100 shadow-2xl">
@@ -1051,11 +1158,9 @@ export function ProgressionModal() {
             </div>
             <div>
               <h2 className="text-base sm:text-lg font-extrabold tracking-tight text-white">
-                {inspectedPlayerId ? 'Competitor Public Profile' : 'Competitive Career & Rankings'}
+                {inspectedPlayerId ? t('progression.inspectedHeaderTitle') : t('progression.title')}
               </h2>
-              <p className="text-[11px] text-slate-400">
-                Authoritative online ELO, XP levels, achievements & match ledger
-              </p>
+              <p className="text-[11px] text-slate-400">{t('progression.subtitle')}</p>
             </div>
           </div>
 
@@ -1065,7 +1170,7 @@ export function ProgressionModal() {
               soundEngine.playUiClick();
               closeProgressionModal();
             }}
-            aria-label="Close competitive hub"
+            aria-label={t('progression.closeAria')}
             className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-white/10 bg-white/5 text-slate-300 hover:bg-white/12 hover:text-white cursor-pointer"
           >
             <X className="h-4 w-4" />
@@ -1083,21 +1188,13 @@ export function ProgressionModal() {
               }}
               className="inline-flex items-center gap-1.5 rounded-lg border border-white/12 bg-white/5 px-3 py-1.5 text-xs font-bold text-slate-200 hover:bg-white/10 cursor-pointer whitespace-nowrap"
             >
-              <ChevronLeft className="h-4 w-4" />
-              Back to {progressionTab.charAt(0).toUpperCase() + progressionTab.slice(1)}
+              {isRtl ? <ChevronRight className="h-4 w-4" /> : <ChevronLeft className="h-4 w-4" />}
+              {t('progression.backToTabBtn', { tab: activeTabLabel })}
             </button>
           </div>
         ) : (
           <div className="mt-3.5 grid grid-cols-5 gap-1 rounded-xl border border-white/10 bg-black/35 p-1">
-            {(
-              [
-                { id: 'profile', label: 'My Profile', icon: User },
-                { id: 'leaderboard', label: 'Leaderboard', icon: Trophy },
-                { id: 'achievements', label: 'Achievements', icon: Award },
-                { id: 'history', label: 'History', icon: History },
-                { id: 'fairplay', label: 'Fair Play', icon: Scale },
-              ] as Array<{ id: ProgressionTab; label: string; icon: typeof User }>
-            ).map((tab) => {
+            {tabDefinitions.map((tab) => {
               const Icon = tab.icon;
               const active = progressionTab === tab.id;
               return (
@@ -1129,7 +1226,7 @@ export function ProgressionModal() {
           {inspectedPlayerId ? (
             inspectedLoading ? (
               <div className="py-12 text-center text-xs text-slate-400">
-                Loading player profile...
+                {t('progression.loadingPlayerProfile')}
               </div>
             ) : inspectedProfile ? (
               <ProfileDetailsView
@@ -1138,7 +1235,7 @@ export function ProgressionModal() {
               />
             ) : (
               <div className="rounded-xl border border-white/10 bg-black/25 py-10 text-center text-xs text-slate-400">
-                Competitor profile unavailable or not yet ranked.
+                {t('progression.profileUnavailable')}
               </div>
             )
           ) : progressionTab === 'profile' ? (
@@ -1148,7 +1245,7 @@ export function ProgressionModal() {
                 <div className="flex flex-wrap items-end justify-between gap-3">
                   <div className="flex-1 min-w-[180px]">
                     <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1">
-                      Display Name
+                      {t('progression.displayNameLabel')}
                     </label>
                     <input
                       type="text"
@@ -1156,13 +1253,13 @@ export function ProgressionModal() {
                       value={displayNameInput}
                       onChange={(e) => setDisplayNameInput(e.target.value)}
                       className="w-full rounded-lg border border-white/12 bg-[#0b1017] px-2.5 py-1.5 text-xs font-semibold text-white focus:border-amber-400 focus:outline-none"
-                      placeholder="Player Name"
+                      placeholder={t('lobby.playerNamePlaceholder')}
                     />
                   </div>
 
                   <div>
                     <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1">
-                      Avatar
+                      {t('lobby.avatarLabel')}
                     </div>
                     <div className="flex flex-wrap items-center gap-1">
                       {ONLINE_AVATARS.map((av) => {
@@ -1171,7 +1268,7 @@ export function ProgressionModal() {
                           <button
                             key={av.id}
                             type="button"
-                            title={av.label}
+                            title={localizeAvatarLabel(av.id, av.label, language)}
                             onClick={() => {
                               soundEngine.playUiClick();
                               setSelectedAvatar(av.id);
@@ -1190,10 +1287,15 @@ export function ProgressionModal() {
                       {!ONLINE_AVATARS.some((a) => a.id === selectedAvatar) &&
                         (() => {
                           const customAv = getAvatarVisualMeta(selectedAvatar);
+                          const customAvLabel = localizeAvatarLabel(
+                            selectedAvatar,
+                            customAv.label,
+                            language,
+                          );
                           return (
                             <button
                               type="button"
-                              title={`${customAv.label} (Store)`}
+                              title={t('lobby.storeItemTitle', { label: customAvLabel })}
                               onClick={() => {
                                 soundEngine.playUiClick();
                                 setSelectedAvatar(selectedAvatar);
@@ -1215,7 +1317,7 @@ export function ProgressionModal() {
                     className="inline-flex items-center gap-1.5 rounded-lg bg-amber-500 px-3.5 py-1.5 text-xs font-extrabold text-slate-950 hover:bg-amber-400 disabled:opacity-50 cursor-pointer whitespace-nowrap"
                   >
                     <UserCheck className="h-3.5 w-3.5" />
-                    {savingProfile ? 'Saving...' : 'Save Identity'}
+                    {savingProfile ? t('common.saving') : t('progression.saveIdentityBtn')}
                   </button>
                 </div>
 
@@ -1243,12 +1345,12 @@ export function ProgressionModal() {
                           {copiedId ? (
                             <>
                               <Check className="h-3 w-3 text-emerald-400" />
-                              Copied
+                              {t('common.copied')}
                             </>
                           ) : (
                             <>
                               <Copy className="h-3 w-3 text-amber-400" />
-                              Copy ID
+                              {t('progression.copyIdBtn')}
                             </>
                           )}
                         </button>
@@ -1264,14 +1366,14 @@ export function ProgressionModal() {
                           }}
                           className="rounded-md border border-rose-400/40 bg-rose-500/15 px-2 py-0.5 text-[10px] font-bold text-rose-200 hover:bg-rose-500/25 cursor-pointer"
                         >
-                          Retry
+                          {t('common.retry')}
                         </button>
                       </div>
                     ) : (
                       <span>
                         {sessionLoading
-                          ? 'Connecting to competitive account service...'
-                          : 'Competitive session not initialized.'}
+                          ? t('progression.connectingService')
+                          : t('progression.sessionNotInit')}
                       </span>
                     )}
                   </div>
@@ -1288,7 +1390,7 @@ export function ProgressionModal() {
                         className="inline-flex items-center gap-1 rounded-lg border border-amber-400/40 bg-amber-500/12 px-2.5 py-1 text-[11px] font-bold text-amber-200 hover:bg-amber-500/20 cursor-pointer whitespace-nowrap"
                       >
                         <UserPlus className="h-3 w-3" />
-                        Claim Username
+                        {t('progression.claimUsernameBtn')}
                       </button>
                     )}
                     <button
@@ -1301,7 +1403,7 @@ export function ProgressionModal() {
                       className="inline-flex items-center gap-1 rounded-lg border border-white/12 bg-white/5 px-2.5 py-1 text-[11px] font-bold text-slate-200 hover:bg-white/10 cursor-pointer whitespace-nowrap"
                     >
                       <LogIn className="h-3 w-3" />
-                      Sign In
+                      {t('progression.authToggleSignIn')}
                     </button>
                     {ownProfile && !ownProfile.isGuest && (
                       <button
@@ -1311,7 +1413,7 @@ export function ProgressionModal() {
                         className="inline-flex items-center gap-1 rounded-lg border border-white/12 bg-white/5 px-2.5 py-1 text-[11px] font-bold text-slate-300 hover:bg-white/10 cursor-pointer whitespace-nowrap"
                       >
                         <LogOut className="h-3 w-3" />
-                        New Guest
+                        {t('progression.newGuestBtn')}
                       </button>
                     )}
                   </div>
@@ -1337,8 +1439,8 @@ export function ProgressionModal() {
                     <div className="flex items-center justify-between">
                       <span className="text-xs font-extrabold text-white">
                         {authMode === 'register'
-                          ? 'Register Username & Password (Keeps Current Stats)'
-                          : 'Sign In to Registered Account'}
+                          ? t('progression.registerUpgradeHeading')
+                          : t('progression.signInHeading')}
                       </span>
                       <button
                         type="button"
@@ -1356,7 +1458,7 @@ export function ProgressionModal() {
                         maxLength={18}
                         value={authUsername}
                         onChange={(e) => setAuthUsername(e.target.value)}
-                        placeholder="Username (3-18 chars, A-Z 0-9 _)"
+                        placeholder={t('progression.usernameRulesPlaceholder')}
                         className="rounded-lg border border-white/12 bg-black/40 px-2.5 py-1.5 text-xs text-white focus:border-amber-400 focus:outline-none"
                       />
                       <input
@@ -1366,7 +1468,7 @@ export function ProgressionModal() {
                         maxLength={72}
                         value={authPassword}
                         onChange={(e) => setAuthPassword(e.target.value)}
-                        placeholder="Password (min 6 chars)"
+                        placeholder={t('progression.passwordPlaceholder')}
                         className="rounded-lg border border-white/12 bg-black/40 px-2.5 py-1.5 text-xs text-white focus:border-amber-400 focus:outline-none"
                       />
                     </div>
@@ -1378,10 +1480,10 @@ export function ProgressionModal() {
                       >
                         <KeyRound className="h-3.5 w-3.5" />
                         {authBusy
-                          ? 'Processing...'
+                          ? t('common.processing')
                           : authMode === 'register'
-                            ? 'Upgrade Account'
-                            : 'Sign In'}
+                            ? t('progression.upgradeAccountBtn')
+                            : t('progression.signInSubmitBtn')}
                       </button>
                     </div>
                   </form>
@@ -1393,10 +1495,10 @@ export function ProgressionModal() {
                   <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-amber-400/30 bg-amber-500/8 px-3.5 py-2.5">
                     <div className="text-xs">
                       <span className="font-extrabold text-amber-200">
-                        Global Tournaments & Trophy Case
+                        {t('progression.tournamentPromoTitle')}
                       </span>
-                      <span className="ml-2 text-slate-300">
-                        View your championship wins, brackets & seasonal standings
+                      <span className="ms-2 text-slate-300">
+                        {t('progression.tournamentPromoDesc')}
                       </span>
                     </div>
                     <button
@@ -1409,7 +1511,7 @@ export function ProgressionModal() {
                       className="inline-flex items-center gap-1.5 rounded-lg bg-amber-500 px-3 py-1 text-[11px] font-extrabold text-slate-950 hover:bg-amber-400 cursor-pointer whitespace-nowrap"
                     >
                       <Crown className="h-3.5 w-3.5" />
-                      Tournament Career
+                      {t('progression.tournamentCareerBtn')}
                     </button>
                   </div>
                   <ProfileDetailsView profile={ownProfile} isOwn />
@@ -1425,12 +1527,12 @@ export function ProgressionModal() {
                     }}
                     className="inline-flex items-center rounded-lg border border-rose-400/40 bg-rose-500/20 px-3 py-1 text-[11px] font-bold text-rose-100 hover:bg-rose-500/30 cursor-pointer"
                   >
-                    Retry Connection
+                    {t('progression.retryConnectionBtn')}
                   </button>
                 </div>
               ) : (
                 <div className="rounded-xl border border-white/10 bg-black/25 py-8 text-center text-xs text-slate-400">
-                  Loading player career telemetry...
+                  {t('progression.loadingTelemetry')}
                 </div>
               )}
             </div>
@@ -1441,10 +1543,10 @@ export function ProgressionModal() {
                 <div className="flex items-center gap-1 rounded-xl border border-white/10 bg-black/35 p-1">
                   {(
                     [
-                      { id: 'global', label: 'Global' },
-                      { id: 'season', label: 'Season' },
-                      { id: 'weekly', label: 'Weekly' },
-                      { id: 'monthly', label: 'Monthly' },
+                      { id: 'global', label: t('progression.leaderboardScopeGlobal') },
+                      { id: 'season', label: t('progression.leaderboardScopeSeason') },
+                      { id: 'weekly', label: t('progression.leaderboardScopeWeekly') },
+                      { id: 'monthly', label: t('progression.leaderboardScopeMonthly') },
                     ] as Array<{ id: LeaderboardScope; label: string }>
                   ).map((s) => (
                     <button
@@ -1478,14 +1580,18 @@ export function ProgressionModal() {
                   >
                     {seasonsList.map((sec) => (
                       <option key={sec.seasonId} value={sec.seasonId}>
-                        {sec.name} ({sec.status === 'active' ? 'Active' : 'Completed'})
+                        {localizeSeasonLabel(sec.name, language, sec.seasonNumber)} (
+                        {sec.status === 'active'
+                          ? t('progression.seasonActiveBadge')
+                          : t('progression.seasonCompletedBadge')}
+                        )
                       </option>
                     ))}
                   </select>
                 )}
 
                 <div className="relative flex-1 min-w-[160px] max-w-xs">
-                  <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" />
+                  <Search className="pointer-events-none absolute start-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" />
                   <input
                     type="text"
                     value={lbQuery}
@@ -1493,19 +1599,27 @@ export function ProgressionModal() {
                       setLbQuery(e.target.value);
                       setLbPage(1);
                     }}
-                    placeholder="Search player or @username..."
-                    className="w-full rounded-lg border border-white/12 bg-[#0b1017] pl-8 pr-3 py-1.5 text-xs text-white focus:border-amber-400 focus:outline-none"
+                    placeholder={t('progression.searchPlayerPlaceholder')}
+                    className="w-full rounded-lg border border-white/12 bg-[#0b1017] ps-8 pe-3 py-1.5 text-xs text-white focus:border-amber-400 focus:outline-none"
                   />
                 </div>
               </div>
 
               {lbScope === 'season' && lbData?.season && (
                 <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-white/10 bg-black/25 px-3.5 py-2 text-[11px]">
-                  <span className="font-bold text-amber-300">{lbData.season.name}</span>
+                  <span className="font-bold text-amber-300">
+                    {localizeSeasonLabel(
+                      lbData.season.name,
+                      language,
+                      lbData.season.seasonNumber,
+                    )}
+                  </span>
                   <span className="font-mono tabular-nums text-slate-400">
-                    {formatShortDate(lbData.season.startsAtMs)} –{' '}
-                    {formatShortDate(lbData.season.endsAtMs)} ·{' '}
-                    {lbData.season.status === 'active' ? 'Active Season' : 'Completed'}
+                    {formatDate(lbData.season.startsAtMs)} –{' '}
+                    {formatDate(lbData.season.endsAtMs)} ·{' '}
+                    {lbData.season.status === 'active'
+                      ? t('progression.seasonActiveBadge')
+                      : t('progression.seasonCompletedBadge')}
                   </span>
                 </div>
               )}
@@ -1514,7 +1628,7 @@ export function ProgressionModal() {
               {lbData?.currentPlayer && (
                 <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-amber-400/35 bg-amber-500/10 px-3.5 py-2 text-xs">
                   <div className="flex items-center gap-2">
-                    <span className="font-mono font-black text-amber-300">
+                    <span dir="ltr" className="font-mono font-black text-amber-300">
                       #{lbData.currentPlayer.rank}
                     </span>
                     <RankBadge
@@ -1523,16 +1637,21 @@ export function ProgressionModal() {
                       size="xs"
                     />
                     <span className="font-bold text-white">
-                      {lbData.currentPlayer.displayName}
+                      {localizePlayerName(lbData.currentPlayer.displayName, null, language)}
                     </span>
                   </div>
                   <div className="flex items-center gap-3 font-mono tabular-nums text-[11px] text-slate-200">
-                    <span>Lv {lbData.currentPlayer.level}</span>
                     <span>
-                      {lbData.currentPlayer.wins}W–{lbData.currentPlayer.losses}L
+                      {t('common.levelShort')} {lbData.currentPlayer.level}
+                    </span>
+                    <span>
+                      {t('menu.statsWinsLosses', {
+                        wins: lbData.currentPlayer.wins,
+                        losses: lbData.currentPlayer.losses,
+                      })}
                     </span>
                     <span className="font-extrabold text-amber-300">
-                      {lbData.currentPlayer.elo} ELO
+                      {formatNumber(lbData.currentPlayer.elo)} {t('common.elo')}
                     </span>
                   </div>
                 </div>
@@ -1540,17 +1659,19 @@ export function ProgressionModal() {
 
               {/* Leaderboard Table */}
               <div className="overflow-x-auto rounded-xl border border-white/10 bg-black/25">
-                <table className="w-full text-left text-xs">
+                <table className="w-full text-start text-xs">
                   <thead>
                     <tr className="border-b border-white/10 text-[10px] font-bold uppercase tracking-wider text-slate-400">
-                      <th className="px-3 py-2">Rank</th>
-                      <th className="px-3 py-2">Player</th>
-                      <th className="px-3 py-2">Division</th>
-                      <th className="px-3 py-2 text-right">Lv</th>
-                      <th className="px-3 py-2 text-right">W–L</th>
-                      <th className="px-3 py-2 text-right">Win %</th>
-                      <th className="px-3 py-2 text-right">
-                        {lbScope === 'global' || lbScope === 'season' ? 'ELO' : 'Period Δ / ELO'}
+                      <th className="px-3 py-2 text-start">{t('progression.colRank')}</th>
+                      <th className="px-3 py-2 text-start">{t('progression.colPlayer')}</th>
+                      <th className="px-3 py-2 text-start">{t('progression.colDivision')}</th>
+                      <th className="px-3 py-2 text-end">{t('progression.colLv')}</th>
+                      <th className="px-3 py-2 text-end">{t('progression.colWl')}</th>
+                      <th className="px-3 py-2 text-end">{t('progression.colWinRate')}</th>
+                      <th className="px-3 py-2 text-end">
+                        {lbScope === 'global' || lbScope === 'season'
+                          ? t('common.elo')
+                          : t('progression.colPeriodDeltaElo')}
                       </th>
                     </tr>
                   </thead>
@@ -1558,13 +1679,13 @@ export function ProgressionModal() {
                     {lbLoading ? (
                       <tr>
                         <td colSpan={7} className="py-8 text-center text-slate-400">
-                          Loading rankings...
+                          {t('progression.loadingRankings')}
                         </td>
                       </tr>
                     ) : !lbData || lbData.items.length === 0 ? (
                       <tr>
                         <td colSpan={7} className="py-8 text-center text-slate-400">
-                          No ranked competitors found for this filter.
+                          {t('progression.noRankedCompetitors')}
                         </td>
                       </tr>
                     ) : (
@@ -1580,7 +1701,7 @@ export function ProgressionModal() {
                                 : 'hover:bg-white/[0.03] transition-colors'
                             }
                           >
-                            <td className="px-3 py-2 font-mono font-bold tabular-nums text-slate-200">
+                            <td dir="ltr" className="px-3 py-2 font-mono font-bold tabular-nums text-slate-200">
                               #{row.rank}
                             </td>
                             <td className="px-3 py-2">
@@ -1590,7 +1711,7 @@ export function ProgressionModal() {
                                   soundEngine.playUiClick();
                                   setInspectedPlayerId(row.playerId);
                                 }}
-                                className="flex items-center gap-2 text-left hover:underline cursor-pointer"
+                                className="flex items-center gap-2 text-start hover:underline cursor-pointer"
                               >
                                 <span
                                   className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md border border-white/15 text-[11px] font-bold"
@@ -1598,9 +1719,11 @@ export function ProgressionModal() {
                                 >
                                   {av.glyph}
                                 </span>
-                                <span className="font-bold text-white">{row.displayName}</span>
+                                <span className="font-bold text-white">
+                                  {localizePlayerName(row.displayName, null, language)}
+                                </span>
                                 {row.username && (
-                                  <span className="text-[10px] text-slate-400">
+                                  <span dir="ltr" className="text-[10px] text-slate-400">
                                     @{row.username}
                                   </span>
                                 )}
@@ -1609,18 +1732,18 @@ export function ProgressionModal() {
                             <td className="px-3 py-2">
                               <RankBadge elo={row.elo} tier={row.rankTier} size="xs" />
                             </td>
-                            <td className="px-3 py-2 text-right font-mono tabular-nums text-slate-300">
+                            <td className="px-3 py-2 text-end font-mono tabular-nums text-slate-300">
                               {row.level}
                             </td>
-                            <td className="px-3 py-2 text-right font-mono tabular-nums text-slate-300">
+                            <td dir="ltr" className="px-3 py-2 text-end font-mono tabular-nums text-slate-300">
                               {row.wins}–{row.losses}
                             </td>
-                            <td className="px-3 py-2 text-right font-mono tabular-nums text-slate-300">
+                            <td dir="ltr" className="px-3 py-2 text-end font-mono tabular-nums text-slate-300">
                               {row.winRate.toFixed(1)}%
                             </td>
-                            <td className="px-3 py-2 text-right font-mono font-bold tabular-nums">
+                            <td dir="ltr" className="px-3 py-2 text-end font-mono font-bold tabular-nums">
                               {lbScope === 'global' || lbScope === 'season' ? (
-                                <span className="text-amber-300">{row.elo}</span>
+                                <span className="text-amber-300">{formatNumber(row.elo)}</span>
                               ) : (
                                 <span className="inline-flex items-center gap-1.5">
                                   <span
@@ -1630,7 +1753,7 @@ export function ProgressionModal() {
                                   >
                                     {row.periodDelta >= 0 ? `+${row.periodDelta}` : row.periodDelta}
                                   </span>
-                                  <span className="text-slate-400">/ {row.elo}</span>
+                                  <span className="text-slate-400">/ {formatNumber(row.elo)}</span>
                                 </span>
                               )}
                             </td>
@@ -1646,7 +1769,8 @@ export function ProgressionModal() {
               {lbData && lbData.totalPages > 1 && (
                 <div className="flex items-center justify-between text-xs text-slate-400">
                   <span>
-                    Page {lbData.page} of {lbData.totalPages} ({lbData.total} players)
+                    {t('common.pageOf', { page: lbData.page, total: lbData.totalPages })}{' '}
+                    {t('progression.playersCountParen', { count: formatNumber(lbData.total) })}
                   </span>
                   <div className="flex items-center gap-1.5">
                     <button
@@ -1655,8 +1779,12 @@ export function ProgressionModal() {
                       onClick={() => setLbPage((p) => Math.max(1, p - 1))}
                       className="inline-flex items-center gap-1 rounded-lg border border-white/12 bg-white/5 px-2.5 py-1 text-slate-200 disabled:opacity-40 cursor-pointer"
                     >
-                      <ChevronLeft className="h-3.5 w-3.5" />
-                      Prev
+                      {isRtl ? (
+                        <ChevronRight className="h-3.5 w-3.5" />
+                      ) : (
+                        <ChevronLeft className="h-3.5 w-3.5" />
+                      )}
+                      {t('common.prevPage')}
                     </button>
                     <button
                       type="button"
@@ -1664,8 +1792,12 @@ export function ProgressionModal() {
                       onClick={() => setLbPage((p) => p + 1)}
                       className="inline-flex items-center gap-1 rounded-lg border border-white/12 bg-white/5 px-2.5 py-1 text-slate-200 disabled:opacity-40 cursor-pointer"
                     >
-                      Next
-                      <ChevronRight className="h-3.5 w-3.5" />
+                      {t('common.nextPage')}
+                      {isRtl ? (
+                        <ChevronLeft className="h-3.5 w-3.5" />
+                      ) : (
+                        <ChevronRight className="h-3.5 w-3.5" />
+                      )}
                     </button>
                   </div>
                 </div>
@@ -1675,13 +1807,17 @@ export function ProgressionModal() {
             <div className="space-y-3">
               <div className="flex items-center justify-between rounded-xl border border-white/10 bg-black/25 px-3.5 py-2.5 text-xs">
                 <span className="font-bold text-white">
-                  Unlocked {ownProfile?.achievements.length ?? 0} / {ACHIEVEMENTS_CATALOG.length}{' '}
-                  Achievements
+                  {t('progression.unlockedAchievementsSummary', {
+                    unlocked: ownProfile?.achievements.length ?? 0,
+                    total: ACHIEVEMENTS_CATALOG.length,
+                  })}
                 </span>
                 <span className="font-mono text-amber-300">
-                  +
-                  {(ownProfile?.achievements ?? []).reduce((acc, a) => acc + a.rewardXp, 0)}{' '}
-                  Bonus XP Earned
+                  {t('progression.bonusXpEarned', {
+                    xp: formatNumber(
+                      (ownProfile?.achievements ?? []).reduce((acc, a) => acc + a.rewardXp, 0),
+                    ),
+                  })}
                 </span>
               </div>
 
@@ -1689,6 +1825,7 @@ export function ProgressionModal() {
                 {ACHIEVEMENTS_CATALOG.map((ach) => {
                   const unlockedTs = unlockedMap.get(ach.id);
                   const unlocked = unlockedTs !== undefined;
+                  const locAch = localizeAchievement(ach.id, ach.name, ach.description, language);
                   return (
                     <div
                       key={ach.id}
@@ -1710,9 +1847,12 @@ export function ProgressionModal() {
                             {renderAchievementIcon(ach.icon, unlocked)}
                           </div>
                           <div>
-                            <div className="text-xs font-extrabold text-white">{ach.name}</div>
+                            <div className="text-xs font-extrabold text-white">{locAch.name}</div>
                             <div className="text-[10px] uppercase tracking-wider text-slate-400">
-                              {ach.category} · +{ach.rewardXp} XP
+                              {t('progression.rewardXpSuffix', {
+                                category: localizeAchCategory(ach.category),
+                                xp: ach.rewardXp,
+                              })}
                             </div>
                           </div>
                         </div>
@@ -1723,15 +1863,17 @@ export function ProgressionModal() {
                               : 'border-white/10 bg-white/5 text-slate-400'
                           }`}
                         >
-                          {unlocked ? 'Unlocked' : 'Locked'}
+                          {unlocked
+                            ? t('progression.achievementUnlockedBadge')
+                            : t('progression.achievementLockedBadge')}
                         </span>
                       </div>
                       <p className="mt-2 text-[11px] text-slate-300 leading-relaxed">
-                        {ach.description}
+                        {locAch.description}
                       </p>
                       {unlocked && (
                         <div className="mt-1.5 text-[10px] text-amber-300/90">
-                          Awarded {formatShortDate(unlockedTs)}
+                          {t('progression.awardedOnDate', { date: formatDate(unlockedTs) })}
                         </div>
                       )}
                     </div>
@@ -1764,19 +1906,29 @@ export function ProgressionModal() {
                 soundEngine.playUiClick();
                 const full = await replayStorage.loadReplay(replayId);
                 if (!full) {
-                  setHistoryImportNotice({ type: 'err', text: 'Unable to load replay data for export.' });
+                  setHistoryImportNotice({
+                    type: 'err',
+                    text: t('progression.unableExportReplayErr'),
+                  });
                   return;
                 }
                 const json = replayStorage.exportReplayToJson(full);
-                downloadTextFile(`replay-${matchId}.json`, json);
-                setHistoryImportNotice({ type: 'ok', text: `Exported replay-${matchId}.json` });
+                const filename = `replay-${matchId}.json`;
+                downloadTextFile(filename, json);
+                setHistoryImportNotice({
+                  type: 'ok',
+                  text: t('progression.exportedReplayNotice', { filename }),
+                });
               };
 
               const handleDeleteSaved = async (replayId: string) => {
                 soundEngine.playUiClick();
                 await replayStorage.deleteReplay(replayId);
                 await refreshSavedReplays();
-                setHistoryImportNotice({ type: 'ok', text: 'Replay removed from local archive.' });
+                setHistoryImportNotice({
+                  type: 'ok',
+                  text: t('progression.deletedReplayNotice'),
+                });
               };
 
               const handleImportFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -1790,13 +1942,23 @@ export function ProgressionModal() {
                     await refreshSavedReplays();
                     setHistoryImportNotice({
                       type: 'ok',
-                      text: `Imported "${res.summary.player1Name} vs ${res.summary.player2Name}" (${res.summary.totalShots} shots).`,
+                      text: t('progression.importedReplayNotice', {
+                        p1: localizePlayerName(res.summary.player1Name, 'player1', language),
+                        p2: localizePlayerName(res.summary.player2Name, 'player2', language),
+                        shots: res.summary.totalShots,
+                      }),
                     });
                   } else {
-                    setHistoryImportNotice({ type: 'err', text: res.error });
+                    setHistoryImportNotice({
+                      type: 'err',
+                      text: localizeReplayError(res.error, language),
+                    });
                   }
                 } catch {
-                  setHistoryImportNotice({ type: 'err', text: 'Failed to read selected replay file.' });
+                  setHistoryImportNotice({
+                    type: 'err',
+                    text: t('progression.failedReadReplayErr'),
+                  });
                 }
               };
 
@@ -1807,10 +1969,10 @@ export function ProgressionModal() {
                     <div className="flex flex-wrap items-center gap-1 rounded-xl border border-white/10 bg-black/35 p-1">
                       {(
                         [
-                          { id: 'all', label: 'All Matches' },
-                          { id: 'ai', label: 'AI' },
-                          { id: 'online', label: 'Online' },
-                          { id: 'local', label: 'Local' },
+                          { id: 'all', label: t('progression.allMatchesTab') },
+                          { id: 'ai', label: t('progression.filterAi') },
+                          { id: 'online', label: t('progression.filterOnline') },
+                          { id: 'local', label: t('progression.filterLocal') },
                         ] as const
                       ).map((mode) => (
                         <button
@@ -1835,9 +1997,9 @@ export function ProgressionModal() {
                     <div className="flex items-center gap-1 rounded-xl border border-white/10 bg-black/35 p-1">
                       {(
                         [
-                          { id: 'all', label: 'All Results' },
-                          { id: 'won', label: 'Victories' },
-                          { id: 'lost', label: 'Defeats' },
+                          { id: 'all', label: t('progression.allResultsTab') },
+                          { id: 'won', label: t('progression.victoriesTab') },
+                          { id: 'lost', label: t('progression.defeatsTab') },
                         ] as const
                       ).map((res) => (
                         <button
@@ -1877,7 +2039,7 @@ export function ProgressionModal() {
                         className="inline-flex items-center gap-1.5 rounded-lg border border-amber-400/35 bg-amber-500/12 px-2.5 py-1.5 text-xs font-bold text-amber-200 hover:bg-amber-500/20 cursor-pointer whitespace-nowrap"
                       >
                         <Upload className="h-3.5 w-3.5 text-amber-400" />
-                        <span>Import Replay</span>
+                        <span>{t('progression.importReplayBtn')}</span>
                       </button>
                       <button
                         type="button"
@@ -1887,7 +2049,7 @@ export function ProgressionModal() {
                         }}
                         className="rounded-lg border border-white/12 bg-white/5 px-2.5 py-1.5 text-xs font-semibold text-slate-200 hover:bg-white/10 cursor-pointer whitespace-nowrap"
                       >
-                        Refresh
+                        {t('common.refresh')}
                       </button>
                     </div>
                   </div>
@@ -1896,13 +2058,17 @@ export function ProgressionModal() {
                   <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-white/10 bg-black/25 px-3 py-2 text-[11px]">
                     <div className="inline-flex items-center gap-2 text-slate-300">
                       <HardDrive className="h-3.5 w-3.5 text-amber-400 shrink-0" />
-                      <span className="font-semibold text-white">Local Replay Archive</span>
+                      <span className="font-semibold text-white">
+                        {t('progression.localReplayArchiveTitle')}
+                      </span>
                       <span className="font-mono tabular-nums text-slate-400">
-                        {replayStorageStats?.count ?? savedReplays.length}/
-                        {replayStorageStats?.maxCount ?? 24} matches
+                        {t('progression.matchesFraction', {
+                          count: replayStorageStats?.count ?? savedReplays.length,
+                          max: replayStorageStats?.maxCount ?? 24,
+                        })}
                       </span>
                     </div>
-                    <span className="font-mono tabular-nums text-slate-400">
+                    <span dir="ltr" className="font-mono tabular-nums text-slate-400">
                       {formatBytesCompact(replayStorageStats?.totalBytes ?? 0)} /{' '}
                       {formatBytesCompact(replayStorageStats?.maxBytes ?? 40 * 1024 * 1024)}
                     </span>
@@ -1922,12 +2088,12 @@ export function ProgressionModal() {
                   )}
 
                   {/* Unified Scrollable Archive + Online Server Ledger */}
-                  <div className="space-y-2.5 max-h-[380px] overflow-y-auto pr-0.5">
+                  <div className="space-y-2.5 max-h-[380px] overflow-y-auto pe-0.5">
                     {/* Saved Full-Match Replays */}
                     {filteredSaved.length > 0 && (
                       <div className="space-y-1.5">
                         <div className="text-[10px] font-bold uppercase tracking-wider text-amber-400">
-                          Saved Full-Match Replays ({filteredSaved.length})
+                          {t('progression.savedFullReplaysTitle', { count: filteredSaved.length })}
                         </div>
                         {filteredSaved.map((r) => {
                           const won = didPlayerWinSavedReplay(r, ownProfile, onlineProfile.displayName);
@@ -1940,15 +2106,26 @@ export function ProgressionModal() {
                               <div className="min-w-0 flex-1">
                                 <div className="flex flex-wrap items-center gap-1.5 font-bold text-white">
                                   <span>
-                                    {r.player1Name} <span className="text-slate-500">vs</span>{' '}
-                                    {r.player2Name}
+                                    {localizePlayerName(r.player1Name, 'player1', language)}{' '}
+                                    <span className="text-slate-500">{t('common.vs')}</span>{' '}
+                                    {localizePlayerName(r.player2Name, 'player2', language)}
                                   </span>
                                   <span className="rounded border border-white/15 bg-white/5 px-1.5 py-0.5 text-[10px] font-bold uppercase text-slate-300">
                                     {r.matchType === 'ai'
-                                      ? `AI · ${r.aiDifficulty ?? 'pro'}`
+                                      ? t('progression.aiDifficultyBadge', {
+                                          diff: localizeAiDifficulty(
+                                            r.aiDifficulty ?? 'pro',
+                                            language,
+                                          ).label,
+                                        })
                                       : r.matchType === 'online'
-                                        ? `Online · ${r.onlineSubType ?? 'quick'}`
-                                        : 'Local PvP'}
+                                        ? t('progression.onlineTypeBadge', {
+                                            type: localizeOnlineMatchType(
+                                              r.onlineSubType ?? 'quick',
+                                              language,
+                                            ),
+                                          })
+                                        : t('progression.localPvpBadge')}
                                   </span>
                                   {won !== null && (
                                     <span
@@ -1958,31 +2135,34 @@ export function ProgressionModal() {
                                           : 'border-rose-400/40 bg-rose-500/15 text-rose-300'
                                       }`}
                                     >
-                                      {won ? 'Victory' : 'Defeat'}
+                                      {won ? t('progression.filterWon') : t('progression.filterLost')}
                                     </span>
                                   )}
                                   {!r.authoritative && r.matchType === 'online' && (
                                     <span className="rounded border border-sky-400/35 bg-sky-500/12 px-1.5 py-0.5 text-[10px] font-semibold text-sky-200">
-                                      Imported
+                                      {t('progression.importedBadge')}
                                     </span>
                                   )}
                                 </div>
                                 <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-slate-400">
-                                  <span className="text-slate-200">{r.finalResult}</span>
+                                  <span className="text-slate-200">
+                                    {localizeFoulOrReason(r.finalResult, language) ?? r.finalResult}
+                                  </span>
                                   <span>·</span>
                                   <span className="font-mono tabular-nums">
-                                    {r.totalShots} shots · {formatDuration(r.durationSec)}
+                                    {t('common.shotsCount', { count: r.totalShots })} ·{' '}
+                                    <span dir="ltr">{formatLocalizedDuration(r.durationSec)}</span>
                                   </span>
                                   {r.highlightCount > 0 && (
                                     <>
                                       <span>·</span>
                                       <span className="text-amber-300">
-                                        {r.highlightCount} highlights
+                                        {t('progression.highlightsCount', { count: r.highlightCount })}
                                       </span>
                                     </>
                                   )}
                                   <span>·</span>
-                                  <span>{formatShortDate(r.endedAtMs)}</span>
+                                  <span>{formatDate(r.endedAtMs)}</span>
                                 </div>
                               </div>
 
@@ -1997,13 +2177,13 @@ export function ProgressionModal() {
                                   className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-amber-500 px-2.5 text-[11px] font-extrabold text-slate-950 hover:bg-amber-400 cursor-pointer whitespace-nowrap"
                                 >
                                   <Film className="h-3.5 w-3.5" />
-                                  <span>Watch Replay</span>
+                                  <span>{t('progression.watchReplayBtn')}</span>
                                 </button>
                                 <button
                                   type="button"
                                   data-testid={`export-saved-replay-${r.replayId}`}
-                                  title="Export replay JSON"
-                                  aria-label="Export replay JSON"
+                                  title={t('progression.exportReplayAria')}
+                                  aria-label={t('progression.exportReplayAria')}
                                   onClick={() => void handleExportSaved(r.replayId, r.matchId)}
                                   className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-white/12 bg-white/5 text-slate-200 hover:bg-white/10 cursor-pointer"
                                 >
@@ -2012,8 +2192,8 @@ export function ProgressionModal() {
                                 <button
                                   type="button"
                                   data-testid={`delete-saved-replay-${r.replayId}`}
-                                  title="Delete saved replay"
-                                  aria-label="Delete saved replay"
+                                  title={t('progression.deleteReplayAria')}
+                                  aria-label={t('progression.deleteReplayAria')}
                                   onClick={() => void handleDeleteSaved(r.replayId)}
                                   className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-white/12 bg-white/5 text-slate-300 hover:border-rose-400/50 hover:text-rose-300 cursor-pointer"
                                 >
@@ -2031,7 +2211,7 @@ export function ProgressionModal() {
                       <div className="space-y-2 pt-1">
                         <div className="flex flex-wrap items-center justify-between gap-2">
                           <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
-                            Online Server Match Ledger
+                            {t('progression.onlineServerLedgerTitle')}
                           </span>
                           <div className="flex flex-wrap items-center gap-1.5">
                             <div className="flex items-center gap-1 rounded-lg border border-white/10 bg-black/35 p-0.5">
@@ -2047,7 +2227,7 @@ export function ProgressionModal() {
                                     : 'text-slate-300 hover:text-white'
                                 }`}
                               >
-                                Global
+                                {t('progression.ledgerGlobal')}
                               </button>
                               <button
                                 type="button"
@@ -2061,18 +2241,18 @@ export function ProgressionModal() {
                                     : 'text-slate-300 hover:text-white'
                                 }`}
                               >
-                                My Matches
+                                {t('progression.ledgerMyMatches')}
                               </button>
                             </div>
 
                             <div className="flex items-center gap-1 rounded-lg border border-white/10 bg-black/35 p-0.5">
                               {(
                                 [
-                                  { id: 'all', label: 'All' },
-                                  { id: 'ranked', label: 'Ranked' },
-                                  { id: 'quick', label: 'Quick' },
-                                  { id: 'private', label: 'Private' },
-                                  { id: 'tournament', label: 'Tournament' },
+                                  { id: 'all', label: t('common.all') },
+                                  { id: 'ranked', label: t('lobby.tabRanked') },
+                                  { id: 'quick', label: t('lobby.tabShortQuick') },
+                                  { id: 'private', label: t('lobby.tabShortPrivate') },
+                                  { id: 'tournament', label: t('lobby.tabShortTournament') },
                                 ] as Array<{ id: OnlineMatchType | 'all'; label: string }>
                               ).map((mt) => (
                                 <button
@@ -2098,11 +2278,11 @@ export function ProgressionModal() {
 
                         {historyLoading ? (
                           <div className="py-6 text-center text-xs text-slate-400">
-                            Loading online match ledger...
+                            {t('progression.loadingOnlineLedger')}
                           </div>
                         ) : filteredOnlineLedger.length === 0 ? (
                           <div className="rounded-xl border border-white/10 bg-black/25 py-6 text-center text-xs text-slate-400">
-                            No online ledger records matching this filter.
+                            {t('progression.noOnlineLedgerMatch')}
                           </div>
                         ) : (
                           filteredOnlineLedger.map((m) => {
@@ -2120,38 +2300,38 @@ export function ProgressionModal() {
                                       onClick={() => m.player1Id && setInspectedPlayerId(m.player1Id)}
                                       className="hover:underline disabled:no-underline cursor-pointer disabled:cursor-default"
                                     >
-                                      {m.player1Name}
+                                      {localizePlayerName(m.player1Name, 'player1', language)}
                                     </button>
                                     {m.p1RankTier && <RankBadge tier={m.p1RankTier} size="xs" />}
-                                    <span className="text-slate-500">vs</span>
+                                    <span className="text-slate-500">{t('common.vs')}</span>
                                     <button
                                       type="button"
                                       disabled={!m.player2Id}
                                       onClick={() => m.player2Id && setInspectedPlayerId(m.player2Id)}
                                       className="hover:underline disabled:no-underline cursor-pointer disabled:cursor-default"
                                     >
-                                      {m.player2Name}
+                                      {localizePlayerName(m.player2Name, 'player2', language)}
                                     </button>
                                     {m.p2RankTier && <RankBadge tier={m.p2RankTier} size="xs" />}
                                   </div>
                                   <div className="mt-0.5 text-[11px] text-slate-400">
-                                    Winner:{' '}
+                                    {t('lobby.historyWinnerPrefix')}{' '}
                                     <span className="font-semibold text-amber-300">
-                                      {m.winnerName}
+                                      {localizePlayerName(m.winnerName, m.winnerRole, language)}
                                     </span>
                                     {' · '}
-                                    {m.ruleProfileId === 'wpa' ? 'Strict WPA' : 'Casual'}
+                                    {localizeRuleProfile(m.ruleProfileId ?? 'casual', language, true)}
                                     {' · '}
-                                    {formatMatchTypeLabel(m.matchType)}
+                                    {localizeOnlineMatchType(m.matchType, language)}
                                     {' · '}
-                                    {m.reason}
+                                    {localizeFoulOrReason(m.reason, language) ?? m.reason}
                                   </div>
                                 </div>
 
                                 <div className="flex flex-wrap items-center gap-2 font-mono tabular-nums text-[11px] shrink-0">
                                   {m.rankedApplied &&
                                     (m.p1EloDelta !== undefined || m.p2EloDelta !== undefined) && (
-                                      <span className="text-slate-300">
+                                      <span dir="ltr" className="text-slate-300">
                                         {m.p1EloBefore !== undefined && m.p1EloAfter !== undefined
                                           ? `${m.p1EloBefore}→${m.p1EloAfter}`
                                           : m.p1EloDelta !== undefined &&
@@ -2161,18 +2341,18 @@ export function ProgressionModal() {
                                           ? `${m.p2EloBefore}→${m.p2EloAfter}`
                                           : m.p2EloDelta !== undefined &&
                                             (m.p2EloDelta >= 0 ? `+${m.p2EloDelta}` : m.p2EloDelta)}{' '}
-                                        ELO
+                                        {t('common.elo')}
                                       </span>
                                     )}
                                   <span className="inline-flex items-center gap-1 text-slate-400">
                                     <Clock className="h-3 w-3" />
-                                    {m.durationSec !== undefined
-                                      ? formatDuration(m.durationSec)
-                                      : `${m.totalShots} shots`}
+                                    {m.durationSec !== undefined ? (
+                                      <span dir="ltr">{formatLocalizedDuration(m.durationSec)}</span>
+                                    ) : (
+                                      t('common.shotsCount', { count: m.totalShots })
+                                    )}
                                   </span>
-                                  <span className="text-slate-400">
-                                    {formatShortDate(m.endedAtMs)}
-                                  </span>
+                                  <span className="text-slate-400">{formatDate(m.endedAtMs)}</span>
                                   {saved ? (
                                     <button
                                       type="button"
@@ -2183,11 +2363,11 @@ export function ProgressionModal() {
                                       className="inline-flex items-center gap-1 rounded-md bg-amber-500 px-2 py-1 font-sans text-[10px] font-extrabold text-slate-950 hover:bg-amber-400 cursor-pointer whitespace-nowrap"
                                     >
                                       <Film className="h-3 w-3" />
-                                      Replay
+                                      {t('progression.replayChipBtn')}
                                     </button>
                                   ) : (
                                     <span className="rounded border border-white/10 bg-white/5 px-1.5 py-0.5 font-sans text-[10px] text-slate-400">
-                                      Ledger
+                                      {t('progression.ledgerChipBadge')}
                                     </span>
                                   )}
                                 </div>
@@ -2201,7 +2381,12 @@ export function ProgressionModal() {
                     {filteredSaved.length === 0 &&
                       (historyModeFilter === 'ai' || historyModeFilter === 'local') && (
                         <div className="rounded-xl border border-white/10 bg-black/25 py-8 text-center text-xs text-slate-400">
-                          Complete a {historyModeFilter.toUpperCase()} match or import a replay JSON file to watch recorded matches here.
+                          {t('progression.emptyModeArchiveHint', {
+                            mode:
+                              historyModeFilter === 'ai'
+                                ? t('progression.filterAi')
+                                : t('progression.filterLocal'),
+                          })}
                         </div>
                       )}
                   </div>
@@ -2212,7 +2397,7 @@ export function ProgressionModal() {
             <div className="space-y-4">
               <div className="flex items-center justify-between gap-2">
                 <div className="text-xs font-bold uppercase tracking-wider text-amber-400">
-                  Fair Play Standing &amp; Penalty Appeals
+                  {t('progression.fairPlayHeading')}
                 </div>
                 <button
                   type="button"
@@ -2222,17 +2407,17 @@ export function ProgressionModal() {
                   }}
                   className="rounded-lg border border-white/12 bg-white/5 px-3 py-1 text-xs font-semibold text-slate-200 hover:bg-white/10 cursor-pointer"
                 >
-                  Refresh
+                  {t('common.refresh')}
                 </button>
               </div>
 
               {fairPlayLoading && !moderationStatus ? (
                 <div className="py-10 text-center text-xs text-slate-400">
-                  Loading Fair Play standing...
+                  {t('progression.loadingFairPlay')}
                 </div>
               ) : !moderationStatus ? (
                 <div className="rounded-xl border border-white/10 bg-black/25 p-5 text-center text-xs text-slate-400">
-                  Sign in or establish your competitive session to review Fair Play standing.
+                  {t('progression.fairPlayAuthPrompt')}
                 </div>
               ) : (
                 <>
@@ -2253,17 +2438,17 @@ export function ProgressionModal() {
                       <div className="min-w-0 flex-1">
                         <div className="text-sm font-extrabold text-white">
                           {moderationStatus.canPlayOnline && moderationStatus.canPlayRanked
-                            ? 'Account in Good Standing'
+                            ? t('progression.standingCleanTitle')
                             : !moderationStatus.canPlayOnline
-                              ? 'Online Play Suspended'
-                              : 'Ranked Queue Restricted'}
+                              ? t('progression.standingSuspendedTitle')
+                              : t('progression.standingRestrictedTitle')}
                         </div>
                         <p className="mt-1 text-xs text-slate-300 leading-relaxed">
                           {moderationStatus.canPlayOnline && moderationStatus.canPlayRanked
-                            ? 'Your account is eligible for Ranked Matchmaking, Quick Match, Private Rooms, and Official Tournaments.'
+                            ? t('progression.standingCleanDesc')
                             : !moderationStatus.canPlayOnline
-                              ? 'Online rooms and matchmaking are temporarily paused while an active suspension is in effect.'
-                              : 'Ranked Matchmaking is restricted while an active Ranked restriction applies. Casual Quick Match and Private Rooms remain available.'}
+                              ? t('progression.standingSuspendedDesc')
+                              : t('progression.standingRestrictedDesc')}
                         </p>
                       </div>
                     </div>
@@ -2272,12 +2457,14 @@ export function ProgressionModal() {
                   {/* Active & Recent Penalties */}
                   <div className="rounded-xl border border-white/10 bg-black/25 p-3.5 space-y-2.5">
                     <div className="text-[11px] font-bold uppercase tracking-wider text-slate-300">
-                      Penalties &amp; Warnings ({moderationStatus.recentPenalties.length})
+                      {t('progression.penaltiesWarningsTitle', {
+                        count: moderationStatus.recentPenalties.length,
+                      })}
                     </div>
 
                     {moderationStatus.recentPenalties.length === 0 ? (
                       <div className="py-3 text-xs text-slate-400">
-                        No warnings, restrictions, or suspensions recorded on this account.
+                        {t('progression.noPenaltiesRecorded')}
                       </div>
                     ) : (
                       <div className="space-y-2 max-h-[190px] overflow-y-auto">
@@ -2293,7 +2480,7 @@ export function ProgressionModal() {
                                     pen.active ? 'text-rose-400' : 'text-slate-400'
                                   }`}
                                 />
-                                {formatPenaltyType(pen.penaltyType)}
+                                {formatPenaltyType(pen.penaltyType, language)}
                               </span>
                               <span
                                 className={`font-mono text-[10px] font-bold uppercase ${
@@ -2305,21 +2492,22 @@ export function ProgressionModal() {
                                 }`}
                               >
                                 {pen.revokedAtMs
-                                  ? 'Revoked'
+                                  ? t('progression.penaltyRevoked')
                                   : pen.active
-                                    ? 'Active'
-                                    : 'Expired'}
+                                    ? t('common.active')
+                                    : t('progression.penaltyExpired')}
                               </span>
                             </div>
                             <p className="text-[11px] text-slate-300">{pen.reason}</p>
                             <div className="text-[10px] text-slate-400">
-                              Issued {formatShortDate(pen.issuedAtMs)}
-                              {' · '}
-                              By {pen.issuedBy}
+                              {t('progression.issuedOnBy', {
+                                date: formatDate(pen.issuedAtMs),
+                                by: pen.issuedBy,
+                              })}
                               {' · '}
                               {pen.expiresAtMs
-                                ? `Expires ${formatShortDate(pen.expiresAtMs)}`
-                                : 'No automatic expiry'}
+                                ? t('progression.expiresOn', { date: formatDate(pen.expiresAtMs) })
+                                : t('progression.noAutomaticExpiry')}
                             </div>
                           </div>
                         ))}
@@ -2356,19 +2544,21 @@ export function ProgressionModal() {
                             setAppealMessage('');
                             setAppealFeedback({
                               type: 'ok',
-                              text: 'Appeal submitted for moderation review.',
+                              text: t('progression.appealSubmittedNotice'),
                             });
                           } else {
                             setAppealFeedback({
                               type: 'err',
-                              text: res.error ?? 'Failed to submit appeal.',
+                              text:
+                                localizeServerError(res.error, language) ||
+                                t('progression.penaltyAppealFailErr'),
                             });
                           }
                         }}
                         className="rounded-xl border border-amber-400/25 bg-black/25 p-3.5 space-y-2.5"
                       >
                         <div className="text-[11px] font-bold uppercase tracking-wider text-amber-300">
-                          Submit Moderation Appeal
+                          {t('progression.submitAppealTitle')}
                         </div>
                         <select
                           value={appealPenaltyId}
@@ -2377,7 +2567,7 @@ export function ProgressionModal() {
                         >
                           {appealable.map((p) => (
                             <option key={p.penaltyId} value={p.penaltyId}>
-                              {formatPenaltyType(p.penaltyType)} — {p.reason.slice(0, 48)}
+                              {formatPenaltyType(p.penaltyType, language)} — {p.reason.slice(0, 48)}
                             </option>
                           ))}
                         </select>
@@ -2388,7 +2578,7 @@ export function ProgressionModal() {
                           maxLength={500}
                           value={appealMessage}
                           onChange={(e) => setAppealMessage(e.target.value)}
-                          placeholder="Explain why this penalty should be reviewed or lifted (5–500 chars)..."
+                          placeholder={t('progression.appealReasonLongPlaceholder')}
                           className="w-full rounded-lg border border-white/15 bg-[#0b1017] px-2.5 py-1.5 text-xs text-white focus:border-amber-400 focus:outline-none"
                         />
                         {appealFeedback && (
@@ -2407,7 +2597,7 @@ export function ProgressionModal() {
                             disabled={appealBusy || appealMessage.trim().length < 5}
                             className="rounded-lg bg-amber-500 px-3.5 py-1.5 text-xs font-extrabold text-slate-950 hover:bg-amber-400 disabled:opacity-45 cursor-pointer"
                           >
-                            {appealBusy ? 'Submitting...' : 'Submit Appeal'}
+                            {appealBusy ? t('common.submitting') : t('progression.submitAppealBtn')}
                           </button>
                         </div>
                       </form>
@@ -2418,7 +2608,9 @@ export function ProgressionModal() {
                   {moderationStatus.appeals.length > 0 && (
                     <div className="rounded-xl border border-white/10 bg-black/25 p-3.5 space-y-2">
                       <div className="text-[11px] font-bold uppercase tracking-wider text-slate-300">
-                        Your Appeals ({moderationStatus.appeals.length})
+                        {t('progression.yourAppealsCount', {
+                          count: moderationStatus.appeals.length,
+                        })}
                       </div>
                       <div className="space-y-2 max-h-[160px] overflow-y-auto">
                         {moderationStatus.appeals.map((ap) => (
@@ -2428,7 +2620,7 @@ export function ProgressionModal() {
                           >
                             <div className="flex items-center justify-between gap-2">
                               <span className="font-mono text-[10px] text-slate-400">
-                                {formatShortDate(ap.submittedAtMs)}
+                                {formatDate(ap.submittedAtMs)}
                               </span>
                               <span
                                 className={`font-bold uppercase text-[10px] ${
@@ -2439,13 +2631,17 @@ export function ProgressionModal() {
                                       : 'text-amber-300'
                                 }`}
                               >
-                                {ap.status}
+                                {ap.status === 'approved'
+                                  ? t('progression.appealApproved')
+                                  : ap.status === 'rejected'
+                                    ? t('progression.appealRejected')
+                                    : t('progression.appealPending')}
                               </span>
                             </div>
                             <p className="text-[11px] text-slate-200">{ap.message}</p>
                             {ap.adminNotes && (
                               <p className="text-[11px] text-slate-400">
-                                Moderator Note: {ap.adminNotes}
+                                {t('progression.moderatorNotePrefix', { notes: ap.adminNotes })}
                               </p>
                             )}
                           </div>

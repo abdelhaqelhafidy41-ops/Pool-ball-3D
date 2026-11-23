@@ -1,6 +1,7 @@
 import { CheckCircle2, Crown, Flame, Sparkles, Target, X } from 'lucide-react';
 import { useEffect } from 'react';
 import { soundEngine } from '../game/utils/SoundEngine';
+import { localizeProgressionToast, useTranslation } from '../i18n';
 import {
   useGameStore,
   type BattlePassTab,
@@ -34,6 +35,7 @@ function targetTabForKind(kind: ProgressionNotificationKind): BattlePassTab {
 }
 
 export function ProgressionToastBanner() {
+  const { t, lang } = useTranslation();
   const notifications = useGameStore((s) => s.progressionNotifications);
   const dismiss = useGameStore((s) => s.dismissProgressionNotification);
   const openBattlePassModal = useGameStore((s) => s.openBattlePassModal);
@@ -63,6 +65,7 @@ export function ProgressionToastBanner() {
     >
       {visible.map((item) => {
         const Icon = iconForKind(item.kind);
+        const loc = localizeProgressionToast(item.title, item.detail, lang);
         return (
           <div
             key={item.id}
@@ -76,17 +79,17 @@ export function ProgressionToastBanner() {
                 </div>
                 <div className="min-w-0">
                   <div className="text-xs font-extrabold text-white leading-snug">
-                    {item.title}
+                    {loc.title}
                   </div>
                   <div className="mt-0.5 text-[11px] text-slate-300 leading-snug">
-                    {item.detail}
+                    {loc.detail}
                   </div>
                 </div>
               </div>
 
               <button
                 type="button"
-                aria-label="Dismiss progression notification"
+                aria-label={t('battlePass.dismissNotificationAria')}
                 onClick={() => dismiss(item.id)}
                 className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md border border-white/10 bg-white/5 text-slate-400 hover:text-white cursor-pointer"
               >
@@ -107,7 +110,7 @@ export function ProgressionToastBanner() {
                   className="inline-flex items-center gap-1 rounded-md bg-amber-500 px-2.5 py-1 text-[11px] font-extrabold text-slate-950 hover:bg-amber-400 transition-colors cursor-pointer whitespace-nowrap"
                 >
                   <Sparkles className="h-3 w-3" />
-                  Open Battle Pass
+                  {t('battlePass.openBattlePassBtn')}
                 </button>
               </div>
             )}

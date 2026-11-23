@@ -36,61 +36,34 @@ import {
   type TournamentStatus,
   type TournamentType,
 } from '../multiplayer/shared/tournaments';
+import {
+  formatLocalizedDateTime,
+  localizeRuleProfile,
+  localizeServerError,
+  localizeTournamentRoundLabel,
+  localizeTournamentStatus,
+  localizeTournamentTrophy,
+  localizeTournamentType,
+  tLang,
+  type AppLanguage,
+  useTranslation,
+} from '../i18n';
 import { type TournamentTab, useGameStore } from '../store/useGameStore';
 
-function formatCountdownMs(targetMs: number, nowMs: number): string {
+function formatCountdownMs(targetMs: number, nowMs: number, lang: AppLanguage): string {
   const diffSec = Math.max(0, Math.floor((targetMs - nowMs) / 1000));
   const d = Math.floor(diffSec / 86400);
   const h = Math.floor((diffSec % 86400) / 3600);
   const m = Math.floor((diffSec % 3600) / 60);
   const s = diffSec % 60;
-  if (d > 0) return `${d}d ${h}h`;
+  if (d > 0) return tLang(lang, 'common.countdownDaysHours', { d, h });
   if (h > 0) return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
   return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
 }
 
-function formatDateTime(ms: number | null): string {
+function formatDateTime(ms: number | null, lang: AppLanguage): string {
   if (!ms) return '—';
-  try {
-    return new Date(ms).toLocaleString(undefined, {
-      month: 'short',
-      day: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit',
-    });
-  } catch {
-    return '';
-  }
-}
-
-function formatTournamentType(type: TournamentType): string {
-  switch (type) {
-    case 'quick':
-      return 'Quick';
-    case 'daily':
-      return 'Daily';
-    case 'weekly':
-      return 'Weekly Championship';
-    case 'private':
-      return 'Private';
-    case 'scheduled':
-      return 'Scheduled Global';
-  }
-}
-
-function formatTournamentStatus(status: TournamentStatus): string {
-  switch (status) {
-    case 'upcoming':
-      return 'Upcoming';
-    case 'registration_open':
-      return 'Registration Open';
-    case 'in_progress':
-      return 'In Progress';
-    case 'completed':
-      return 'Completed';
-    case 'cancelled':
-      return 'Cancelled';
-  }
+  return formatLocalizedDateTime(ms, lang) || '—';
 }
 
 function statusTextClass(status: TournamentStatus): string {
@@ -109,12 +82,43 @@ function statusTextClass(status: TournamentStatus): string {
   }
 }
 
-function placementLabel(placement: number | null): string {
+function placementLabel(placement: number | null, lang: AppLanguage): string {
   if (!placement) return '—';
-  if (placement === 1) return '1st · Champion';
-  if (placement === 2) return '2nd · Finalist';
-  if (placement === 3) return '3rd · Podium';
-  return `${placement}th Place`;
+  if (placement === 1) return tLang(lang, 'tournaments.placementChampion');
+  if (placement === 2) return tLang(lang, 'tournaments.placementRunnerUp');
+  if (placement === 3) return tLang(lang, 'tournaments.placementThirdPlace');
+  return tLang(lang, 'tournaments.placementOrdinal', { place: placement });
+}
+
+function localizeParticipantStatus(status: string, lang: AppLanguage): string {
+  switch (status) {
+    case 'champion':
+      return tLang(lang, 'tournaments.placementChampion');
+    case 'registered':
+      return tLang(lang, 'tournaments.enteredBadge');
+    case 'active':
+    case 'checked_in':
+      return tLang(lang, 'common.active');
+    case 'eliminated':
+      return tLang(lang, 'tournaments.statusCompletedCard');
+    case 'withdrawn':
+      return tLang(lang, 'tournaments.withdrawBtn');
+    default:
+      return status;
+  }
+}
+
+function localizePayoutPlacement(placement: string, lang: AppLanguage): string {
+  switch (placement) {
+    case 'champion':
+      return tLang(lang, 'tournaments.placementChampion');
+    case 'runner_up':
+      return tLang(lang, 'tournaments.placementRunnerUp');
+    case 'third_place':
+      return tLang(lang, 'tournaments.placementThirdPlace');
+    default:
+      return placement.replace(/_/g, ' ');
+  }
 }
 
 function BracketMatchCard({
@@ -134,6 +138,7 @@ function BracketMatchCard({
   onEnterMatch: (matchId: string) => void;
   onSpectateMatch?: (roomId: string) => void;
 }) {
+  const { t, language } = useTranslation();
   const isParticipant = Boolean(
     viewerPlayerId && (match.player1Id === viewerPlayerId || match.player2Id === viewerPlayerId),
   );
@@ -150,6 +155,21 @@ function BracketMatchCard({
   const p2Av = match.player2Avatar ? getAvatarVisualMeta(match.player2Avatar) : null;
   const p1Won = Boolean(match.winnerId && match.winnerId === match.player1Id);
   const p2Won = Boolean(match.winnerId && match.winnerId === match.player2Id);
+  const localizedRound = localizeTournamentRoundLabel(match.roundLabel, language);
+  const matchStatusLabel =
+    match.status === 'ready' && match.readyDeadlineMs
+      ? t('tournaments.readyCountdown', { time: formatCountdownMs(match.readyDeadlineMs, nowMs, language) })
+      : match.status === 'ready'
+        ? t('tournaments.statusReady')
+        : match.status === 'in_progress'
+          ? t('tournaments.statusInProgressCard')
+          : match.status === 'completed'
+            ? t('tournaments.statusCompletedCard')
+            : match.status === 'bye'
+              ? t('tournaments.statusBye')
+              : match.status === 'forfeited'
+                ? t('tournaments.statusForfeited')
+                : t('tournaments.statusPending');
 
   return (
     <div
@@ -163,9 +183,12 @@ function BracketMatchCard({
     >
       <div className="flex items-center justify-between gap-2 pb-1.5 mb-1.5 border-b border-white/10 text-[10px]">
         <span className="font-bold uppercase tracking-wider text-slate-400 truncate">
-          {match.isThirdPlaceMatch ? 'Third Place' : `${match.roundLabel} #${match.slotIndex + 1}`}
+          {match.isThirdPlaceMatch
+            ? t('tournaments.thirdPlace')
+            : t('tournaments.bracketSlotLabel', { round: localizedRound, slot: match.slotIndex + 1 })}
         </span>
         <span
+          dir={match.status === 'ready' && match.readyDeadlineMs ? 'ltr' : undefined}
           className={`font-bold uppercase tracking-wider shrink-0 tabular-nums ${
             match.status === 'ready'
               ? 'text-amber-300'
@@ -180,9 +203,7 @@ function BracketMatchCard({
                       : 'text-slate-500'
           }`}
         >
-          {match.status === 'ready' && match.readyDeadlineMs
-            ? `Ready · ${formatCountdownMs(match.readyDeadlineMs, nowMs)}`
-            : match.status.replace('_', ' ')}
+          {matchStatusLabel}
         </span>
       </div>
 
@@ -193,7 +214,7 @@ function BracketMatchCard({
         }`}
       >
         <div className="flex items-center gap-1.5 min-w-0">
-          <span className="w-5 text-[10px] font-mono tabular-nums text-slate-400 shrink-0">
+          <span dir="ltr" className="w-5 text-[10px] font-mono tabular-nums text-slate-400 shrink-0">
             {match.player1Seed ? `#${match.player1Seed}` : '—'}
           </span>
           {p1Av && (
@@ -205,11 +226,11 @@ function BracketMatchCard({
             </span>
           )}
           <span className="truncate">
-            {match.player1Name ?? (match.status === 'bye' ? 'BYE' : 'TBD')}
+            {match.player1Name ?? (match.status === 'bye' ? t('tournaments.byeSlot') : t('tournaments.tbdSlot'))}
           </span>
         </div>
         <span className="text-[10px] font-mono tabular-nums shrink-0 text-slate-400">
-          {p1Won ? 'WIN' : match.player1Joined && match.status === 'ready' ? 'IN' : ''}
+          {p1Won ? t('tournaments.winBadge') : match.player1Joined && match.status === 'ready' ? t('tournaments.inBadge') : ''}
         </span>
       </div>
 
@@ -220,7 +241,7 @@ function BracketMatchCard({
         }`}
       >
         <div className="flex items-center gap-1.5 min-w-0">
-          <span className="w-5 text-[10px] font-mono tabular-nums text-slate-400 shrink-0">
+          <span dir="ltr" className="w-5 text-[10px] font-mono tabular-nums text-slate-400 shrink-0">
             {match.player2Seed ? `#${match.player2Seed}` : '—'}
           </span>
           {p2Av && (
@@ -232,11 +253,11 @@ function BracketMatchCard({
             </span>
           )}
           <span className="truncate">
-            {match.player2Name ?? (match.status === 'bye' ? 'BYE' : 'TBD')}
+            {match.player2Name ?? (match.status === 'bye' ? t('tournaments.byeSlot') : t('tournaments.tbdSlot'))}
           </span>
         </div>
         <span className="text-[10px] font-mono tabular-nums shrink-0 text-slate-400">
-          {p2Won ? 'WIN' : match.player2Joined && match.status === 'ready' ? 'IN' : ''}
+          {p2Won ? t('tournaments.winBadge') : match.player2Joined && match.status === 'ready' ? t('tournaments.inBadge') : ''}
         </span>
       </div>
 
@@ -248,7 +269,7 @@ function BracketMatchCard({
           className="mt-2 inline-flex w-full items-center justify-center gap-1.5 rounded-lg bg-amber-500 px-3 py-1.5 text-[11px] font-extrabold uppercase tracking-wider text-slate-950 hover:bg-amber-400 disabled:opacity-50 cursor-pointer whitespace-nowrap"
         >
           <Swords className="h-3.5 w-3.5 shrink-0" />
-          {busyMatchId === match.bracketMatchId ? 'Connecting...' : 'Enter Match'}
+          {busyMatchId === match.bracketMatchId ? t('common.connecting') : t('tournaments.enterMatchBtn')}
         </button>
       )}
       {canWatchLive && match.roomId && (
@@ -259,7 +280,7 @@ function BracketMatchCard({
           className="mt-2 inline-flex w-full items-center justify-center gap-1.5 rounded-lg border border-emerald-400/45 bg-emerald-500/15 px-3 py-1.5 text-[11px] font-extrabold uppercase tracking-wider text-emerald-200 hover:bg-emerald-500/25 cursor-pointer whitespace-nowrap"
         >
           <Eye className="h-3.5 w-3.5 shrink-0" />
-          Watch Live
+          {t('tournaments.watchLiveBtn')}
         </button>
       )}
     </div>
@@ -267,6 +288,7 @@ function BracketMatchCard({
 }
 
 export function TournamentModal() {
+  const { t, language, formatNumber } = useTranslation();
   const tournamentModalOpen = useGameStore((s) => s.tournamentModalOpen);
   const closeTournamentModal = useGameStore((s) => s.closeTournamentModal);
   const tournamentTab = useGameStore((s) => s.tournamentTab);
@@ -300,7 +322,7 @@ export function TournamentModal() {
   const [statusFilter, setStatusFilter] = useState<TournamentStatus | 'all'>('all');
   const [inviteCodeInput, setInviteCodeInput] = useState('');
   const [createPrivateOpen, setCreatePrivateOpen] = useState(false);
-  const [privTitle, setPrivTitle] = useState('Private Club Knockout');
+  const [privTitle, setPrivTitle] = useState('');
   const [privCapacity, setPrivCapacity] = useState<TournamentCapacity>(8);
   const [privRules, setPrivRules] = useState<RuleProfileId>('casual');
   const [privEntryFee, setPrivEntryFee] = useState(0);
@@ -312,7 +334,7 @@ export function TournamentModal() {
 
   // Admin state — NEVER hardcoded or stored in localStorage
   const [adminSecretInput, setAdminSecretInput] = useState('');
-  const [adminTitle, setAdminTitle] = useState('Global Masters Cup');
+  const [adminTitle, setAdminTitle] = useState('');
   const [adminType, setAdminType] = useState<TournamentType>('quick');
   const [adminCapacity, setAdminCapacity] = useState<TournamentCapacity>(8);
   const [adminRules, setAdminRules] = useState<RuleProfileId>('casual');
@@ -324,7 +346,7 @@ export function TournamentModal() {
   const [adminResolveWinnerId, setAdminResolveWinnerId] = useState('');
   const [adminResolveType, setAdminResolveType] =
     useState<TournamentMatchResolutionType>('admin_resolved');
-  const [adminResolveReason, setAdminResolveReason] = useState('Administrator resolution');
+  const [adminResolveReason, setAdminResolveReason] = useState('');
 
   const refreshDiscover = useCallback(async () => {
     setLoadingList(true);
@@ -334,29 +356,33 @@ export function TournamentModal() {
       status: statusFilter,
       adminKey: adminSecretInput || undefined,
     });
-    setListError(res.error ?? null);
+    setListError(res.error ? localizeServerError(res.error, language) : null);
     setLoadingList(false);
-  }, [typeFilter, statusFilter, adminSecretInput]);
+  }, [typeFilter, statusFilter, adminSecretInput, language]);
 
   const refreshLeaderboard = useCallback(async () => {
     setLoadingLeaderboard(true);
     setLeaderboardError(null);
     const res = await tournamentClient.fetchLeaderboardSafe(lbSeasonFilter);
     if (!res.ok) {
-      setLeaderboardError(res.error ?? 'Unable to load tournament leaderboard.');
+      setLeaderboardError(
+        res.error ? localizeServerError(res.error, language) : t('tournaments.noticeLeaderboardFail'),
+      );
     }
     setLoadingLeaderboard(false);
-  }, [lbSeasonFilter]);
+  }, [lbSeasonFilter, language, t]);
 
   const refreshCareer = useCallback(async () => {
     setLoadingCareer(true);
     setCareerError(null);
     const res = await tournamentClient.fetchPlayerStatsSafe();
     if (!res.ok) {
-      setCareerError(res.error ?? 'Unable to load tournament career stats.');
+      setCareerError(
+        res.error ? localizeServerError(res.error, language) : t('tournaments.noticeCareerFail'),
+      );
     }
     setLoadingCareer(false);
-  }, []);
+  }, [language, t]);
 
   const refreshSelectedDetail = useCallback(
     async (tournamentId: string) => {
@@ -367,11 +393,13 @@ export function TournamentModal() {
         adminSecretInput || undefined,
       );
       if (!res.ok) {
-        setDetailError(res.error ?? 'Failed to load tournament bracket details.');
+        setDetailError(
+          res.error ? localizeServerError(res.error, language) : t('tournaments.noticeBracketFail'),
+        );
       }
       setLoadingDetail(false);
     },
-    [adminSecretInput],
+    [adminSecretInput, language, t],
   );
 
   useEffect(() => {
@@ -403,7 +431,11 @@ export function TournamentModal() {
       .then((res) => {
         if (cancelled) return;
         if (!res.ok) {
-          setDetailError(res.error ?? 'Failed to load tournament bracket details.');
+          setDetailError(
+            res.error
+              ? localizeServerError(res.error, language)
+              : t('tournaments.noticeBracketFail'),
+          );
         }
       })
       .finally(() => {
@@ -416,7 +448,7 @@ export function TournamentModal() {
       cancelled = true;
       multiplayerManager.unsubscribeTournamentWs(selectedTournamentId);
     };
-  }, [tournamentModalOpen, selectedTournamentId, adminSecretInput]);
+  }, [tournamentModalOpen, selectedTournamentId, adminSecretInput, language, t]);
 
   useEffect(() => {
     if (
@@ -486,23 +518,26 @@ export function TournamentModal() {
     setTournamentTab('bracket');
   };
 
-  const handleRegister = async (t: TournamentRecord) => {
+  const handleRegister = async (tr: TournamentRecord) => {
     soundEngine.playUiClick();
-    setBusyAction(`reg_${t.tournamentId}`);
+    setBusyAction(`reg_${tr.tournamentId}`);
     setTournamentNotice(null);
-    const res = await tournamentClient.register(t.tournamentId);
+    const res = await tournamentClient.register(tr.tournamentId);
     setBusyAction(null);
     if (!res.ok) {
-      setTournamentNotice({ type: 'err', text: res.error ?? 'Registration failed.' });
+      setTournamentNotice({
+        type: 'err',
+        text: res.error ? localizeServerError(res.error, language) : t('common.actionFailed'),
+      });
       return;
     }
     setTournamentNotice({
       type: 'ok',
       text: res.data?.autoStarted
-        ? `Registered & ${t.title} bracket is now live!`
-        : `Registered for ${t.title}.`,
+        ? t('tournaments.noticeRegAutoStarted', { title: tr.title })
+        : t('tournaments.noticeRegistered', { title: tr.title }),
     });
-    useGameStore.getState().setSelectedTournamentId(t.tournamentId);
+    useGameStore.getState().setSelectedTournamentId(tr.tournamentId);
   };
 
   const handleWithdraw = async (tournamentId: string) => {
@@ -512,7 +547,10 @@ export function TournamentModal() {
     const res = await tournamentClient.withdraw(tournamentId);
     setBusyAction(null);
     if (!res.ok) {
-      setTournamentNotice({ type: 'err', text: res.error ?? 'Withdrawal failed.' });
+      setTournamentNotice({
+        type: 'err',
+        text: res.error ? localizeServerError(res.error, language) : t('common.actionFailed'),
+      });
       return;
     }
     const refunded = res.data?.refundedCoins ?? 0;
@@ -520,8 +558,8 @@ export function TournamentModal() {
       type: 'ok',
       text:
         refunded > 0
-          ? `Withdrawn cleanly. Refunded ${refunded} POOL COINS.`
-          : 'Withdrawn from tournament.',
+          ? t('tournaments.noticeWithdrawnRefunded', { coins: formatNumber(refunded) })
+          : t('tournaments.noticeWithdrawn'),
     });
   };
 
@@ -534,13 +572,16 @@ export function TournamentModal() {
     const res = await tournamentClient.joinByInviteCode(inviteCodeInput);
     setBusyAction(null);
     if (!res.ok || !res.data) {
-      setTournamentNotice({ type: 'err', text: res.error ?? 'Invalid invite code.' });
+      setTournamentNotice({
+        type: 'err',
+        text: res.error ? localizeServerError(res.error, language) : t('common.actionFailed'),
+      });
       return;
     }
     setInviteCodeInput('');
     setTournamentNotice({
       type: 'ok',
-      text: `Joined ${res.data.tournament.title}.`,
+      text: t('tournaments.noticeJoinedTournament', { title: res.data.tournament.title }),
     });
     useGameStore.getState().setSelectedTournamentId(res.data.tournament.tournamentId);
     setTournamentTab('bracket');
@@ -552,7 +593,7 @@ export function TournamentModal() {
     setBusyAction('create_private');
     setTournamentNotice(null);
     const res = await tournamentClient.createPrivateTournament({
-      title: privTitle.trim() || 'Private Club Knockout',
+      title: privTitle.trim() || t('tournaments.privateDefaultTitle'),
       maxPlayers: privCapacity,
       minPlayers: Math.max(2, Math.min(privCapacity, privMinPlayers)),
       ruleProfileId: privRules,
@@ -563,13 +604,16 @@ export function TournamentModal() {
     });
     setBusyAction(null);
     if (!res.ok || !res.data) {
-      setTournamentNotice({ type: 'err', text: res.error ?? 'Failed to create private event.' });
+      setTournamentNotice({
+        type: 'err',
+        text: res.error ? localizeServerError(res.error, language) : t('common.actionFailed'),
+      });
       return;
     }
     setCreatePrivateOpen(false);
     setTournamentNotice({
       type: 'ok',
-      text: `Private tournament created! Invite Code: ${res.data.tournament.inviteCode}`,
+      text: `${t('tournaments.noticeCreatedPrivate', { title: res.data.tournament.title })} (${res.data.tournament.inviteCode})`,
     });
     useGameStore.getState().setSelectedTournamentId(res.data.tournament.tournamentId);
     setTournamentTab('bracket');
@@ -598,7 +642,7 @@ export function TournamentModal() {
     <div
       role="dialog"
       aria-modal="true"
-      aria-label="Global Tournaments & Championships"
+      aria-label={t('tournaments.dialogAria')}
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-3 sm:p-4"
     >
       <div className="w-full max-w-5xl max-h-[92dvh] modal-scroll-y rounded-2xl border border-white/15 bg-[#0c1219] p-4 sm:p-6 text-slate-100 shadow-2xl">
@@ -610,10 +654,10 @@ export function TournamentModal() {
             </div>
             <div>
               <h2 className="text-base sm:text-lg font-extrabold tracking-tight text-white">
-                Global Tournaments & Championships
+                {t('tournaments.headerTitle')}
               </h2>
               <p className="text-[11px] text-slate-400">
-                Single-elimination brackets · Real-time match rooms · Authoritative POOL COINS & trophies
+                {t('tournaments.headerSubtitle')}
               </p>
             </div>
           </div>
@@ -622,7 +666,8 @@ export function TournamentModal() {
             {wallet && (
               <div className="inline-flex items-center gap-1.5 rounded-lg border border-amber-400/35 bg-amber-500/10 px-2.5 py-1 font-mono text-xs font-extrabold tabular-nums text-amber-300">
                 <Coins className="h-3.5 w-3.5 text-amber-400 shrink-0" />
-                {wallet.balance.toLocaleString()} COINS
+                <span>{formatNumber(wallet.balance)}</span>
+                <span>{t('tournaments.poolCoinsUpper')}</span>
               </div>
             )}
             <button
@@ -642,7 +687,7 @@ export function TournamentModal() {
                   }
                 }
               }}
-              aria-label="Refresh tournaments"
+              aria-label={t('tournaments.refreshAria')}
               className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-white/10 bg-white/5 text-slate-300 hover:bg-white/12 hover:text-white cursor-pointer"
             >
               <RefreshCw className={`h-3.5 w-3.5 ${loadingList ? 'animate-spin' : ''}`} />
@@ -653,7 +698,7 @@ export function TournamentModal() {
                 soundEngine.playUiClick();
                 closeTournamentModal();
               }}
-              aria-label="Close tournaments hub"
+              aria-label={t('tournaments.closeAria')}
               className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-white/10 bg-white/5 text-slate-300 hover:bg-white/12 hover:text-white cursor-pointer"
             >
               <X className="h-4 w-4" />
@@ -665,11 +710,11 @@ export function TournamentModal() {
         <div className="mt-3.5 flex flex-wrap gap-1 rounded-xl border border-white/10 bg-black/35 p-1">
           {(
             [
-              { id: 'discover', label: 'Discover', icon: Trophy },
-              { id: 'bracket', label: 'Live Bracket', icon: Swords },
-              { id: 'leaderboard', label: 'Leaderboard', icon: BarChart3 },
-              { id: 'career', label: 'My Trophies', icon: Award },
-              { id: 'admin', label: 'Admin', icon: Shield },
+              { id: 'discover', label: t('tournaments.tabDiscover'), icon: Trophy },
+              { id: 'bracket', label: t('tournaments.tabBracket'), icon: Swords },
+              { id: 'leaderboard', label: t('tournaments.tabLeaderboard'), icon: BarChart3 },
+              { id: 'career', label: t('tournaments.tabMyTrophies'), icon: Award },
+              { id: 'admin', label: t('tournaments.tabAdmin'), icon: Shield },
             ] as Array<{ id: TournamentTab; label: string; icon: typeof Trophy }>
           ).map((tab) => {
             const Icon = tab.icon;
@@ -702,7 +747,7 @@ export function TournamentModal() {
                 : 'border-rose-500/40 bg-rose-500/10 text-rose-200'
             }`}
           >
-            <span>{tournamentNotice.text}</span>
+            <span>{localizeServerError(tournamentNotice.text, language)}</span>
             <button
               type="button"
               onClick={() => setTournamentNotice(null)}
@@ -721,14 +766,14 @@ export function TournamentModal() {
               <div className="grid grid-cols-1 md:grid-cols-[1fr_auto] gap-2.5 rounded-xl border border-white/10 bg-black/30 p-3">
                 <form onSubmit={handleJoinByCode} className="flex flex-wrap items-center gap-2">
                   <div className="relative flex-1 min-w-[180px]">
-                    <KeyRound className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-amber-400" />
+                    <KeyRound className="pointer-events-none absolute start-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-amber-400" />
                     <input
                       type="text"
                       maxLength={12}
                       value={inviteCodeInput}
                       onChange={(e) => setInviteCodeInput(e.target.value.toUpperCase())}
-                      placeholder="Enter private tournament invite code..."
-                      className="w-full rounded-lg border border-white/12 bg-[#0b1017] pl-8 pr-3 py-1.5 font-mono text-xs uppercase text-white placeholder:normal-case placeholder:font-sans placeholder:text-slate-500 focus:border-amber-400 focus:outline-none"
+                      placeholder={t('tournaments.joinByCodePlaceholder')}
+                      className="w-full rounded-lg border border-white/12 bg-[#0b1017] ps-8 pe-3 py-1.5 font-mono text-xs uppercase text-white placeholder:normal-case placeholder:font-sans placeholder:text-slate-500 focus:border-amber-400 focus:outline-none"
                     />
                   </div>
                   <button
@@ -736,7 +781,7 @@ export function TournamentModal() {
                     disabled={busyAction === 'join_code' || inviteCodeInput.trim().length < 4}
                     className="inline-flex items-center gap-1.5 rounded-lg border border-amber-400/45 bg-amber-500/15 px-3 py-1.5 text-xs font-bold text-amber-200 hover:bg-amber-500/25 disabled:opacity-45 cursor-pointer whitespace-nowrap shrink-0"
                   >
-                    Join Invite Code
+                    {t('tournaments.joinByCodeBtn')}
                   </button>
                 </form>
 
@@ -749,7 +794,7 @@ export function TournamentModal() {
                   className="inline-flex items-center justify-center gap-1.5 rounded-lg bg-amber-500 px-3.5 py-1.5 text-xs font-extrabold text-slate-950 hover:bg-amber-400 cursor-pointer whitespace-nowrap shrink-0"
                 >
                   <PlusCircle className="h-3.5 w-3.5 shrink-0" />
-                  Create Private Tournament
+                  {t('tournaments.createPrivateBtn')}
                 </button>
               </div>
 
@@ -761,7 +806,7 @@ export function TournamentModal() {
                 >
                   <div className="flex items-center justify-between">
                     <h3 className="text-xs font-extrabold uppercase tracking-wider text-amber-300">
-                      Host Private Bracket Tournament
+                      {t('tournaments.hostPrivateTitle')}
                     </h3>
                     <button
                       type="button"
@@ -774,47 +819,47 @@ export function TournamentModal() {
                   <div className="grid grid-cols-1 sm:grid-cols-4 gap-2.5">
                     <div className="sm:col-span-2">
                       <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1">
-                        Tournament Name
+                        {t('tournaments.tournamentNameLabel')}
                       </label>
                       <input
                         type="text"
-                        required
                         maxLength={64}
                         value={privTitle}
                         onChange={(e) => setPrivTitle(e.target.value)}
+                        placeholder={t('tournaments.privateDefaultTitle')}
                         className="w-full rounded-lg border border-white/12 bg-[#0b1017] px-2.5 py-1.5 text-xs text-white focus:border-amber-400 focus:outline-none"
                       />
                     </div>
                     <div>
                       <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1">
-                        Capacity
+                        {t('tournaments.capacityLabel')}
                       </label>
                       <select
                         value={privCapacity}
                         onChange={(e) => setPrivCapacity(Number(e.target.value) as TournamentCapacity)}
                         className="w-full rounded-lg border border-white/12 bg-[#0b1017] px-2.5 py-1.5 text-xs text-white focus:border-amber-400 focus:outline-none"
                       >
-                        <option value={8}>8 Players</option>
-                        <option value={16}>16 Players</option>
-                        <option value={32}>32 Players</option>
+                        <option value={8}>{t('tournaments.playersCountOption', { count: 8 })}</option>
+                        <option value={16}>{t('tournaments.playersCountOption', { count: 16 })}</option>
+                        <option value={32}>{t('tournaments.playersCountOption', { count: 32 })}</option>
                       </select>
                     </div>
                     <div>
                       <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1">
-                        Ruleset
+                        {t('tournaments.rulesetLabel')}
                       </label>
                       <select
                         value={privRules}
                         onChange={(e) => setPrivRules(e.target.value as RuleProfileId)}
                         className="w-full rounded-lg border border-white/12 bg-[#0b1017] px-2.5 py-1.5 text-xs text-white focus:border-amber-400 focus:outline-none"
                       >
-                        <option value="casual">Standard Casual</option>
-                        <option value="wpa">Strict Called (WPA)</option>
+                        <option value="casual">{t('menu.ruleCasual')}</option>
+                        <option value="wpa">{t('menu.ruleWpa')}</option>
                       </select>
                     </div>
                     <div>
                       <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1">
-                        Entry Fee (Coins)
+                        {t('tournaments.entryFeeCoinsLabel')}
                       </label>
                       <input
                         type="number"
@@ -828,7 +873,7 @@ export function TournamentModal() {
                     </div>
                     <div>
                       <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1">
-                        Min Players
+                        {t('tournaments.minPlayersLabel')}
                       </label>
                       <input
                         type="number"
@@ -846,7 +891,7 @@ export function TournamentModal() {
                         className="inline-flex items-center gap-1.5 rounded-lg bg-amber-500 px-4 py-2 text-xs font-extrabold text-slate-950 hover:bg-amber-400 disabled:opacity-50 cursor-pointer whitespace-nowrap shrink-0"
                       >
                         <PlusCircle className="h-3.5 w-3.5" />
-                        {busyAction === 'create_private' ? 'Creating...' : 'Launch Private Bracket'}
+                        {busyAction === 'create_private' ? t('common.creating') : t('tournaments.launchPrivateBtn')}
                       </button>
                     </div>
                   </div>
@@ -858,12 +903,12 @@ export function TournamentModal() {
                 <div className="flex flex-wrap items-center gap-1 rounded-xl border border-white/10 bg-black/35 p-1">
                   {(
                     [
-                      { id: 'all', label: 'All Types' },
-                      { id: 'quick', label: 'Quick' },
-                      { id: 'daily', label: 'Daily' },
-                      { id: 'weekly', label: 'Weekly' },
-                      { id: 'scheduled', label: 'Scheduled' },
-                      { id: 'private', label: 'Private' },
+                      { id: 'all', label: t('tournaments.allTypesFilter') },
+                      { id: 'quick', label: t('tournaments.typeQuick') },
+                      { id: 'daily', label: t('tournaments.typeDaily') },
+                      { id: 'weekly', label: t('tournaments.typeWeekly') },
+                      { id: 'scheduled', label: t('tournaments.typeScheduled') },
+                      { id: 'private', label: t('tournaments.typePrivate') },
                     ] as Array<{ id: TournamentType | 'all'; label: string }>
                   ).map((item) => (
                     <button
@@ -887,15 +932,15 @@ export function TournamentModal() {
                 <select
                   value={statusFilter}
                   onChange={(e) => setStatusFilter(e.target.value as TournamentStatus | 'all')}
-                  aria-label="Filter tournament status"
+                  aria-label={t('tournaments.allStatusesFilter')}
                   className="rounded-lg border border-white/12 bg-[#0b1017] px-2.5 py-1.5 text-xs font-semibold text-slate-200 focus:border-amber-400 focus:outline-none"
                 >
-                  <option value="all">All Statuses</option>
-                  <option value="registration_open">Registration Open</option>
-                  <option value="in_progress">In Progress</option>
-                  <option value="upcoming">Upcoming</option>
-                  <option value="completed">Completed</option>
-                  <option value="cancelled">Cancelled</option>
+                  <option value="all">{t('tournaments.allStatusesFilter')}</option>
+                  <option value="registration_open">{t('tournaments.statusRegistrationOpen')}</option>
+                  <option value="in_progress">{t('tournaments.statusInProgress')}</option>
+                  <option value="upcoming">{t('tournaments.statusUpcoming')}</option>
+                  <option value="completed">{t('tournaments.statusCompleted')}</option>
+                  <option value="cancelled">{t('tournaments.statusCancelled')}</option>
                 </select>
               </div>
 
@@ -914,21 +959,21 @@ export function TournamentModal() {
                     }}
                     className="rounded-lg border border-rose-400/40 bg-rose-500/15 px-2.5 py-1 text-[11px] font-bold text-rose-100 hover:bg-rose-500/25 cursor-pointer"
                   >
-                    Retry
+                    {t('common.retry')}
                   </button>
                 </div>
               )}
 
               {loadingList && tournamentsList.length === 0 ? (
                 <div className="py-12 text-center text-xs text-slate-400">
-                  Loading global tournaments...
+                  {t('tournaments.loadingTournaments')}
                 </div>
               ) : tournamentsList.length === 0 ? (
                 <div className="rounded-xl border border-white/10 bg-black/25 py-12 text-center text-xs text-slate-400 space-y-2">
                   <div>
                     {listError
-                      ? 'Could not load tournaments right now.'
-                      : 'No tournaments match the selected filters.'}
+                      ? t('tournaments.noticeBracketFail')
+                      : t('tournaments.noTournamentsFound')}
                   </div>
                   {listError && (
                     <button
@@ -936,91 +981,93 @@ export function TournamentModal() {
                       onClick={() => void refreshDiscover()}
                       className="inline-flex items-center rounded-lg bg-amber-500 px-3 py-1.5 text-xs font-extrabold text-slate-950 hover:bg-amber-400 cursor-pointer"
                     >
-                      Try Again
+                      {t('tournaments.tryAgainBtn')}
                     </button>
                   )}
                 </div>
               ) : (
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                  {tournamentsList.map((t) => {
+                  {tournamentsList.map((tr) => {
                     const isRegOpen =
-                      t.status === 'registration_open' && nowMs <= t.registrationClosesAtMs;
-                    const isFull = t.participantCount >= t.maxPlayers;
-                    const isBusy = busyAction === `reg_${t.tournamentId}` || busyAction === `wd_${t.tournamentId}`;
+                      tr.status === 'registration_open' && nowMs <= tr.registrationClosesAtMs;
+                    const isFull = tr.participantCount >= tr.maxPlayers;
+                    const isBusy = busyAction === `reg_${tr.tournamentId}` || busyAction === `wd_${tr.tournamentId}`;
                     const countdownTarget =
-                      t.status === 'upcoming'
-                        ? t.registrationOpensAtMs
-                        : t.status === 'registration_open'
-                          ? t.registrationClosesAtMs
-                          : t.startsAtMs;
+                      tr.status === 'upcoming'
+                        ? tr.registrationOpensAtMs
+                        : tr.status === 'registration_open'
+                          ? tr.registrationClosesAtMs
+                          : tr.startsAtMs;
 
                     return (
                       <div
-                        key={t.tournamentId}
+                        key={tr.tournamentId}
                         className="flex flex-col justify-between rounded-xl border border-white/12 bg-[#101924] p-4 shadow-lg"
                       >
                         <div>
                           <div className="flex items-start justify-between gap-2">
                             <div className="min-w-0">
                               <div className="flex flex-wrap items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider">
-                                <span className={statusTextClass(t.status)}>
-                                  {formatTournamentStatus(t.status)}
+                                <span className={statusTextClass(tr.status)}>
+                                  {localizeTournamentStatus(tr.status, language)}
                                 </span>
                                 <span className="text-slate-600">·</span>
-                                <span className="text-amber-300">{formatTournamentType(t.type)}</span>
+                                <span className="text-amber-300">{localizeTournamentType(tr.type, language)}</span>
                                 <span className="text-slate-600">·</span>
                                 <span className="text-slate-400">
-                                  {t.calledShotsEnabled ? 'Strict WPA' : 'Casual'}
+                                  {tr.calledShotsEnabled ? t('tournaments.strictWpaBadge') : t('tournaments.casualBadge')}
                                 </span>
                               </div>
                               <h3 className="mt-1 truncate text-sm font-extrabold text-white">
-                                {t.title}
+                                {tr.title}
                               </h3>
                             </div>
                             <span className="font-mono text-xs font-black tabular-nums text-amber-300 shrink-0">
-                              {t.prizes.championCoins.toLocaleString()} COINS
+                              {formatNumber(tr.prizes.championCoins)} {t('tournaments.poolCoinsUpper')}
                             </span>
                           </div>
 
-                          <p className="mt-1.5 line-clamp-2 text-xs text-slate-400">
-                            {t.description || 'Official single-elimination 8-Ball championship bracket.'}
-                          </p>
+                          {tr.description && (
+                            <p className="mt-1.5 line-clamp-2 text-xs text-slate-400">
+                              {tr.description}
+                            </p>
+                          )}
 
                           <div className="mt-3 grid grid-cols-3 gap-2 rounded-lg border border-white/10 bg-black/30 px-2.5 py-2 text-[11px] font-mono tabular-nums">
                             <div>
                               <div className="text-[9px] font-sans uppercase tracking-wider text-slate-400">
-                                Players
+                                {t('tournaments.playersMetric')}
                               </div>
-                              <div className="font-bold text-white">
-                                {t.participantCount}/{t.maxPlayers}
+                              <div dir="ltr" className="font-bold text-white inline-block">
+                                {tr.participantCount}/{tr.maxPlayers}
                               </div>
                             </div>
                             <div>
                               <div className="text-[9px] font-sans uppercase tracking-wider text-slate-400">
-                                Entry Fee
+                                {t('tournaments.entryFeeLabel')}
                               </div>
                               <div className="font-bold text-amber-200">
-                                {t.entryFeeCoins > 0 ? `${t.entryFeeCoins}` : 'Free'}
+                                {tr.entryFeeCoins > 0 ? formatNumber(tr.entryFeeCoins) : t('common.free')}
                               </div>
                             </div>
                             <div>
                               <div className="text-[9px] font-sans uppercase tracking-wider text-slate-400">
-                                {t.status === 'in_progress'
-                                  ? 'Round'
-                                  : t.status === 'completed'
-                                    ? 'Champion'
-                                    : t.status === 'upcoming'
-                                      ? 'Opens In'
-                                      : 'Closes In'}
+                                {tr.status === 'in_progress'
+                                  ? t('tournaments.roundMetric')
+                                  : tr.status === 'completed'
+                                    ? t('tournaments.championMetric')
+                                    : tr.status === 'upcoming'
+                                      ? t('tournaments.opensInMetric')
+                                      : t('tournaments.closesInMetric')}
                               </div>
                               <div className="truncate font-bold text-slate-200">
-                                {t.status === 'in_progress'
-                                  ? `${t.currentRound}/${t.totalRounds}`
-                                  : t.status === 'completed'
-                                    ? t.championDisplayName ?? 'Awarded'
-                                    : t.status === 'cancelled'
-                                      ? 'Closed'
-                                      : formatCountdownMs(countdownTarget, nowMs)}
+                                {tr.status === 'in_progress'
+                                  ? <span dir="ltr">{tr.currentRound}/{tr.totalRounds}</span>
+                                  : tr.status === 'completed'
+                                    ? tr.championDisplayName ?? t('tournaments.awardedMetric')
+                                    : tr.status === 'cancelled'
+                                      ? t('tournaments.closedMetric')
+                                      : <span dir="ltr">{formatCountdownMs(countdownTarget, nowMs, language)}</span>}
                               </div>
                             </div>
                           </div>
@@ -1029,26 +1076,26 @@ export function TournamentModal() {
                         <div className="mt-3 flex items-center gap-2">
                           <button
                             type="button"
-                            onClick={() => handleSelectTournament(t.tournamentId)}
+                            onClick={() => handleSelectTournament(tr.tournamentId)}
                             className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-lg border border-white/15 bg-white/5 px-3 py-1.5 text-xs font-bold text-slate-200 hover:bg-white/10 cursor-pointer whitespace-nowrap shrink-0"
                           >
-                            View Bracket
+                            {t('tournaments.viewBracketBtn')}
                           </button>
 
-                          {t.viewerRegistered ? (
+                          {tr.viewerRegistered ? (
                             isRegOpen ? (
                               <button
                                 type="button"
                                 disabled={isBusy}
-                                onClick={() => void handleWithdraw(t.tournamentId)}
+                                onClick={() => void handleWithdraw(tr.tournamentId)}
                                 className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-rose-400/40 bg-rose-500/12 px-3 py-1.5 text-xs font-bold text-rose-200 hover:bg-rose-500/20 disabled:opacity-50 cursor-pointer whitespace-nowrap shrink-0"
                               >
-                                Withdraw
+                                {t('tournaments.withdrawBtn')}
                               </button>
                             ) : (
                               <span className="inline-flex items-center gap-1 rounded-lg border border-emerald-400/40 bg-emerald-500/10 px-3 py-1.5 text-xs font-bold text-emerald-300 whitespace-nowrap shrink-0">
                                 <UserCheck className="h-3.5 w-3.5" />
-                                Entered
+                                {t('tournaments.enteredBadge')}
                               </span>
                             )
                           ) : (
@@ -1056,10 +1103,10 @@ export function TournamentModal() {
                               <button
                                 type="button"
                                 disabled={isBusy || isFull}
-                                onClick={() => void handleRegister(t)}
+                                onClick={() => void handleRegister(tr)}
                                 className="inline-flex items-center justify-center gap-1.5 rounded-lg bg-amber-500 px-3.5 py-1.5 text-xs font-extrabold text-slate-950 hover:bg-amber-400 disabled:opacity-45 cursor-pointer whitespace-nowrap shrink-0"
                               >
-                                {isFull ? 'Full' : isBusy ? 'Joining...' : 'Register'}
+                                {isFull ? t('tournaments.fullBadge') : isBusy ? t('common.joining') : t('tournaments.registerBtn')}
                               </button>
                             )
                           )}
@@ -1087,7 +1134,7 @@ export function TournamentModal() {
                         onClick={() => void refreshSelectedDetail(selectedTournamentId)}
                         className="rounded-lg border border-rose-400/40 bg-rose-500/15 px-2.5 py-1 text-[11px] font-bold text-rose-100 hover:bg-rose-500/25 cursor-pointer"
                       >
-                        Retry
+                        {t('common.retry')}
                       </button>
                     )}
                     <button
@@ -1095,7 +1142,7 @@ export function TournamentModal() {
                       onClick={() => setTournamentTab('discover')}
                       className="rounded-lg border border-white/15 bg-white/5 px-2.5 py-1 text-[11px] font-bold text-slate-200 hover:bg-white/10 cursor-pointer"
                     >
-                      Discover
+                      {t('tournaments.tabDiscover')}
                     </button>
                   </div>
                 </div>
@@ -1103,21 +1150,21 @@ export function TournamentModal() {
 
               {loadingDetail && !detail ? (
                 <div className="py-12 text-center text-xs text-slate-400">
-                  Loading tournament bracket...
+                  {t('tournaments.loadingBracket')}
                 </div>
               ) : !detail || !detailTournament ? (
                 <div className="rounded-xl border border-white/10 bg-black/25 py-12 text-center text-xs text-slate-400 space-y-3">
                   <div>
                     {detailError
-                      ? 'Tournament bracket details are currently unavailable.'
-                      : 'Select a tournament from the Discover feed to inspect its live bracket.'}
+                      ? t('tournaments.noticeBracketFail')
+                      : t('tournaments.selectTournamentPrompt')}
                   </div>
                   <button
                     type="button"
                     onClick={() => setTournamentTab('discover')}
                     className="inline-flex items-center rounded-lg bg-amber-500 px-3.5 py-1.5 text-xs font-extrabold text-slate-950 hover:bg-amber-400 cursor-pointer"
                   >
-                    Browse Tournaments
+                    {t('tournaments.browseTournamentsBtn')}
                   </button>
                 </div>
               ) : (
@@ -1128,25 +1175,27 @@ export function TournamentModal() {
                       <div className="min-w-0">
                         <div className="flex flex-wrap items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider">
                           <span className={statusTextClass(detailTournament.status)}>
-                            {formatTournamentStatus(detailTournament.status)}
+                            {localizeTournamentStatus(detailTournament.status, language)}
                           </span>
                           <span className="text-slate-600">·</span>
                           <span className="text-amber-300">
-                            {formatTournamentType(detailTournament.type)}
+                            {localizeTournamentType(detailTournament.type, language)}
                           </span>
                           <span className="text-slate-600">·</span>
                           <span className="text-slate-300">
-                            {detailTournament.calledShotsEnabled ? 'Strict WPA' : 'Standard Casual'}
+                            {localizeRuleProfile(detailTournament.calledShotsEnabled ? 'wpa' : 'casual', language)}
                           </span>
                           <span className="text-slate-600">·</span>
-                          <span className="font-mono text-slate-400">{detailTournament.seasonKey}</span>
+                          <span dir="ltr" className="font-mono text-slate-400">{detailTournament.seasonKey}</span>
                         </div>
                         <h3 className="mt-1 text-lg font-extrabold text-white">
                           {detailTournament.title}
                         </h3>
-                        <p className="mt-0.5 text-xs text-slate-300">
-                          {detailTournament.description}
-                        </p>
+                        {detailTournament.description && (
+                          <p className="mt-0.5 text-xs text-slate-300">
+                            {detailTournament.description}
+                          </p>
+                        )}
                       </div>
 
                       <div className="flex flex-wrap items-center gap-2">
@@ -1159,12 +1208,14 @@ export function TournamentModal() {
                             {copiedCode ? (
                               <>
                                 <Check className="h-3.5 w-3.5 text-emerald-400" />
-                                Copied {detailTournament.inviteCode}
+                                <span>{t('common.copied')}</span>
+                                <span dir="ltr">{detailTournament.inviteCode}</span>
                               </>
                             ) : (
                               <>
                                 <Copy className="h-3.5 w-3.5 text-amber-400" />
-                                Code: {detailTournament.inviteCode}
+                                <span>{t('tournaments.inviteCodePrefix')}</span>
+                                <span dir="ltr">{detailTournament.inviteCode}</span>
                               </>
                             )}
                           </button>
@@ -1183,7 +1234,7 @@ export function TournamentModal() {
                             className="inline-flex items-center gap-1.5 rounded-lg bg-amber-500 px-4 py-1.5 text-xs font-extrabold uppercase tracking-wider text-slate-950 hover:bg-amber-400 cursor-pointer whitespace-nowrap shrink-0"
                           >
                             <Swords className="h-3.5 w-3.5" />
-                            Enter Active Match
+                            {t('tournaments.enterActiveMatchBtn')}
                           </button>
                         )}
 
@@ -1196,7 +1247,7 @@ export function TournamentModal() {
                               onClick={() => void handleRegister(detailTournament)}
                               className="inline-flex items-center gap-1.5 rounded-lg bg-amber-500 px-3.5 py-1.5 text-xs font-extrabold text-slate-950 hover:bg-amber-400 cursor-pointer whitespace-nowrap shrink-0"
                             >
-                              Register Now
+                              {t('tournaments.registerNowBtn')}
                             </button>
                           )}
 
@@ -1211,7 +1262,7 @@ export function TournamentModal() {
                               onClick={() => void handleWithdraw(detailTournament.tournamentId)}
                               className="inline-flex items-center gap-1.5 rounded-lg border border-rose-400/40 bg-rose-500/12 px-3 py-1.5 text-xs font-bold text-rose-200 hover:bg-rose-500/20 cursor-pointer whitespace-nowrap shrink-0"
                             >
-                              Withdraw
+                              {t('tournaments.withdrawBtn')}
                             </button>
                           )}
 
@@ -1236,14 +1287,14 @@ export function TournamentModal() {
                                   if (!res.ok) {
                                     setTournamentNotice({
                                       type: 'err',
-                                      text: res.error ?? 'Unable to start tournament.',
+                                      text: localizeServerError(res.error, language),
                                     });
                                   }
                                 }}
                                 className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-400/45 bg-emerald-500/15 px-3 py-1.5 text-xs font-bold text-emerald-200 hover:bg-emerald-500/25 disabled:opacity-45 cursor-pointer whitespace-nowrap shrink-0"
                               >
                                 <Play className="h-3.5 w-3.5" />
-                                Start Bracket
+                                {t('tournaments.startBracketBtn')}
                               </button>
                               <button
                                 type="button"
@@ -1253,13 +1304,13 @@ export function TournamentModal() {
                                   setBusyAction('host_cancel');
                                   await tournamentClient.cancelTournament(
                                     detailTournament.tournamentId,
-                                    'Cancelled by tournament host.',
+                                    t('tournaments.cancelEventBtn'),
                                   );
                                   setBusyAction(null);
                                 }}
                                 className="inline-flex items-center gap-1.5 rounded-lg border border-rose-500/40 bg-rose-500/12 px-3 py-1.5 text-xs font-bold text-rose-200 hover:bg-rose-500/20 cursor-pointer whitespace-nowrap shrink-0"
                               >
-                                Cancel Event
+                                {t('tournaments.cancelEventBtn')}
                               </button>
                             </>
                           )}
@@ -1270,48 +1321,48 @@ export function TournamentModal() {
                     <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 pt-2 border-t border-white/10 font-mono tabular-nums text-xs">
                       <div className="rounded-lg border border-white/10 bg-black/30 px-2.5 py-1.5">
                         <div className="text-[9px] font-sans uppercase tracking-wider text-slate-400">
-                          Capacity
+                          {t('tournaments.metricCapacity')}
                         </div>
-                        <div className="font-bold text-white">
+                        <div className="font-bold text-white" dir="ltr">
                           {detailTournament.participantCount}/{detailTournament.maxPlayers}
                         </div>
                       </div>
                       <div className="rounded-lg border border-white/10 bg-black/30 px-2.5 py-1.5">
                         <div className="text-[9px] font-sans uppercase tracking-wider text-slate-400">
-                          Entry / Min ELO
+                          {t('tournaments.metricEntryMinElo')}
                         </div>
                         <div className="font-bold text-slate-200">
                           {detailTournament.entryFeeCoins > 0
-                            ? `${detailTournament.entryFeeCoins} COINS`
-                            : 'Free'}
+                            ? `${formatNumber(detailTournament.entryFeeCoins)} ${t('tournaments.poolCoinsUpper')}`
+                            : t('common.free')}
                           {detailTournament.minElo > 0 ? ` · ${detailTournament.minElo}+` : ''}
                         </div>
                       </div>
                       <div className="rounded-lg border border-white/10 bg-black/30 px-2.5 py-1.5">
                         <div className="text-[9px] font-sans uppercase tracking-wider text-slate-400">
-                          1st · 2nd · 3rd
+                          {t('tournaments.metricPodiumPrizes')}
                         </div>
-                        <div className="font-bold text-amber-300">
+                        <div className="font-bold text-amber-300" dir="ltr">
                           {detailTournament.prizes.championCoins} / {detailTournament.prizes.runnerUpCoins} /{' '}
                           {detailTournament.prizes.thirdPlaceCoins}
                         </div>
                       </div>
                       <div className="rounded-lg border border-white/10 bg-black/30 px-2.5 py-1.5">
                         <div className="text-[9px] font-sans uppercase tracking-wider text-slate-400">
-                          Registration Closes
+                          {t('tournaments.metricRegCloses')}
                         </div>
                         <div className="font-bold text-slate-200">
                           {detailTournament.status === 'registration_open'
-                            ? formatCountdownMs(detailTournament.registrationClosesAtMs, nowMs)
-                            : formatDateTime(detailTournament.registrationClosesAtMs)}
+                            ? formatCountdownMs(detailTournament.registrationClosesAtMs, nowMs, language)
+                            : formatDateTime(detailTournament.registrationClosesAtMs, language)}
                         </div>
                       </div>
                       <div className="rounded-lg border border-white/10 bg-black/30 px-2.5 py-1.5">
                         <div className="text-[9px] font-sans uppercase tracking-wider text-slate-400">
-                          Champion
+                          {t('tournaments.metricChampion')}
                         </div>
                         <div className="truncate font-sans font-bold text-amber-300">
-                          {detailTournament.championDisplayName ?? 'Pending'}
+                          {detailTournament.championDisplayName ?? t('common.pending')}
                         </div>
                       </div>
                     </div>
@@ -1325,21 +1376,21 @@ export function TournamentModal() {
                           <Trophy className="h-6 w-6 text-amber-400 shrink-0" />
                           <div>
                             <div className="text-[10px] font-bold uppercase tracking-wider text-amber-300">
-                              Official Championship Podium
+                              {t('tournaments.podiumTitle')}
                             </div>
                             <div className="text-sm font-extrabold text-white">
-                              1st: {detailTournament.championDisplayName}
+                              {t('tournaments.podiumFirst')} {detailTournament.championDisplayName}
                               {detailTournament.runnerUpDisplayName
-                                ? ` · 2nd: ${detailTournament.runnerUpDisplayName}`
+                                ? ` · ${t('tournaments.podiumSecond')} ${detailTournament.runnerUpDisplayName}`
                                 : ''}
                               {detailTournament.thirdPlaceDisplayName
-                                ? ` · 3rd: ${detailTournament.thirdPlaceDisplayName}`
+                                ? ` · ${t('tournaments.podiumThird')} ${detailTournament.thirdPlaceDisplayName}`
                                 : ''}
                             </div>
                           </div>
                         </div>
                         <span className="font-mono text-xs font-extrabold tabular-nums text-amber-300">
-                          +{detailTournament.prizes.championCoins.toLocaleString()} COINS
+                          +{formatNumber(detailTournament.prizes.championCoins)} {t('tournaments.poolCoinsUpper')}
                         </span>
                       </div>
                     )}
@@ -1359,7 +1410,7 @@ export function TournamentModal() {
                         <div className="flex items-center justify-between gap-2">
                           <span className="inline-flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wider text-emerald-300">
                             <Eye className="h-3.5 w-3.5" />
-                            Ongoing Live Matches ({liveMatches.length})
+                            {t('tournaments.ongoingLiveMatches', { count: liveMatches.length })}
                           </span>
                         </div>
                         <div className="flex flex-wrap gap-2">
@@ -1370,10 +1421,11 @@ export function TournamentModal() {
                             >
                               <div className="min-w-0">
                                 <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
-                                  {m.roundLabel}
+                                  {localizeTournamentRoundLabel(m.roundLabel, language)}
                                 </div>
                                 <div className="font-bold text-white truncate max-w-[200px]">
-                                  {m.player1Name ?? 'Player 1'} vs {m.player2Name ?? 'Player 2'}
+                                  {m.player1Name ?? t('tournaments.tbdSlot')} {t('common.vs')}{' '}
+                                  {m.player2Name ?? t('tournaments.tbdSlot')}
                                 </div>
                               </div>
                               <button
@@ -1389,7 +1441,7 @@ export function TournamentModal() {
                                 className="inline-flex items-center gap-1 rounded-lg bg-emerald-500 px-2.5 py-1 text-[11px] font-extrabold text-slate-950 hover:bg-emerald-400 cursor-pointer whitespace-nowrap shrink-0"
                               >
                                 <Eye className="h-3 w-3" />
-                                Watch Live
+                                {t('tournaments.watchLiveBtn')}
                               </button>
                             </div>
                           ))}
@@ -1401,16 +1453,19 @@ export function TournamentModal() {
                   {/* Single-Elimination Bracket Tree */}
                   {detail.matches.length === 0 ? (
                     <div className="rounded-xl border border-white/10 bg-black/25 py-8 px-4 text-center text-xs text-slate-400">
-                      Bracket pairings will be generated automatically by ELO seeding once registration closes or capacity is reached.
+                      {t('tournaments.bracketPendingNotice')}
                     </div>
                   ) : (
                     <div className="rounded-xl border border-white/10 bg-black/30 p-3.5">
                       <div className="flex items-center justify-between mb-3">
                         <span className="text-[11px] font-bold uppercase tracking-wider text-amber-400">
-                          Single-Elimination Bracket ({detailTournament.bracketSize}-Slot Tree)
+                          {t('tournaments.singleElimTreeTitle', { size: detailTournament.bracketSize })}
                         </span>
                         <span className="text-[11px] font-mono tabular-nums text-slate-400">
-                          Round {detailTournament.currentRound} / {detailTournament.totalRounds}
+                          {t('tournaments.roundRatio', {
+                            cur: detailTournament.currentRound,
+                            total: detailTournament.totalRounds,
+                          })}
                         </span>
                       </div>
 
@@ -1421,7 +1476,7 @@ export function TournamentModal() {
                             className="min-w-[235px] flex-1 space-y-2.5"
                           >
                             <div className="rounded-lg border border-white/10 bg-[#0b1017] px-2.5 py-1.5 text-center text-[11px] font-extrabold uppercase tracking-wider text-amber-300">
-                              {col.roundLabel}
+                              {localizeTournamentRoundLabel(col.roundLabel, language)}
                             </div>
                             <div className="space-y-2.5">
                               {col.matches.map((m) => (
@@ -1451,7 +1506,7 @@ export function TournamentModal() {
                         {roundColumns.thirdPlace && (
                           <div className="min-w-[235px] flex-1 space-y-2.5">
                             <div className="rounded-lg border border-white/10 bg-[#0b1017] px-2.5 py-1.5 text-center text-[11px] font-extrabold uppercase tracking-wider text-slate-300">
-                              Third Place Match
+                              {t('tournaments.thirdPlace')}
                             </div>
                             <BracketMatchCard
                               match={roundColumns.thirdPlace}
@@ -1482,13 +1537,16 @@ export function TournamentModal() {
                       <div className="flex items-center justify-between mb-2">
                         <span className="inline-flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wider text-amber-400">
                           <Users className="h-3.5 w-3.5" />
-                          Participants ({detail.participants.length}/{detailTournament.maxPlayers})
+                          {t('tournaments.participantsRatio', {
+                            cur: detail.participants.length,
+                            max: detailTournament.maxPlayers,
+                          })}
                         </span>
                       </div>
                       <div className="max-h-56 overflow-y-auto space-y-1.5">
                         {detail.participants.length === 0 ? (
                           <div className="py-4 text-center text-xs text-slate-400">
-                            No competitors registered yet.
+                            {t('tournaments.noParticipantsYet')}
                           </div>
                         ) : (
                           detail.participants.map((p) => {
@@ -1499,7 +1557,7 @@ export function TournamentModal() {
                                 className="flex items-center justify-between gap-2 rounded-lg border border-white/8 bg-[#101924] px-2.5 py-1.5 text-xs"
                               >
                                 <div className="flex items-center gap-2 min-w-0">
-                                  <span className="w-6 font-mono text-[10px] tabular-nums text-slate-400 shrink-0">
+                                  <span className="w-6 font-mono text-[10px] tabular-nums text-slate-400 shrink-0" dir="ltr">
                                     {p.seed ? `#${p.seed}` : '—'}
                                   </span>
                                   <span
@@ -1520,7 +1578,9 @@ export function TournamentModal() {
                                   </button>
                                 </div>
                                 <div className="flex items-center gap-2 font-mono text-[10px] tabular-nums shrink-0">
-                                  <span className="text-slate-400">{p.elo} ELO</span>
+                                  <span className="text-slate-400">
+                                    {formatNumber(p.elo)} {t('common.elo')}
+                                  </span>
                                   <span
                                     className={`uppercase font-bold ${
                                       p.status === 'champion'
@@ -1530,7 +1590,9 @@ export function TournamentModal() {
                                           : 'text-emerald-300'
                                     }`}
                                   >
-                                    {p.placement ? placementLabel(p.placement) : p.status}
+                                    {p.placement
+                                      ? placementLabel(p.placement, language)
+                                      : localizeParticipantStatus(p.status, language)}
                                   </span>
                                 </div>
                               </div>
@@ -1544,7 +1606,7 @@ export function TournamentModal() {
                       <div className="flex items-center justify-between mb-2">
                         <span className="inline-flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wider text-amber-400">
                           <Timer className="h-3.5 w-3.5" />
-                          Tournament Log & Payouts
+                          {t('tournaments.payoutsLogTitle')}
                         </span>
                       </div>
                       <div className="max-h-56 overflow-y-auto space-y-1.5 text-xs">
@@ -1554,10 +1616,10 @@ export function TournamentModal() {
                             className="flex items-center justify-between gap-2 rounded-lg border border-amber-400/25 bg-amber-500/8 px-2.5 py-1.5"
                           >
                             <span className="truncate font-semibold text-amber-200">
-                              {pay.displayName} · {pay.placement.replace('_', ' ')}
+                              {pay.displayName} · {localizePayoutPlacement(pay.placement, language)}
                             </span>
                             <span className="font-mono font-bold tabular-nums text-amber-300 shrink-0">
-                              +{pay.coinsAwarded} COINS
+                              +{formatNumber(pay.coinsAwarded)} {t('tournaments.poolCoinsUpper')}
                             </span>
                           </div>
                         ))}
@@ -1568,7 +1630,7 @@ export function TournamentModal() {
                           >
                             <span className="text-slate-300 truncate">{ev.summary}</span>
                             <span className="font-mono text-[10px] text-slate-500 shrink-0">
-                              {formatDateTime(ev.createdAtMs)}
+                              {formatDateTime(ev.createdAtMs, language)}
                             </span>
                           </div>
                         ))}
@@ -1596,7 +1658,7 @@ export function TournamentModal() {
                         : 'text-slate-300 hover:text-white'
                     }`}
                   >
-                    Global All-Time
+                    {t('tournaments.globalAllTimeOption')}
                   </button>
                   <button
                     type="button"
@@ -1610,7 +1672,7 @@ export function TournamentModal() {
                         : 'text-slate-300 hover:text-white'
                     }`}
                   >
-                    Season {currentSeasonKey}
+                    {t('tournaments.seasonOption', { season: currentSeasonKey })}
                   </button>
                 </div>
 
@@ -1622,7 +1684,7 @@ export function TournamentModal() {
                   }}
                   className="rounded-lg border border-white/12 bg-white/5 px-3 py-1.5 text-xs font-semibold text-slate-200 hover:bg-white/10 cursor-pointer whitespace-nowrap"
                 >
-                  Refresh
+                  {t('common.refresh')}
                 </button>
               </div>
 
@@ -1634,37 +1696,35 @@ export function TournamentModal() {
                     onClick={() => void refreshLeaderboard()}
                     className="rounded-lg border border-rose-400/40 bg-rose-500/15 px-2.5 py-1 text-[11px] font-bold text-rose-100 hover:bg-rose-500/25 cursor-pointer"
                   >
-                    Retry
+                    {t('common.retry')}
                   </button>
                 </div>
               )}
 
               <div className="overflow-x-auto rounded-xl border border-white/10 bg-black/25">
-                <table className="w-full text-left text-xs">
+                <table className="w-full text-start text-xs">
                   <thead>
                     <tr className="border-b border-white/10 text-[10px] font-bold uppercase tracking-wider text-slate-400">
-                      <th className="px-3 py-2">Rank</th>
-                      <th className="px-3 py-2">Competitor</th>
-                      <th className="px-3 py-2 text-right">Titles</th>
-                      <th className="px-3 py-2 text-right">Finals</th>
-                      <th className="px-3 py-2 text-right">Match W–L</th>
-                      <th className="px-3 py-2 text-right">Win %</th>
-                      <th className="px-3 py-2 text-right">Prize Coins</th>
+                      <th className="px-3 py-2">{t('tournaments.colRank')}</th>
+                      <th className="px-3 py-2">{t('tournaments.colCompetitor')}</th>
+                      <th className="px-3 py-2 text-end">{t('tournaments.colTitles')}</th>
+                      <th className="px-3 py-2 text-end">{t('tournaments.colFinals')}</th>
+                      <th className="px-3 py-2 text-end">{t('tournaments.colMatchWl')}</th>
+                      <th className="px-3 py-2 text-end">{t('tournaments.colWinPct')}</th>
+                      <th className="px-3 py-2 text-end">{t('tournaments.colPrizeCoins')}</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-white/5">
                     {loadingLeaderboard && tournamentLeaderboard.length === 0 ? (
                       <tr>
                         <td colSpan={7} className="py-8 text-center text-slate-400">
-                          Loading tournament leaderboard...
+                          {t('tournaments.loadingLeaderboard')}
                         </td>
                       </tr>
                     ) : tournamentLeaderboard.length === 0 ? (
                       <tr>
                         <td colSpan={7} className="py-8 text-center text-slate-400">
-                          {leaderboardError
-                            ? 'Tournament leaderboard is temporarily unavailable.'
-                            : 'No tournament champions or bracket results recorded yet for this season.'}
+                          {leaderboardError ?? t('tournaments.noLeaderboardData')}
                         </td>
                       </tr>
                     ) : (
@@ -1676,7 +1736,7 @@ export function TournamentModal() {
                             key={row.playerId}
                             className={isSelf ? 'bg-amber-500/10' : 'hover:bg-white/[0.03]'}
                           >
-                            <td className="px-3 py-2 font-mono font-bold tabular-nums text-amber-300">
+                            <td className="px-3 py-2 font-mono font-bold tabular-nums text-amber-300" dir="ltr">
                               #{row.rank}
                             </td>
                             <td className="px-3 py-2">
@@ -1686,7 +1746,7 @@ export function TournamentModal() {
                                   soundEngine.playUiClick();
                                   openProgressionModal('profile', row.playerId);
                                 }}
-                                className="flex items-center gap-2 text-left hover:underline cursor-pointer"
+                                className="flex items-center gap-2 text-start hover:underline cursor-pointer"
                               >
                                 <span
                                   className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded text-[11px] font-bold"
@@ -1695,25 +1755,25 @@ export function TournamentModal() {
                                   {av.glyph}
                                 </span>
                                 <span className="font-bold text-white">{row.displayName}</span>
-                                <span className="font-mono text-[10px] text-slate-400">
+                                <span className="font-mono text-[10px] text-slate-400" dir="ltr">
                                   {row.elo}
                                 </span>
                               </button>
                             </td>
-                            <td className="px-3 py-2 text-right font-mono font-extrabold tabular-nums text-amber-300">
-                              {row.championships}
+                            <td className="px-3 py-2 text-end font-mono font-extrabold tabular-nums text-amber-300">
+                              {formatNumber(row.championships)}
                             </td>
-                            <td className="px-3 py-2 text-right font-mono tabular-nums text-slate-200">
-                              {row.finalsAppearances}
+                            <td className="px-3 py-2 text-end font-mono tabular-nums text-slate-200">
+                              {formatNumber(row.finalsAppearances)}
                             </td>
-                            <td className="px-3 py-2 text-right font-mono tabular-nums text-slate-200">
+                            <td className="px-3 py-2 text-end font-mono tabular-nums text-slate-200" dir="ltr">
                               {row.matchesWon}–{row.matchesLost}
                             </td>
-                            <td className="px-3 py-2 text-right font-mono tabular-nums text-slate-200">
+                            <td className="px-3 py-2 text-end font-mono tabular-nums text-slate-200" dir="ltr">
                               {row.winRate.toFixed(1)}%
                             </td>
-                            <td className="px-3 py-2 text-right font-mono font-bold tabular-nums text-amber-200">
-                              {row.totalCoinsWon.toLocaleString()}
+                            <td className="px-3 py-2 text-end font-mono font-bold tabular-nums text-amber-200">
+                              {formatNumber(row.totalCoinsWon)}
                             </td>
                           </tr>
                         );
@@ -1729,45 +1789,57 @@ export function TournamentModal() {
             <div className="space-y-4">
               {loadingCareer && !playerTournamentStats ? (
                 <div className="py-10 text-center text-xs text-slate-400">
-                  Loading tournament career telemetry...
+                  {t('tournaments.loadingCareer')}
                 </div>
               ) : !playerTournamentStats ? (
                 <div className="rounded-xl border border-white/10 bg-black/25 py-10 text-center text-xs text-slate-400 space-y-3">
-                  <div>{careerError ?? 'Tournament career telemetry unavailable.'}</div>
+                  <div>{careerError ?? t('tournaments.noticeCareerFail')}</div>
                   <button
                     type="button"
                     onClick={() => void refreshCareer()}
                     className="inline-flex items-center rounded-lg bg-amber-500 px-3.5 py-1.5 text-xs font-extrabold text-slate-950 hover:bg-amber-400 cursor-pointer"
                   >
-                    Retry
+                    {t('common.retry')}
                   </button>
                 </div>
               ) : (
                 <>
                   <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
                     {[
-                      { label: 'Championships', value: String(playerTournamentStats.championships) },
-                      { label: 'Finals Reached', value: String(playerTournamentStats.finalsAppearances) },
                       {
-                        label: 'Bracket Record',
-                        value: `${playerTournamentStats.matchesWon}W – ${playerTournamentStats.matchesLost}L`,
+                        label: t('tournaments.statChampionships'),
+                        value: formatNumber(playerTournamentStats.championships),
                       },
                       {
-                        label: 'Match Win Rate',
+                        label: t('tournaments.statFinalsReached'),
+                        value: formatNumber(playerTournamentStats.finalsAppearances),
+                      },
+                      {
+                        label: t('tournaments.statBracketRecord'),
+                        value: `${playerTournamentStats.matchesWon}–${playerTournamentStats.matchesLost}`,
+                        ltr: true,
+                      },
+                      {
+                        label: t('tournaments.statMatchWinRate'),
                         value: `${playerTournamentStats.winRate.toFixed(1)}%`,
-                      },
-                      { label: 'Events Entered', value: String(playerTournamentStats.tournamentsEntered) },
-                      {
-                        label: '3rd Place Finishes',
-                        value: String(playerTournamentStats.thirdPlaceFinishes),
+                        ltr: true,
                       },
                       {
-                        label: 'Prize Coins Won',
-                        value: playerTournamentStats.totalCoinsWon.toLocaleString(),
+                        label: t('tournaments.statEventsEntered'),
+                        value: formatNumber(playerTournamentStats.tournamentsEntered),
                       },
                       {
-                        label: 'Trophies Earned',
+                        label: t('tournaments.statThirdPlace'),
+                        value: formatNumber(playerTournamentStats.thirdPlaceFinishes),
+                      },
+                      {
+                        label: t('tournaments.statPrizeCoinsWon'),
+                        value: formatNumber(playerTournamentStats.totalCoinsWon),
+                      },
+                      {
+                        label: t('tournaments.statTrophiesEarned'),
                         value: `${playerTournamentStats.trophies.length}/${TOURNAMENT_TROPHY_CATALOG.length}`,
+                        ltr: true,
                       },
                     ].map((stat) => (
                       <div
@@ -1777,7 +1849,10 @@ export function TournamentModal() {
                         <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
                           {stat.label}
                         </div>
-                        <div className="mt-0.5 font-mono text-sm font-extrabold tabular-nums text-white">
+                        <div
+                          className="mt-0.5 font-mono text-sm font-extrabold tabular-nums text-white"
+                          dir={stat.ltr ? 'ltr' : undefined}
+                        >
                           {stat.value}
                         </div>
                       </div>
@@ -1787,12 +1862,18 @@ export function TournamentModal() {
                   {/* Trophy Cabinet */}
                   <div className="rounded-xl border border-white/10 bg-black/25 p-3.5">
                     <div className="text-[11px] font-bold uppercase tracking-wider text-amber-400 mb-2.5">
-                      Championship Trophy Case
+                      {t('tournaments.trophyCaseTitle')}
                     </div>
                     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
                       {TOURNAMENT_TROPHY_CATALOG.map((def) => {
                         const unlocked = playerTournamentStats.trophies.find(
-                          (t) => t.id === def.id,
+                          (tr) => tr.id === def.id,
+                        );
+                        const trophyMeta = localizeTournamentTrophy(
+                          def.id,
+                          def.name,
+                          def.description,
+                          language,
                         );
                         return (
                           <div
@@ -1810,14 +1891,18 @@ export function TournamentModal() {
                                   unlocked ? 'text-emerald-300' : 'text-slate-500'
                                 }`}
                               >
-                                {unlocked ? 'Awarded' : 'Locked'}
+                                {unlocked ? t('tournaments.awardedBadge') : t('common.locked')}
                               </span>
                             </div>
-                            <div className="mt-1 text-xs font-extrabold text-white">{def.name}</div>
-                            <p className="mt-0.5 text-[11px] text-slate-400">{def.description}</p>
+                            <div className="mt-1 text-xs font-extrabold text-white">
+                              {trophyMeta.name}
+                            </div>
+                            <p className="mt-0.5 text-[11px] text-slate-400">
+                              {trophyMeta.description}
+                            </p>
                             {unlocked && (
                               <div className="mt-1.5 text-[10px] text-amber-300 truncate">
-                                {unlocked.tournamentTitle} · {formatDateTime(unlocked.unlockedAtMs)}
+                                {unlocked.tournamentTitle} · {formatDateTime(unlocked.unlockedAtMs, language)}
                               </div>
                             )}
                           </div>
@@ -1829,11 +1914,11 @@ export function TournamentModal() {
                   {/* Recent Tournament History */}
                   <div className="rounded-xl border border-white/10 bg-black/25 p-3.5">
                     <div className="text-[11px] font-bold uppercase tracking-wider text-amber-400 mb-2">
-                      Recent Tournament Placements
+                      {t('tournaments.recentTournamentsTitle')}
                     </div>
                     {playerTournamentStats.recentTournaments.length === 0 ? (
                       <div className="py-4 text-xs text-slate-400">
-                        Enter a tournament in the Discover tab to build your championship record.
+                        {t('tournaments.noTrophiesYet')}
                       </div>
                     ) : (
                       <div className="space-y-1.5">
@@ -1845,16 +1930,20 @@ export function TournamentModal() {
                             <button
                               type="button"
                               onClick={() => handleSelectTournament(item.tournamentId)}
-                              className="font-bold text-white hover:underline cursor-pointer text-left"
+                              className="font-bold text-white hover:underline cursor-pointer text-start"
                             >
                               {item.title}
                             </button>
                             <div className="flex items-center gap-3 font-mono text-[11px] tabular-nums">
                               <span className="text-slate-300">
-                                {item.placement ? placementLabel(item.placement) : item.participantStatus}
+                                {item.placement
+                                  ? placementLabel(item.placement, language)
+                                  : localizeParticipantStatus(item.participantStatus, language)}
                               </span>
                               {item.coinsWon > 0 && (
-                                <span className="font-bold text-amber-300">+{item.coinsWon} COINS</span>
+                                <span className="font-bold text-amber-300">
+                                  +{formatNumber(item.coinsWon)} {t('tournaments.poolCoinsUpper')}
+                                </span>
                               )}
                             </div>
                           </div>
@@ -1871,18 +1960,15 @@ export function TournamentModal() {
             <div className="space-y-4">
               <div className="rounded-xl border border-white/12 bg-black/30 p-3.5 space-y-2">
                 <label className="block text-[10px] font-bold uppercase tracking-wider text-amber-300">
-                  Server-Verified Operator Secret (Session Only)
+                  {t('tournaments.adminSecretLabel')}
                 </label>
                 <input
                   type="password"
                   value={adminSecretInput}
                   onChange={(e) => setAdminSecretInput(e.target.value)}
-                  placeholder="Enter operator TOURNAMENT_ADMIN_SECRET..."
+                  placeholder={t('tournaments.adminKeyPlaceholder')}
                   className="w-full rounded-lg border border-white/15 bg-[#0b1017] px-3 py-2 font-mono text-xs text-white focus:border-amber-400 focus:outline-none"
                 />
-                <p className="text-[11px] text-slate-400">
-                  Admin actions are verified server-side on every request and are never stored in browser storage.
-                </p>
               </div>
 
               {/* Create Global Tournament */}
@@ -1893,7 +1979,7 @@ export function TournamentModal() {
                   setBusyAction('admin_create');
                   const regMs = Math.max(1, adminRegMinutes) * 60_000;
                   const res = await tournamentClient.adminCreateTournament(adminSecretInput, {
-                    title: adminTitle.trim() || 'Global Masters Cup',
+                    title: adminTitle.trim() || t('tournaments.typeWeekly'),
                     type: adminType,
                     maxPlayers: adminCapacity,
                     ruleProfileId: adminRules,
@@ -1910,53 +1996,56 @@ export function TournamentModal() {
                   if (!res.ok || !res.data) {
                     setTournamentNotice({
                       type: 'err',
-                      text: res.error ?? 'Admin tournament creation rejected.',
+                      text: localizeServerError(res.error, language),
                     });
                     return;
                   }
                   setTournamentNotice({
                     type: 'ok',
-                    text: `Global tournament "${res.data.tournament.title}" published.`,
+                    text: t('tournaments.adminSuccessCreated', {
+                      title: res.data.tournament.title,
+                    }),
                   });
                   useGameStore.getState().setSelectedTournamentId(res.data.tournament.tournamentId);
                 }}
                 className="rounded-xl border border-white/12 bg-[#101924] p-4 space-y-3"
               >
                 <div className="text-xs font-extrabold uppercase tracking-wider text-amber-300">
-                  Create Global / Scheduled Tournament
+                  {t('tournaments.adminCreateGlobalTitle')}
                 </div>
                 <div className="grid grid-cols-1 sm:grid-cols-4 gap-2.5">
                   <div className="sm:col-span-2">
                     <label className="block text-[10px] font-bold uppercase text-slate-400 mb-1">
-                      Title
+                      {t('tournaments.adminTitleLabel')}
                     </label>
                     <input
                       type="text"
                       required
                       value={adminTitle}
+                      placeholder={t('tournaments.tournamentTitlePlaceholder')}
                       onChange={(e) => setAdminTitle(e.target.value)}
                       className="w-full rounded-lg border border-white/12 bg-[#0b1017] px-2.5 py-1.5 text-xs text-white"
                     />
                   </div>
                   <div>
                     <label className="block text-[10px] font-bold uppercase text-slate-400 mb-1">
-                      Type
+                      {t('tournaments.adminTypeLabel')}
                     </label>
                     <select
                       value={adminType}
                       onChange={(e) => setAdminType(e.target.value as TournamentType)}
                       className="w-full rounded-lg border border-white/12 bg-[#0b1017] px-2.5 py-1.5 text-xs text-white"
                     >
-                      <option value="quick">Quick</option>
-                      <option value="daily">Daily</option>
-                      <option value="weekly">Weekly Championship</option>
-                      <option value="scheduled">Scheduled Global</option>
-                      <option value="private">Private</option>
+                      <option value="quick">{t('tournaments.typeQuick')}</option>
+                      <option value="daily">{t('tournaments.typeDaily')}</option>
+                      <option value="weekly">{t('tournaments.typeWeekly')}</option>
+                      <option value="scheduled">{t('tournaments.typeScheduled')}</option>
+                      <option value="private">{t('tournaments.typePrivate')}</option>
                     </select>
                   </div>
                   <div>
                     <label className="block text-[10px] font-bold uppercase text-slate-400 mb-1">
-                      Max Players
+                      {t('tournaments.adminMaxPlayersLabel')}
                     </label>
                     <select
                       value={adminCapacity}
@@ -1965,27 +2054,27 @@ export function TournamentModal() {
                       }
                       className="w-full rounded-lg border border-white/12 bg-[#0b1017] px-2.5 py-1.5 text-xs text-white"
                     >
-                      <option value={8}>8</option>
-                      <option value={16}>16</option>
-                      <option value={32}>32</option>
+                      <option value={8}>{t('tournaments.playersCountOption', { count: 8 })}</option>
+                      <option value={16}>{t('tournaments.playersCountOption', { count: 16 })}</option>
+                      <option value={32}>{t('tournaments.playersCountOption', { count: 32 })}</option>
                     </select>
                   </div>
                   <div>
                     <label className="block text-[10px] font-bold uppercase text-slate-400 mb-1">
-                      Ruleset
+                      {t('tournaments.adminRulesetLabel')}
                     </label>
                     <select
                       value={adminRules}
                       onChange={(e) => setAdminRules(e.target.value as RuleProfileId)}
                       className="w-full rounded-lg border border-white/12 bg-[#0b1017] px-2.5 py-1.5 text-xs text-white"
                     >
-                      <option value="casual">Standard Casual</option>
-                      <option value="wpa">Strict WPA</option>
+                      <option value="casual">{t('menu.ruleCasual')}</option>
+                      <option value="wpa">{t('menu.ruleWpa')}</option>
                     </select>
                   </div>
                   <div>
                     <label className="block text-[10px] font-bold uppercase text-slate-400 mb-1">
-                      Entry Fee
+                      {t('tournaments.adminEntryFeeLabel')}
                     </label>
                     <input
                       type="number"
@@ -1997,7 +2086,7 @@ export function TournamentModal() {
                   </div>
                   <div>
                     <label className="block text-[10px] font-bold uppercase text-slate-400 mb-1">
-                      Min ELO
+                      {t('tournaments.adminMinEloLabel')}
                     </label>
                     <input
                       type="number"
@@ -2009,7 +2098,7 @@ export function TournamentModal() {
                   </div>
                   <div>
                     <label className="block text-[10px] font-bold uppercase text-slate-400 mb-1">
-                      Reg Window (Min)
+                      {t('tournaments.adminRegWindowLabel')}
                     </label>
                     <input
                       type="number"
@@ -2021,7 +2110,7 @@ export function TournamentModal() {
                   </div>
                   <div>
                     <label className="block text-[10px] font-bold uppercase text-slate-400 mb-1">
-                      1st Prize Coins
+                      {t('tournaments.adminFirstPrizeLabel')}
                     </label>
                     <input
                       type="number"
@@ -2038,7 +2127,7 @@ export function TournamentModal() {
                       className="inline-flex items-center gap-1.5 rounded-lg bg-amber-500 px-4 py-2 text-xs font-extrabold text-slate-950 hover:bg-amber-400 disabled:opacity-45 cursor-pointer whitespace-nowrap"
                     >
                       <PlusCircle className="h-3.5 w-3.5" />
-                      Publish Tournament
+                      {t('tournaments.adminPublishBtn')}
                     </button>
                   </div>
                 </div>
@@ -2050,10 +2139,10 @@ export function TournamentModal() {
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <div>
                       <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
-                        Managing Selected Event
+                        {t('tournaments.adminManagingSelected', { title: '' })}
                       </div>
                       <div className="text-sm font-extrabold text-white">
-                        {detailTournament.title} ({detailTournament.status})
+                        {detailTournament.title} ({localizeTournamentStatus(detailTournament.status, language)})
                       </div>
                     </div>
 
@@ -2070,13 +2159,13 @@ export function TournamentModal() {
                           setBusyAction(null);
                           setTournamentNotice(
                             res.ok
-                              ? { type: 'ok', text: 'Tournament bracket started.' }
-                              : { type: 'err', text: res.error ?? 'Failed to start.' },
+                              ? { type: 'ok', text: t('tournaments.adminSuccessStarted') }
+                              : { type: 'err', text: localizeServerError(res.error, language) },
                           );
                         }}
                         className="rounded-lg border border-emerald-400/45 bg-emerald-500/15 px-3 py-1.5 text-xs font-bold text-emerald-200 hover:bg-emerald-500/25 disabled:opacity-45 cursor-pointer whitespace-nowrap"
                       >
-                        Force Start
+                        {t('tournaments.adminForceStartBtn')}
                       </button>
                       <button
                         type="button"
@@ -2090,13 +2179,18 @@ export function TournamentModal() {
                           setBusyAction(null);
                           setTournamentNotice(
                             res.ok
-                              ? { type: 'ok', text: 'Processed due tournament timers.' }
-                              : { type: 'err', text: res.error ?? 'Timer sync failed.' },
+                              ? {
+                                  type: 'ok',
+                                  text: t('tournaments.adminSuccessTimers', {
+                                    forfeits: (res.data as { forfeits?: number } | undefined)?.forfeits ?? 0,
+                                  }),
+                                }
+                              : { type: 'err', text: localizeServerError(res.error, language) },
                           );
                         }}
                         className="rounded-lg border border-white/15 bg-white/5 px-3 py-1.5 text-xs font-bold text-slate-200 hover:bg-white/10 disabled:opacity-45 cursor-pointer whitespace-nowrap"
                       >
-                        Process Timers
+                        {t('tournaments.adminProcessTimersShort')}
                       </button>
                       <button
                         type="button"
@@ -2106,21 +2200,18 @@ export function TournamentModal() {
                           const res = await tournamentClient.adminCancelTournament(
                             adminSecretInput,
                             detailTournament.tournamentId,
-                            'Cancelled by tournament administrator.',
+                            t('tournaments.cancelTournamentBtn'),
                           );
                           setBusyAction(null);
                           setTournamentNotice(
                             res.ok
-                              ? {
-                                  type: 'ok',
-                                  text: `Cancelled & refunded ${res.data?.refundedCount ?? 0} entries.`,
-                                }
-                              : { type: 'err', text: res.error ?? 'Cancel failed.' },
+                              ? { type: 'ok', text: t('tournaments.adminSuccessCancelled') }
+                              : { type: 'err', text: localizeServerError(res.error, language) },
                           );
                         }}
                         className="rounded-lg border border-rose-400/45 bg-rose-500/15 px-3 py-1.5 text-xs font-bold text-rose-200 hover:bg-rose-500/25 disabled:opacity-45 cursor-pointer whitespace-nowrap"
                       >
-                        Cancel & Refund
+                        {t('tournaments.adminCancelRefundBtn')}
                       </button>
                     </div>
                   </div>
@@ -2128,7 +2219,7 @@ export function TournamentModal() {
                   {unresolvedMatches.length > 0 && (
                     <div className="pt-3 border-t border-white/10 space-y-2">
                       <div className="text-[11px] font-bold uppercase tracking-wider text-amber-300">
-                        Resolve Active Bracket Match
+                        {t('tournaments.adminResolveActiveTitle')}
                       </div>
                       <div className="grid grid-cols-1 sm:grid-cols-4 gap-2">
                         <select
@@ -2141,10 +2232,10 @@ export function TournamentModal() {
                           }}
                           className="rounded-lg border border-white/12 bg-[#0b1017] px-2.5 py-1.5 text-xs text-white"
                         >
-                          <option value="">Select match...</option>
+                          <option value="">{t('tournaments.adminSelectMatchPlaceholder')}</option>
                           {unresolvedMatches.map((m) => (
                             <option key={m.bracketMatchId} value={m.bracketMatchId}>
-                              {m.roundLabel}: {m.player1Name} vs {m.player2Name}
+                              {localizeTournamentRoundLabel(m.roundLabel, language)}: {m.player1Name} {t('common.vs')} {m.player2Name}
                             </option>
                           ))}
                         </select>
@@ -2154,7 +2245,7 @@ export function TournamentModal() {
                           onChange={(e) => setAdminResolveWinnerId(e.target.value)}
                           className="rounded-lg border border-white/12 bg-[#0b1017] px-2.5 py-1.5 text-xs text-white"
                         >
-                          <option value="">Select winner...</option>
+                          <option value="">{t('tournaments.adminSelectWinnerPlaceholder')}</option>
                           {(() => {
                             const m = unresolvedMatches.find(
                               (x) => x.bracketMatchId === adminResolveMatchId,
@@ -2176,9 +2267,9 @@ export function TournamentModal() {
                           }
                           className="rounded-lg border border-white/12 bg-[#0b1017] px-2.5 py-1.5 text-xs text-white"
                         >
-                          <option value="admin_resolved">Admin Override</option>
-                          <option value="forfeit">Forfeit</option>
-                          <option value="no_show">No-Show</option>
+                          <option value="admin_resolved">{t('tournaments.adminOverrideOption')}</option>
+                          <option value="forfeit">{t('tournaments.adminForfeitOption')}</option>
+                          <option value="no_show">{t('tournaments.adminNoShowOption')}</option>
                         </select>
 
                         <button
@@ -2198,34 +2289,34 @@ export function TournamentModal() {
                               {
                                 winnerId: adminResolveWinnerId,
                                 resolutionType: adminResolveType,
-                                reason: adminResolveReason.trim() || 'Admin resolution',
+                                reason: adminResolveReason.trim() || t('tournaments.adminOverrideOption'),
                               },
                             );
                             setBusyAction(null);
                             if (!res.ok) {
                               setTournamentNotice({
                                 type: 'err',
-                                text: res.error ?? 'Failed to resolve match.',
+                                text: localizeServerError(res.error, language),
                               });
                             } else {
                               setAdminResolveMatchId('');
                               setAdminResolveWinnerId('');
                               setTournamentNotice({
                                 type: 'ok',
-                                text: 'Bracket match resolved and winner advanced.',
+                                text: t('tournaments.adminSuccessResolved'),
                               });
                             }
                           }}
                           className="rounded-lg bg-amber-500 px-3 py-1.5 text-xs font-extrabold text-slate-950 hover:bg-amber-400 disabled:opacity-45 cursor-pointer whitespace-nowrap"
                         >
-                          Confirm Winner
+                          {t('tournaments.adminConfirmWinnerBtn')}
                         </button>
                       </div>
                       <input
                         type="text"
                         value={adminResolveReason}
                         onChange={(e) => setAdminResolveReason(e.target.value)}
-                        placeholder="Resolution audit note..."
+                        placeholder={t('tournaments.adminAuditNotePlaceholder')}
                         className="w-full rounded-lg border border-white/12 bg-[#0b1017] px-2.5 py-1.5 text-xs text-slate-200"
                       />
                     </div>

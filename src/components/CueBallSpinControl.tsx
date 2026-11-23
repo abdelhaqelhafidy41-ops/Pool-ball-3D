@@ -2,6 +2,7 @@ import { RotateCcw } from 'lucide-react';
 import { useRef, useState } from 'react';
 import { CLOTH_PHYSICS } from '../game/utils/constants';
 import { soundEngine } from '../game/utils/SoundEngine';
+import { getActiveRuntimeLanguage, tLang, useTranslation, type AppLanguage } from '../i18n';
 import { canLocalPlayerAct, useGameStore, type CueSpin } from '../store/useGameStore';
 
 const MAX_R = CLOTH_PHYSICS.maxTipOffsetRatio; // 0.78
@@ -37,26 +38,34 @@ export function mapClientPointToCueSpin(
   return clampSpinToCircle(nx, ny);
 }
 
-export function describeCueSpin(x: number, y: number): string {
+export function describeCueSpin(
+  x: number,
+  y: number,
+  lang: AppLanguage = getActiveRuntimeLanguage(),
+): string {
   const r = Math.hypot(x, y);
-  if (r < 0.1) return 'Center';
+  if (r < 0.1) return tLang(lang, 'aimSpin.centerHit');
 
   const vPart = y > 0.16 ? 'Top' : y < -0.16 ? 'Back' : '';
   const hPart = x < -0.16 ? 'Left' : x > 0.16 ? 'Right' : '';
 
-  if (vPart && hPart) return `${vPart}-${hPart}`;
-  if (vPart === 'Top') return 'Top Spin';
-  if (vPart === 'Back') return 'Back Spin';
-  if (hPart === 'Left') return 'Left Spin';
-  if (hPart === 'Right') return 'Right Spin';
+  if (vPart === 'Top' && hPart === 'Left') return tLang(lang, 'aimSpin.topLeftSpin');
+  if (vPart === 'Top' && hPart === 'Right') return tLang(lang, 'aimSpin.topRightSpin');
+  if (vPart === 'Back' && hPart === 'Left') return tLang(lang, 'aimSpin.backLeftSpin');
+  if (vPart === 'Back' && hPart === 'Right') return tLang(lang, 'aimSpin.backRightSpin');
+  if (vPart === 'Top') return tLang(lang, 'aimSpin.topSpinFull');
+  if (vPart === 'Back') return tLang(lang, 'aimSpin.backSpinFull');
+  if (hPart === 'Left') return tLang(lang, 'aimSpin.leftSpinFull');
+  if (hPart === 'Right') return tLang(lang, 'aimSpin.rightSpinFull');
 
   if (Math.abs(y) >= Math.abs(x)) {
-    return y >= 0 ? 'Top Spin' : 'Back Spin';
+    return y >= 0 ? tLang(lang, 'aimSpin.topSpinFull') : tLang(lang, 'aimSpin.backSpinFull');
   }
-  return x >= 0 ? 'Right Spin' : 'Left Spin';
+  return x >= 0 ? tLang(lang, 'aimSpin.rightSpinFull') : tLang(lang, 'aimSpin.leftSpinFull');
 }
 
 export function CueBallSpinControl() {
+  const { t, lang } = useTranslation();
   const cueSpin = useGameStore((s) => s.cueSpin);
   const setCueSpin = useGameStore((s) => s.setCueSpin);
   const resetCueSpin = useGameStore((s) => s.resetCueSpin);
@@ -158,7 +167,7 @@ export function CueBallSpinControl() {
     }
   };
 
-  const spinLabel = describeCueSpin(cueSpin.x, cueSpin.y);
+  const spinLabel = describeCueSpin(cueSpin.x, cueSpin.y, lang);
   const isCentered = Math.hypot(cueSpin.x, cueSpin.y) < 0.05;
 
   const dotLeftPct = 50 + cueSpin.x * 50;
@@ -197,8 +206,8 @@ export function CueBallSpinControl() {
               soundEngine.playUiClick();
               resetCueSpin();
             }}
-            title="Reset spin to center"
-            aria-label="Reset spin to center"
+            title={t('aimSpin.resetSpinCenterTooltip')}
+            aria-label={t('aimSpin.resetSpinCenterTooltip')}
             className="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded text-slate-400 hover:text-amber-300 cursor-pointer"
           >
             <RotateCcw className="h-3 w-3" />
@@ -206,14 +215,14 @@ export function CueBallSpinControl() {
         )}
       </div>
 
-      {/* Interactive Circular White Cue Ball Face */}
-      <div className="flex flex-1 w-full items-center justify-center">
+      {/* Interactive Circular White Cue Ball Face (fixed LTR physical axes) */}
+      <div dir="ltr" className="flex flex-1 w-full items-center justify-center">
         <div
           ref={ballRef}
           data-testid="cue-ball-spin-surface"
           role="slider"
           tabIndex={disabled ? -1 : 0}
-          aria-label={`Cue ball impact point: ${spinLabel}`}
+          aria-label={t('aimSpin.cueBallImpactAria', { spin: spinLabel })}
           aria-valuetext={spinLabel}
           aria-disabled={disabled}
           onKeyDown={handleKeyDown}
@@ -277,3 +286,4 @@ export function CueBallSpinControl() {
     </div>
   );
 }
+

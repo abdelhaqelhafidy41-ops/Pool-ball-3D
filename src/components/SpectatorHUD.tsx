@@ -25,6 +25,16 @@ import {
 import type { BallGroup, PlayerId } from '../game/rules/types';
 import { BALL_DEFINITIONS } from '../game/utils/constants';
 import { soundEngine } from '../game/utils/SoundEngine';
+import {
+  localizeBallName,
+  localizeFoulOrReason,
+  localizeMatchHeadline,
+  localizePlayerName,
+  localizeRuleProfile,
+  localizeServerError,
+  localizeTournamentRoundLabel,
+  useTranslation,
+} from '../i18n';
 import { multiplayerManager } from '../multiplayer/MultiplayerManager';
 import { getAvatarVisualMeta, getNameplateVisualClass } from '../multiplayer/shared/economy';
 import type { SpectatorCameraMode } from '../multiplayer/shared/protocol';
@@ -37,22 +47,23 @@ interface SpectatorHUDProps {
   onEnterReplay: (shotId?: string) => void;
 }
 
-const SPECTATOR_CAMERAS: Array<{ id: SpectatorCameraMode; label: string }> = [
-  { id: 'overview', label: 'Overview' },
-  { id: 'topDown', label: 'Top-Down' },
-  { id: 'ballFollow', label: 'Ball Follow' },
-  { id: 'activeShot', label: 'Active Shot' },
-  { id: 'cinematic', label: 'Cinematic' },
-  { id: 'free', label: 'Free Cam' },
+const SPECTATOR_CAMERAS: Array<{ id: SpectatorCameraMode; labelKey: string }> = [
+  { id: 'overview', labelKey: 'spectator.cameraOverview' },
+  { id: 'topDown', labelKey: 'spectator.cameraTopDown' },
+  { id: 'ballFollow', labelKey: 'spectator.cameraBallFollow' },
+  { id: 'activeShot', labelKey: 'spectator.cameraActiveShot' },
+  { id: 'cinematic', labelKey: 'spectator.cameraCinematic' },
+  { id: 'free', labelKey: 'spectator.cameraFree' },
 ];
 
 function SpectatorBallPill({ num, pocketed }: { num: number; pocketed: boolean }) {
+  const { lang } = useTranslation();
   const def = BALL_DEFINITIONS[num];
   if (!def) return null;
   const isEight = num === 8;
   return (
     <span
-      title={def.name}
+      title={localizeBallName(num, lang)}
       className={`inline-flex h-4 w-4 items-center justify-center rounded-full text-[9px] font-extrabold transition-opacity ${
         pocketed ? 'opacity-20' : 'opacity-100'
       }`}
@@ -91,6 +102,7 @@ function BroadcastPlayerPanel({
   isActive: boolean;
   align: 'left' | 'right';
 }) {
+  const { t, formatNumber } = useTranslation();
   const remaining = group ? getRemainingBallsForGroup(pocketedSet, group) : [];
   const onEight = group ? canTargetEightBall(pocketedSet, group) : false;
   const groupNumbers =
@@ -132,7 +144,7 @@ function BroadcastPlayerPanel({
         </div>
         {isActive && (
           <span className="rounded bg-amber-500/20 border border-amber-400/40 px-1.5 py-0.5 text-[9px] font-extrabold uppercase tracking-wider text-amber-300 whitespace-nowrap">
-            Shooting
+            {t('spectator.shootingBadge')}
           </span>
         )}
       </div>
@@ -155,7 +167,7 @@ function BroadcastPlayerPanel({
           </>
         ) : (
           <span className="text-[10px] font-mono text-slate-400">
-            {tableOpen ? 'Open Table' : 'Awaiting Group'}
+            {tableOpen ? t('hud.openTableBadge') : t('spectator.awaitingGroup')}
           </span>
         )}
       </div>
@@ -167,19 +179,19 @@ function BroadcastPlayerPanel({
       >
         <span>
           {group === 'solids'
-            ? 'Solids 1–7'
+            ? t('hud.solidsTag')
             : group === 'stripes'
-              ? 'Stripes 9–15'
-              : 'Unassigned'}
+              ? t('hud.stripesTag')
+              : t('hud.unassignedLabel')}
         </span>
-        <span className="text-slate-400">
+        <span className="text-slate-400" dir="ltr">
           {group
             ? onEight
-              ? '8-Ball Target'
-              : `${remaining.length} left`
+              ? t('hud.eightBallReadyLabel')
+              : t('hud.remainingLabel', { count: formatNumber(remaining.length) })
             : typeof elo === 'number'
-              ? `${elo} ELO`
-              : 'Live'}
+              ? t('spectator.eloBadge', { elo })
+              : t('spectator.liveStatus')}
         </span>
       </div>
     </div>
@@ -187,6 +199,7 @@ function BroadcastPlayerPanel({
 }
 
 export function SpectatorHUD({ onToggleFullscreen, onEnterReplay }: SpectatorHUDProps) {
+  const { t, lang } = useTranslation();
   const onlineRoom = useGameStore((s) => s.onlineRoom);
   const matchConfig = useGameStore((s) => s.matchConfig);
   const matchPhase = useGameStore((s) => s.matchPhase);
@@ -218,13 +231,20 @@ export function SpectatorHUD({ onToggleFullscreen, onEnterReplay }: SpectatorHUD
   const pocketedSet = new Set(pocketedNumbers);
   const p1Rec = onlineRoom?.players.find((p) => p.role === 'player1') ?? onlineRoom?.players[0];
   const p2Rec = onlineRoom?.players.find((p) => p.role === 'player2') ?? onlineRoom?.players[1];
-  const p1Name = p1Rec?.displayName ?? (matchConfig.player1Name || 'Player 1');
-  const p2Name = p2Rec?.displayName ?? (matchConfig.player2Name || 'Player 2');
+  const p1Name = localizePlayerName(p1Rec?.displayName ?? matchConfig.player1Name, 'player1', lang);
+  const p2Name = localizePlayerName(p2Rec?.displayName ?? matchConfig.player2Name, 'player2', lang);
   const viewerCount = Math.max(
     1,
     onlineRoom?.spectators?.length ?? onlineRoom?.spectatorCount ?? 1,
   );
   const zoomPct = Math.round((1 - spectatorZoomOffset) * 100);
+  const localizedFoul = localizeFoulOrReason(lastFoulMessage, lang);
+  const localizedHeadline = localizeMatchHeadline(statusHeadline, lang);
+  const ruleLabel = localizeRuleProfile(
+    matchConfig.calledShotsEnabled ? 'wpa' : 'casual',
+    lang,
+    true,
+  );
 
   return (
     <div
@@ -238,7 +258,7 @@ export function SpectatorHUD({ onToggleFullscreen, onEnterReplay }: SpectatorHUD
           <div className="flex flex-wrap items-center gap-1.5 rounded-xl border border-white/12 bg-[#0c1219]/92 px-2.5 py-1.5 shadow-lg">
             <span className="inline-flex items-center gap-1.5 text-[11px] font-extrabold uppercase tracking-wider text-emerald-300 whitespace-nowrap">
               <Eye className="h-3.5 w-3.5 text-emerald-400 shrink-0" />
-              Spectator Mode
+              {t('spectator.modeBadge')}
             </span>
             <span className="text-slate-600" aria-hidden="true">·</span>
             <button
@@ -251,7 +271,7 @@ export function SpectatorHUD({ onToggleFullscreen, onEnterReplay }: SpectatorHUD
               className="inline-flex items-center gap-1 rounded-lg border border-rose-400/40 bg-rose-500/15 px-2.5 py-1 text-[11px] font-bold text-rose-200 hover:bg-rose-500/25 transition-colors cursor-pointer whitespace-nowrap shrink-0"
             >
               <LogOut className="h-3 w-3 shrink-0" />
-              Leave Spectator Mode
+              {t('spectator.leaveSpectator')}
             </button>
             {spectateReturnTarget === 'tournament' && onlineRoom?.tournament && (
               <button
@@ -264,7 +284,7 @@ export function SpectatorHUD({ onToggleFullscreen, onEnterReplay }: SpectatorHUD
                 className="inline-flex items-center gap-1 rounded-lg border border-amber-400/40 bg-amber-500/15 px-2.5 py-1 text-[11px] font-bold text-amber-200 hover:bg-amber-500/25 transition-colors cursor-pointer whitespace-nowrap shrink-0"
               >
                 <Trophy className="h-3 w-3 shrink-0" />
-                Back to Bracket
+                {t('spectator.returnToTournament')}
               </button>
             )}
           </div>
@@ -274,13 +294,15 @@ export function SpectatorHUD({ onToggleFullscreen, onEnterReplay }: SpectatorHUD
               <Crown className="h-3.5 w-3.5 text-amber-400 shrink-0" />
               <span className="truncate max-w-[200px]">{onlineRoom.tournament.tournamentTitle}</span>
               <span className="text-amber-500" aria-hidden="true">·</span>
-              <span className="text-amber-300 shrink-0">{onlineRoom.tournament.roundLabel}</span>
+              <span className="text-amber-300 shrink-0">
+                {localizeTournamentRoundLabel(onlineRoom.tournament.roundLabel, lang)}
+              </span>
             </div>
           )}
 
           {onlineError && (
             <div className="rounded-lg border border-rose-400/40 bg-[#1a1014]/95 px-2.5 py-1 text-[11px] font-semibold text-rose-200">
-              {onlineError.message}
+              {localizeServerError(onlineError, lang)}
             </div>
           )}
         </div>
@@ -303,16 +325,16 @@ export function SpectatorHUD({ onToggleFullscreen, onEnterReplay }: SpectatorHUD
           <div className="hidden md:flex flex-col items-center justify-center rounded-xl border border-white/12 bg-[#0c1219]/92 px-3 py-1.5 text-center min-w-[168px]">
             <div className="text-[10px] font-extrabold uppercase tracking-[0.14em] text-amber-400 whitespace-nowrap">
               {onlineRoom?.matchType === 'tournament'
-                ? 'Tournament Live'
+                ? t('spectator.tournamentLive')
                 : onlineRoom?.matchType === 'ranked'
-                  ? 'Ranked Broadcast'
-                  : 'Live Match'}
+                  ? t('spectator.rankedBroadcast')
+                  : t('spectator.liveMatch')}
             </div>
             <div className="mt-0.5 text-[11px] font-semibold text-white max-w-[190px] truncate">
-              {lastFoulMessage || statusHeadline || 'Rack in Progress'}
+              {localizedFoul || localizedHeadline || t('spectator.rackInProgress')}
             </div>
             <div className="text-[10px] font-mono tabular-nums text-slate-400">
-              Shot {shotCount} · {matchConfig.calledShotsEnabled ? 'Strict WPA' : 'Casual'}
+              {t('spectator.shotRulesSummary', { shot: shotCount, rules: ruleLabel })}
             </div>
           </div>
 
@@ -335,14 +357,16 @@ export function SpectatorHUD({ onToggleFullscreen, onEnterReplay }: SpectatorHUD
           <div className="flex flex-col items-end gap-1">
             <div className="inline-flex h-8 items-center gap-2 rounded-lg border border-white/12 bg-[#0c1219]/92 px-2.5 text-[11px] font-mono tabular-nums text-slate-200 whitespace-nowrap">
               <Users className="h-3.5 w-3.5 text-emerald-400 shrink-0" />
-              <span data-testid="spectator-viewer-count">{viewerCount} watching</span>
+              <span data-testid="spectator-viewer-count">
+                {t('spectator.watchingCount', { count: viewerCount })}
+              </span>
               <span className="text-slate-600" aria-hidden="true">·</span>
               <span className={onlineConnectionStatus === 'connected' ? 'text-emerald-300' : 'text-amber-300'}>
                 {onlineConnectionStatus === 'connected'
                   ? onlineLatencyMs !== null
-                    ? `${onlineLatencyMs}ms`
-                    : 'Live'
-                  : 'Syncing'}
+                    ? t('lobby.latencyMs', { ms: onlineLatencyMs })
+                    : t('spectator.liveStatus')
+                  : t('spectator.syncingStatus')}
               </span>
             </div>
 
@@ -358,7 +382,7 @@ export function SpectatorHUD({ onToggleFullscreen, onEnterReplay }: SpectatorHUD
                 className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-amber-400/40 bg-[#0c1219]/92 px-2.5 text-[11px] font-bold text-amber-300 hover:bg-amber-500/15 transition-colors cursor-pointer whitespace-nowrap shrink-0"
               >
                 <Film className="h-3.5 w-3.5 text-amber-400" />
-                <span>Replay ({replayShots.length})</span>
+                <span>{t('spectator.replayCount', { count: replayShots.length })}</span>
               </button>
             )}
           </div>
@@ -371,8 +395,8 @@ export function SpectatorHUD({ onToggleFullscreen, onEnterReplay }: SpectatorHUD
                 soundEngine.unlock();
                 toggleSound();
               }}
-              title={soundEnabled ? 'Mute Audio' : 'Unmute Audio'}
-              aria-label={soundEnabled ? 'Mute Audio' : 'Unmute Audio'}
+              title={soundEnabled ? t('hud.muteTooltip') : t('hud.unmuteTooltip')}
+              aria-label={soundEnabled ? t('hud.muteAria') : t('hud.unmuteAria')}
               className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-white/10 bg-[#0c1219]/92 text-slate-200 hover:bg-white/10 transition-colors cursor-pointer shrink-0"
             >
               {soundEnabled ? (
@@ -384,8 +408,8 @@ export function SpectatorHUD({ onToggleFullscreen, onEnterReplay }: SpectatorHUD
             <button
               type="button"
               onClick={onToggleFullscreen}
-              title="Toggle Fullscreen"
-              aria-label={isFullscreen ? 'Exit Fullscreen' : 'Enter Fullscreen'}
+              title={isFullscreen ? t('common.exitFullscreen') : t('common.enterFullscreen')}
+              aria-label={isFullscreen ? t('common.exitFullscreen') : t('common.enterFullscreen')}
               className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-white/10 bg-[#0c1219]/92 text-slate-200 hover:bg-white/10 transition-colors cursor-pointer shrink-0"
             >
               {isFullscreen ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
@@ -404,12 +428,12 @@ export function SpectatorHUD({ onToggleFullscreen, onEnterReplay }: SpectatorHUD
           {hudCollapsed ? (
             <>
               <ChevronUp className="h-3.5 w-3.5 text-amber-400" />
-              Show Broadcast Controls
+              {t('spectator.showBroadcastControls')}
             </>
           ) : (
             <>
               <ChevronDown className="h-3.5 w-3.5 text-amber-400" />
-              Hide Broadcast Controls
+              {t('spectator.hideBroadcastControls')}
             </>
           )}
         </button>
@@ -435,7 +459,7 @@ export function SpectatorHUD({ onToggleFullscreen, onEnterReplay }: SpectatorHUD
                         : 'border border-white/10 bg-white/5 text-slate-300 hover:bg-white/10 hover:text-white'
                     }`}
                   >
-                    {cam.label}
+                    {t(cam.labelKey)}
                   </button>
                 );
               })}
@@ -443,10 +467,10 @@ export function SpectatorHUD({ onToggleFullscreen, onEnterReplay }: SpectatorHUD
 
             <div className="hidden sm:block h-5 w-px bg-white/10" />
 
-            <div className="flex items-center gap-1">
+            <div className="flex items-center gap-1" dir="ltr">
               <button
                 type="button"
-                aria-label="Zoom out broadcast camera"
+                aria-label={t('spectator.zoomOutAria')}
                 onClick={() => {
                   soundEngine.playUiClick();
                   adjustSpectatorZoom(-0.12);
@@ -460,7 +484,7 @@ export function SpectatorHUD({ onToggleFullscreen, onEnterReplay }: SpectatorHUD
               </span>
               <button
                 type="button"
-                aria-label="Zoom in broadcast camera"
+                aria-label={t('spectator.zoomInAria')}
                 onClick={() => {
                   soundEngine.playUiClick();
                   adjustSpectatorZoom(0.12);
@@ -471,7 +495,7 @@ export function SpectatorHUD({ onToggleFullscreen, onEnterReplay }: SpectatorHUD
               </button>
               <button
                 type="button"
-                aria-label="Reset broadcast zoom"
+                aria-label={t('spectator.resetZoomAria')}
                 onClick={() => {
                   soundEngine.playUiClick();
                   resetSpectatorZoom();
@@ -479,7 +503,7 @@ export function SpectatorHUD({ onToggleFullscreen, onEnterReplay }: SpectatorHUD
                 className="inline-flex h-7 items-center gap-1 rounded-lg border border-white/10 bg-white/5 px-2 text-[11px] font-semibold text-slate-300 hover:bg-white/10 hover:text-white cursor-pointer whitespace-nowrap shrink-0"
               >
                 <RotateCcw className="h-3 w-3 text-amber-400" />
-                Reset
+                {t('spectator.resetZoom')}
               </button>
             </div>
           </div>

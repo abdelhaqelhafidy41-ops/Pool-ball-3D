@@ -4,22 +4,24 @@ import { getLegalTargetBalls } from '../game/rules/BallGroupManager';
 import type { PocketId } from '../game/rules/types';
 import { BALL_DEFINITIONS } from '../game/utils/constants';
 import { soundEngine } from '../game/utils/SoundEngine';
+import { localizePocketName, useTranslation } from '../i18n';
 import { canLocalPlayerAct, useGameStore } from '../store/useGameStore';
 
 interface CalledShotPanelProps {
   onSelectCalledShot: (targetBall: number | null, targetPocket: PocketId | null) => void;
 }
 
-const POCKET_BUTTONS: Array<{ id: PocketId; label: string; posClass: string }> = [
-  { id: 'corner-tl', label: 'TL', posClass: 'top-1 left-1' },
-  { id: 'side-top', label: 'TOP', posClass: 'top-1 left-1/2 -translate-x-1/2' },
-  { id: 'corner-tr', label: 'TR', posClass: 'top-1 right-1' },
-  { id: 'corner-bl', label: 'BL', posClass: 'bottom-1 left-1' },
-  { id: 'side-bottom', label: 'BOT', posClass: 'bottom-1 left-1/2 -translate-x-1/2' },
-  { id: 'corner-br', label: 'BR', posClass: 'bottom-1 right-1' },
+const POCKET_BUTTONS: Array<{ id: PocketId; shortKey: string; posClass: string }> = [
+  { id: 'corner-tl', shortKey: 'calledShot.shortTL', posClass: 'top-1 left-1' },
+  { id: 'side-top', shortKey: 'calledShot.shortTM', posClass: 'top-1 left-1/2 -translate-x-1/2' },
+  { id: 'corner-tr', shortKey: 'calledShot.shortTR', posClass: 'top-1 right-1' },
+  { id: 'corner-bl', shortKey: 'calledShot.shortBL', posClass: 'bottom-1 left-1' },
+  { id: 'side-bottom', shortKey: 'calledShot.shortBM', posClass: 'bottom-1 left-1/2 -translate-x-1/2' },
+  { id: 'corner-br', shortKey: 'calledShot.shortBR', posClass: 'bottom-1 right-1' },
 ];
 
 export function CalledShotPanel({ onSelectCalledShot }: CalledShotPanelProps) {
+  const { t, lang } = useTranslation();
   const screen = useGameStore((s) => s.screen);
   const matchConfig = useGameStore((s) => s.matchConfig);
   const matchPhase = useGameStore((s) => s.matchPhase);
@@ -52,6 +54,7 @@ export function CalledShotPanel({ onSelectCalledShot }: CalledShotPanelProps) {
   const locked = ballsMoving || isAiThinking || !canAct;
 
   const isComplete = calledShot.targetBall !== null && calledShot.targetPocket !== null;
+  const selectedPocketBtn = POCKET_BUTTONS.find((p) => p.id === calledShot.targetPocket);
 
   return (
     <div className="pointer-events-auto fixed left-2.5 sm:left-4 bottom-[244px] sm:bottom-[198px] lg:bottom-24 z-20 flex flex-col items-start gap-1.5">
@@ -59,7 +62,7 @@ export function CalledShotPanel({ onSelectCalledShot }: CalledShotPanelProps) {
         <div className="w-[228px] rounded-xl border border-white/12 bg-[#0c1219]/95 p-2.5 shadow-2xl">
           <div className="flex items-center justify-between pb-2 border-b border-white/10">
             <span className="text-[11px] font-bold uppercase tracking-wider text-white">
-              Call Ball & Pocket
+              {t('calledShot.callBallAndPocket')}
             </span>
             <button
               type="button"
@@ -71,14 +74,14 @@ export function CalledShotPanel({ onSelectCalledShot }: CalledShotPanelProps) {
               className="inline-flex items-center gap-1 text-[10px] font-semibold text-slate-400 hover:text-amber-400 disabled:opacity-40 cursor-pointer"
             >
               <RotateCcw className="h-3 w-3" />
-              Clear
+              {t('calledShot.clearCall')}
             </button>
           </div>
 
           {/* Target Ball Picker */}
           <div className="mt-2">
             <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-400 mb-1">
-              1. Target Ball
+              {t('calledShot.step1TargetBall')}
             </div>
             <div className="flex flex-wrap gap-1">
               {legalBalls.map((num) => {
@@ -122,12 +125,15 @@ export function CalledShotPanel({ onSelectCalledShot }: CalledShotPanelProps) {
             </div>
           </div>
 
-          {/* 6-Pocket Mini Table Selector */}
+          {/* 6-Pocket Mini Table Selector (LTR physical coordinates matching 3D pockets) */}
           <div className="mt-2.5">
             <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-400 mb-1">
-              2. Intended Pocket
+              {t('calledShot.step2IntendedPocket')}
             </div>
-            <div className="relative h-[86px] w-full rounded-lg border-2 border-[#5a3b24] bg-[#0f5c3a] shadow-inner">
+            <div
+              dir="ltr"
+              className="relative h-[86px] w-full rounded-lg border-2 border-[#5a3b24] bg-[#0f5c3a] shadow-inner"
+            >
               {POCKET_BUTTONS.map((p) => {
                 const active = calledShot.targetPocket === p.id;
                 return (
@@ -135,6 +141,7 @@ export function CalledShotPanel({ onSelectCalledShot }: CalledShotPanelProps) {
                     key={p.id}
                     type="button"
                     disabled={locked}
+                    title={localizePocketName(p.id, lang)}
                     onClick={() => {
                       soundEngine.playUiClick();
                       onSelectCalledShot(
@@ -148,7 +155,7 @@ export function CalledShotPanel({ onSelectCalledShot }: CalledShotPanelProps) {
                         : 'bg-[#091017]/85 text-slate-200 border border-white/20 hover:border-amber-400'
                     }`}
                   >
-                    {p.label}
+                    {t(p.shortKey)}
                   </button>
                 );
               })}
@@ -179,14 +186,18 @@ export function CalledShotPanel({ onSelectCalledShot }: CalledShotPanelProps) {
         )}
         <span>
           {isComplete
-            ? `Called: #${calledShot.targetBall} → ${POCKET_BUTTONS.find((p) => p.id === calledShot.targetPocket)?.label}`
+            ? t('calledShot.calledSummaryBadge', {
+                ball: calledShot.targetBall,
+                pocket: selectedPocketBtn ? t(selectedPocketBtn.shortKey) : '',
+              })
             : required
               ? shootingEight
-                ? 'Call 8-Ball Pocket'
-                : 'Call Shot (Required)'
-              : 'Call Shot (Optional)'}
+                ? t('calledShot.call8BallPocket')
+                : t('calledShot.callShotRequired')
+              : t('calledShot.callShotOptional')}
         </span>
       </button>
     </div>
   );
 }
+
