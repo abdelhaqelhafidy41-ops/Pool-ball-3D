@@ -69,14 +69,15 @@ if (typeof globalThis.document === 'undefined') {
 
 import { resolveObjectBallAimColor } from '../src/game/objects/BilliardBalls';
 import {
-  computeClampedShortGuideSegment,
+  CueStick,
   resolveAimGuideVisualMode,
+  trimPolylineByMaxLength,
   type AimGuideModeParams,
-  type ShortGuideSegment,
+  type PolyPoint2D,
 } from '../src/game/objects/CueStick';
 import { PoolTable } from '../src/game/objects/PoolTable';
 import { PhysicsWorld } from '../src/game/physics/PhysicsWorld';
-import { BALL_DEFINITIONS, BALL_SPECS, POCKET_POSITIONS, TABLE_DIMENSIONS } from '../src/game/utils/constants';
+import { BALL_DEFINITIONS, POCKET_POSITIONS, TABLE_DIMENSIONS } from '../src/game/utils/constants';
 import { getTableSkinVisualSpec } from '../src/game/utils/ProceduralTextures';
 
 function baseAimParams(overrides: Partial<AimGuideModeParams> = {}): AimGuideModeParams {
@@ -152,36 +153,32 @@ function testAimGuideVisibilityRules() {
   assert.equal(resolveAimGuideVisualMode(baseAimParams({ canLocalAct: false })), 'none');
 }
 
-function testShortGuideClamping() {
-  const seg: ShortGuideSegment = { visible: false, startX: 0, startZ: 0, endX: 0, endZ: 0 };
-  const D = TABLE_DIMENSIONS;
-  const R = BALL_SPECS.radius;
+function polylineArcLength(line: THREE.Line): number {
+  if (!line.visible) return 0;
+  const count = line.geometry.drawRange.count;
+  if (count < 2) return 0;
+  const pos = line.geometry.getAttribute('position') as THREE.BufferAttribute;
+  let total = 0;
+  for (let i = 1; i < count; i++) {
+    total += Math.hypot(pos.getX(i) - pos.getX(i - 1), pos.getZ(i) - pos.getZ(i - 1));
+  }
+  return total;
+}
 
-  // 1. Open table: <= 0.22m long and starts outside cue ball
-  computeClampedShortGuideSegment(0, 0, 0, [], seg);
-  assert.equal(seg.visible, true);
-  const openLen = Math.hypot(seg.endX - seg.startX, seg.endZ - seg.startZ);
-  assert.ok(openLen > 0.20 && openLen <= 0.221, `Expected ~0.22m short guide, got ${openLen}`);
+function testTrimPolylineByMaxLength() {
+  const scratch: PolyPoint2D[] = Array.from({ length: 16 }, () => ({ x: 0, z: 0 }));
+  const longPath: PolyPoint2D[] = [
+    { x: 0, z: 0 },
+    { x: 0.1, z: 0 },
+    { x: 0.25, z: 0 },
+    { x: 0.8, z: 0 },
+  ];
 
-  // 2. Near right rail facing +X -> clamps inside D.halfLength - 0.004
-  computeClampedShortGuideSegment(D.halfLength - 0.10, 0, 0, [], seg);
-  assert.equal(seg.visible, true);
-  assert.ok(seg.endX <= D.halfLength - 0.0039, `Guide crossed +X cushion: ${seg.endX}`);
+  const count = trimPolylineByMaxLength(longPath, 0.14, 16, scratch);
+  assert.equal(count, 3);
+  assert.ok(Math.abs(scratch[count - 1].x - 0.14) < 1e-6);
 
-  // 3. Near bottom rail facing +Z -> clamps inside D.halfWidth - 0.004
-  computeClampedShortGuideSegment(0, D.halfWidth - 0.09, Math.PI / 2, [], seg);
-  assert.equal(seg.visible, true);
-  assert.ok(seg.endZ <= D.halfWidth - 0.0039, `Guide crossed +Z cushion: ${seg.endZ}`);
-
-  // 4. Right against rail facing outward -> hidden
-  computeClampedShortGuideSegment(D.halfLength - 0.03, 0, 0, [], seg);
-  assert.equal(seg.visible, false, 'Expected guide right against cushion to hide instead of penetrating rail');
-
-  // 5. Blocked closely by an object ball -> clamps before penetrating object ball
-  const blockX = 0.14;
-  computeClampedShortGuideSegment(0, 0, 0, [{ x: blockX, z: 0 }], seg);
-  assert.equal(seg.visible, true);
-  assert.ok(seg.endX <= blockX - R * 1.97, `Guide penetrated object ball at x=${blockX}: endX=${seg.endX}`);
+  assert.equal(trimPolylineByMaxLength([{ x: 0, z: 0 }], 0.14, 16, scratch), 0);
 }
 
 function testObjectBallColorMatching() {
@@ -386,15 +383,100 @@ async function testPhysicsAimPredictionAndAllSixPocketsEntry() {
     );
   }
 
+  // C. Verify actual Three.js CueStick rendering objects across normal modes vs AI Master
+  const cueStick = new CueStick(1);
+  const aimLine = cueStick.group.getObjectByName('AimGuideCueLine') as THREE.Line;
+  const objectLine = cueStick.group.getObjectByName('AimGuideObjectLine') as THREE.Line;
+  const objectContrastLine = cueStick.group.getObjectByName('AimGuideObjectContrastLine') as THREE.Line;
+  const deflectLine = cueStick.group.getObjectByName('AimGuideDeflectLine') as THREE.Line;
+  const ghostRing = cueStick.group.getObjectByName('AimGuideGhostRing') as THREE.Mesh;
+
+  // Set cue at (-0.6, 0), Yellow #1 at (0.2, 0), Red #3 at (-0.6, 0.45), Black #8 at (-0.6, -0.45)
+  for (let num = 0; num <= 15; num++) {
+    if (num === 0) physics.setBallState(0, -0.6, 0, false);
+    else if (num === 1) physics.setBallState(1, 0.2, 0, false);
+    else if (num === 3) physics.setBallState(3, -0.6, 0.45, false);
+    else if (num === 8) physics.setBallState(8, -0.6, -0.45, false);
+    else physics.setBallState(num, 10 + num * 0.25, 10, true);
+  }
+  const cueVec = new THREE.Vector3(-0.6, TABLE_DIMENSIONS.surfaceY + 0.028575, 0);
+
+  // Case 1: Aim cue ball toward empty left cushion without striking any object ball -> full-length Cue Ball Trajectory preserved!
+  const noHitPred = physics.predictAimTrajectory(Math.PI, { x: 0, y: 0 }, 0.25)!;
+  assert.equal(noHitPred.targetBallNumber, null);
+  cueStick.update(cueVec, Math.PI, 0.04, true, 'short', noHitPred, null, false, { x: 0, y: 0 });
+  const cueLenNoHit = polylineArcLength(aimLine);
+  assert.ok(cueLenNoHit > 0.60, `Expected full-length cue ball guide without hit, got ${cueLenNoHit}`);
+  assert.equal(objectLine.visible, false);
+  assert.equal(objectContrastLine.visible, false);
+
+  // Case 2 & 3: Aim at colored ball #1 in normal gameplay ('short', covering Local PvP, Online, Free Play, AI Easy/Medium/Hard)
+  // -> cue guide stays full length, object path is SHORT!
+  const hit1Pred = physics.predictAimTrajectory(0, { x: 0, y: 0 }, 0.75)!;
+  assert.equal(hit1Pred.targetBallNumber, 1);
+  for (const mode of [
+    resolveAimGuideVisualMode(baseAimParams({ opponentType: 'pvp' })),
+    resolveAimGuideVisualMode(baseAimParams({ opponentType: 'online' })),
+    resolveAimGuideVisualMode(baseAimParams({ gameMode: 'freePlay', aiDifficulty: 'pro' })),
+    resolveAimGuideVisualMode(baseAimParams({ aiDifficulty: 'beginner' })),
+    resolveAimGuideVisualMode(baseAimParams({ aiDifficulty: 'intermediate' })),
+    resolveAimGuideVisualMode(baseAimParams({ aiDifficulty: 'legend' })),
+  ]) {
+    assert.equal(mode, 'short');
+    cueStick.update(cueVec, 0, 0.04, true, mode, hit1Pred, null, false, { x: 0, y: 0 });
+    const cueLenNormal = polylineArcLength(aimLine);
+    const objLenNormal = polylineArcLength(objectLine);
+    assert.ok(cueLenNormal > 0.70, `Expected full-length cue ball guide (~0.74m) in normal mode, got ${cueLenNormal}`);
+    assert.ok(objLenNormal > 0.08 && objLenNormal <= 0.145, `Expected short object ball trajectory (<= 0.14m), got ${objLenNormal}`);
+    assert.equal(ghostRing.visible, true);
+    assert.equal(objectContrastLine.visible, false);
+    assert.notEqual((objectLine.material as THREE.LineBasicMaterial).color.getHex(), 0xf59e0b);
+  }
+
+  // Case 4 & 5: Aim at #1 then switch aim to #3 and #8 in AI Master ('master_preview') -> object path LONG & dynamically color-matched!
+  const blueClothHex = getTableSkinVisualSpec('table_blue_tournament', 'championshipBlue').clothBase;
+  const color1 = new THREE.Color();
+  const c1 = resolveObjectBallAimColor(1, 'ball_classic', blueClothHex, color1);
+  cueStick.update(cueVec, 0, 0.04, true, 'master_preview', hit1Pred, color1, c1.needsContrastHalo, { x: 0, y: 0 });
+  const cueLenMaster = polylineArcLength(aimLine);
+  const objLenMaster1 = polylineArcLength(objectLine);
+  assert.ok(cueLenMaster > 0.70, `Cue ball guide must stay full length in Master mode, got ${cueLenMaster}`);
+  assert.ok(objLenMaster1 > 0.50, `Expected long object ball trajectory in AI Master mode, got ${objLenMaster1}`);
+  assert.equal((objectLine.material as THREE.LineBasicMaterial).color.getHex(), color1.getHex());
+  assert.equal((aimLine.material as THREE.LineDashedMaterial).color.getHex(), 0xf8fafc);
+
+  const hit3Pred = physics.predictAimTrajectory(Math.PI / 2, { x: 0, y: 0 }, 0.75)!;
+  assert.equal(hit3Pred.targetBallNumber, 3);
+  const color3 = new THREE.Color();
+  const c3 = resolveObjectBallAimColor(3, 'ball_classic', blueClothHex, color3);
+  cueStick.update(cueVec, Math.PI / 2, 0.04, true, 'master_preview', hit3Pred, color3, c3.needsContrastHalo, { x: 0, y: 0 });
+  const objLenMaster3 = polylineArcLength(objectLine);
+  assert.ok(objLenMaster3 > 0.35, `Expected long object ball trajectory for #3 in Master mode, got ${objLenMaster3}`);
+  assert.equal((objectLine.material as THREE.LineBasicMaterial).color.getHex(), color3.getHex());
+  assert.notEqual(color3.getHex(), color1.getHex(), 'Target ball trajectory color must update dynamically');
+
+  // Verify Black #8 in AI Master activates contrast halo while staying long
+  const hit8Pred = physics.predictAimTrajectory(-Math.PI / 2, { x: 0, y: 0 }, 0.75)!;
+  assert.equal(hit8Pred.targetBallNumber, 8);
+  const color8 = new THREE.Color();
+  const c8 = resolveObjectBallAimColor(8, 'ball_classic', blueClothHex, color8);
+  assert.equal(c8.needsContrastHalo, true);
+  cueStick.update(cueVec, -Math.PI / 2, 0.04, true, 'master_preview', hit8Pred, color8, c8.needsContrastHalo, { x: 0, y: 0 });
+  const objLenMaster8 = polylineArcLength(objectLine);
+  assert.ok(objLenMaster8 > 0.35, `Expected long object ball trajectory for #8 in Master mode, got ${objLenMaster8}`);
+  assert.equal(objectContrastLine.visible, true);
+  assert.ok(deflectLine !== undefined);
+
+  cueStick.dispose();
   physics.dispose();
 }
 
 async function main() {
   testAimGuideVisibilityRules();
-  console.log('✓ Aim guide visibility rules verified (normal short vs AI Master pro)');
+  console.log('✓ Aim guide & object ball visibility rules verified (normal short vs AI Master pro)');
 
-  testShortGuideClamping();
-  console.log('✓ Short aiming guide rail & object-ball clamping verified');
+  testTrimPolylineByMaxLength();
+  console.log('✓ Object ball trajectory arc-length trimming verified');
 
   testObjectBallColorMatching();
   console.log('✓ Object-ball trajectory color matching & blue-cloth readability verified');
@@ -403,7 +485,7 @@ async function main() {
   console.log('✓ All 6 pocket cutouts (PlayingSurfaceCloth, SlateBed, CabinetApron, PocketWell) raycast-verified');
 
   await testPhysicsAimPredictionAndAllSixPocketsEntry();
-  console.log('✓ Rapier3D aim prediction targetBallNumber & physical entry into all 6 pockets verified');
+  console.log('✓ Rapier3D aim prediction, CueStick cue-vs-object separation, and 6-pocket entry verified');
 
   console.log('ALL AIMING & 6-POCKET UNIT/PHYSICS CHECKS PASSED');
 }

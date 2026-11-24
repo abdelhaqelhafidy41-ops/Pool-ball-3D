@@ -8,10 +8,8 @@ import { createCueButtTexture, createCueShaftTexture } from '../utils/Procedural
 
 const MAX_CUE_POINTS = 64;
 const MAX_TARGET_POINTS = 96;
-const MAX_DEFLECT_POINTS = 32;
-const SHORT_GUIDE_FORWARD_LEN = 0.22;
-const SHORT_GUIDE_START_OFFSET = BALL_SPECS.radius + 0.006;
-const MASTER_DEFLECT_MAX_LEN = 0.28;
+const MAX_DEFLECT_POINTS = 64;
+const SHORT_OBJECT_MAX_LEN = 0.14;
 
 export type AimGuideVisualMode = 'none' | 'short' | 'master_preview';
 
@@ -33,9 +31,10 @@ export interface AimGuideModeParams {
 }
 
 /**
- * Pure aiming visualization visibility rule.
- * Extended trajectory preview is restricted STRICTLY to local player aiming
- * in an active 8-ball match against AI Master ('pro') difficulty.
+ * Pure object-ball trajectory visibility & length rule.
+ * The cue ball aiming guide remains full-length whenever this returns !== 'none'.
+ * The extended, target-colored object ball trajectory is restricted STRICTLY to
+ * local player aiming in an active 8-ball match against AI Master ('pro') difficulty.
  */
 export function resolveAimGuideVisualMode(params: AimGuideModeParams): AimGuideVisualMode {
   if (
@@ -74,100 +73,54 @@ export function resolveAimGuideVisualMode(params: AimGuideModeParams): AimGuideV
   return 'short';
 }
 
-export interface ShortGuideSegment {
-  visible: boolean;
-  startX: number;
-  startZ: number;
-  endX: number;
-  endZ: number;
-}
-
-export interface ActiveBallPos2D {
+export interface PolyPoint2D {
   x: number;
   z: number;
 }
 
 /**
- * Computes a short, subtle aiming line directly in front of the cue ball,
- * clamped cleanly inside the table cushion boundaries and stopping before
- * penetrating nearby object balls. Zero heap allocations when outSegment is reused.
+ * Trims a predicted polyline strictly to a maximum arc length (in meters)
+ * without allocating new point objects when `outScratch` is reused.
  */
-export function computeClampedShortGuideSegment(
-  cueX: number,
-  cueZ: number,
-  aimAngle: number,
-  objectBalls: readonly ActiveBallPos2D[],
-  outSegment: ShortGuideSegment,
-): ShortGuideSegment {
-  const D = TABLE_DIMENSIONS;
-  const R = BALL_SPECS.radius;
-  const dx = Math.cos(aimAngle);
-  const dz = Math.sin(aimAngle);
-
-  const boundX = D.halfLength - 0.004;
-  const boundZ = D.halfWidth - 0.004;
-
-  let tMax = SHORT_GUIDE_START_OFFSET + SHORT_GUIDE_FORWARD_LEN;
-
-  // Clamp cleanly against inner cushion edges so guide never enters rails or leaves cloth
-  if (
-    (cueX >= boundX && dx > 0) ||
-    (cueX <= -boundX && dx < 0) ||
-    (cueZ >= boundZ && dz > 0) ||
-    (cueZ <= -boundZ && dz < 0)
-  ) {
-    tMax = 0;
-  } else {
-    if (Math.abs(dx) > 1e-6) {
-      const targetX = dx > 0 ? boundX : -boundX;
-      const tx = (targetX - cueX) / dx;
-      if (tx >= 0 && tx < tMax) tMax = tx;
-    }
-    if (Math.abs(dz) > 1e-6) {
-      const targetZ = dz > 0 ? boundZ : -boundZ;
-      const tz = (targetZ - cueZ) / dz;
-      if (tz >= 0 && tz < tMax) tMax = tz;
-    }
+export function trimPolylineByMaxLength(
+  points: readonly PolyPoint2D[],
+  maxLength: number,
+  maxPoints: number,
+  outScratch: PolyPoint2D[],
+): number {
+  if (points.length < 2 || maxLength <= 0 || maxPoints < 2) {
+    return 0;
   }
 
-  // Stop before crossing into any object ball ahead along the aiming ray
-  const blockRadius = R * 1.98;
-  const blockRadiusSq = blockRadius * blockRadius;
-  for (let i = 0; i < objectBalls.length; i++) {
-    const b = objectBalls[i];
-    const ocX = b.x - cueX;
-    const ocZ = b.z - cueZ;
-    const proj = ocX * dx + ocZ * dz;
-    if (proj <= 0 || proj - blockRadius >= tMax) continue;
-    const perpSq = ocX * ocX + ocZ * ocZ - proj * proj;
-    if (perpSq < blockRadiusSq) {
-      const tHit = proj - Math.sqrt(Math.max(0, blockRadiusSq - perpSq));
-      if (tHit >= 0 && tHit < tMax) {
-        tMax = tHit;
-      }
+  let accumDist = 0;
+  let count = 1;
+  outScratch[0].x = points[0].x;
+  outScratch[0].z = points[0].z;
+
+  for (let i = 1; i < points.length && count < maxPoints; i++) {
+    const prev = points[i - 1];
+    const cur = points[i];
+    const segLen = Math.hypot(cur.x - prev.x, cur.z - prev.z);
+    if (accumDist + segLen >= maxLength) {
+      const remain = Math.max(0, maxLength - accumDist);
+      const ratio = segLen > 1e-6 ? remain / segLen : 0;
+      outScratch[count].x = prev.x + (cur.x - prev.x) * ratio;
+      outScratch[count].z = prev.z + (cur.z - prev.z) * ratio;
+      count++;
+      break;
     }
+    accumDist += segLen;
+    outScratch[count].x = cur.x;
+    outScratch[count].z = cur.z;
+    count++;
   }
 
-  if (tMax <= SHORT_GUIDE_START_OFFSET + 0.012) {
-    outSegment.visible = false;
-    return outSegment;
-  }
-
-  outSegment.visible = true;
-  outSegment.startX = cueX + dx * SHORT_GUIDE_START_OFFSET;
-  outSegment.startZ = cueZ + dz * SHORT_GUIDE_START_OFFSET;
-  outSegment.endX = cueX + dx * tMax;
-  outSegment.endZ = cueZ + dz * tMax;
-  return outSegment;
+  return count >= 2 ? count : 0;
 }
 
-const _neutralGuideColor = new THREE.Color(0xf8fafc);
-const _shortGuideArray: Array<{ x: number; z: number }> = [
-  { x: 0, z: 0 },
-  { x: 0, z: 0 },
-];
-const _trimmedDeflectScratch: Array<{ x: number; z: number }> = Array.from(
-  { length: MAX_DEFLECT_POINTS },
+const _neutralObjectColor = new THREE.Color(0xe2e8f0);
+const _trimmedObjectScratch: PolyPoint2D[] = Array.from(
+  { length: MAX_TARGET_POINTS },
   () => ({ x: 0, z: 0 }),
 );
 
@@ -179,9 +132,6 @@ export class CueStick {
   private readonly aimLine: THREE.Line;
   private readonly aimLinePos: Float32Array;
   private readonly aimMat: THREE.LineDashedMaterial;
-  private readonly aimContrastLine: THREE.Line;
-  private readonly aimContrastPos: Float32Array;
-  private readonly aimContrastMat: THREE.LineBasicMaterial;
 
   private readonly objectLine: THREE.Line;
   private readonly objectLinePos: Float32Array;
@@ -196,16 +146,7 @@ export class CueStick {
 
   private readonly ghostRing: THREE.Mesh;
   private readonly ghostRingMat: THREE.MeshBasicMaterial;
-  private readonly ghostContrastRing: THREE.Mesh;
   private readonly ghostBall: THREE.Mesh;
-
-  private readonly shortSegScratch: ShortGuideSegment = {
-    visible: false,
-    startX: 0,
-    startZ: 0,
-    endX: 0,
-    endZ: 0,
-  };
 
   private readonly maxAnisotropy: number;
   private currentSkinId = 'cue_classic_maple';
@@ -232,17 +173,17 @@ export class CueStick {
     this.stickPivot.add(this.stickBody);
     this.group.add(this.stickPivot);
 
-    // 1. Primary cue aiming polyline (dashed, subtle translucent white in normal mode, target-colored in AI Master)
+    // 1. Primary cue trajectory polyline (original crisp dashed white full-length guide)
     this.aimLinePos = new Float32Array(MAX_CUE_POINTS * 3);
     const aimGeo = new THREE.BufferGeometry();
     aimGeo.setAttribute('position', new THREE.BufferAttribute(this.aimLinePos, 3));
     aimGeo.setDrawRange(0, 0);
     this.aimMat = new THREE.LineDashedMaterial({
       color: 0xf8fafc,
-      dashSize: 0.026,
-      gapSize: 0.015,
+      dashSize: 0.032,
+      gapSize: 0.018,
       transparent: true,
-      opacity: 0.62,
+      opacity: 0.72,
       depthWrite: false,
     });
     this.aimLine = new THREE.Line(aimGeo, this.aimMat);
@@ -250,31 +191,15 @@ export class CueStick {
     this.aimLine.frustumCulled = false;
     this.group.add(this.aimLine);
 
-    this.aimContrastPos = new Float32Array(MAX_CUE_POINTS * 3);
-    const aimContrastGeo = new THREE.BufferGeometry();
-    aimContrastGeo.setAttribute('position', new THREE.BufferAttribute(this.aimContrastPos, 3));
-    aimContrastGeo.setDrawRange(0, 0);
-    this.aimContrastMat = new THREE.LineBasicMaterial({
-      color: 0xe2e8f0,
-      transparent: true,
-      opacity: 0.34,
-      depthWrite: false,
-    });
-    this.aimContrastLine = new THREE.Line(aimContrastGeo, this.aimContrastMat);
-    this.aimContrastLine.name = 'AimGuideCueContrastLine';
-    this.aimContrastLine.frustumCulled = false;
-    this.aimContrastLine.visible = false;
-    this.group.add(this.aimContrastLine);
-
-    // 2. Struck object ball trajectory polyline (AI Master mode only, dynamically matched to target ball color)
+    // 2. Struck object ball trajectory polyline (short subtle stub in normal modes; full target-colored path in AI Master)
     this.objectLinePos = new Float32Array(MAX_TARGET_POINTS * 3);
     const objGeo = new THREE.BufferGeometry();
     objGeo.setAttribute('position', new THREE.BufferAttribute(this.objectLinePos, 3));
     objGeo.setDrawRange(0, 0);
     this.objectMat = new THREE.LineBasicMaterial({
-      color: 0xf8fafc,
+      color: 0xe2e8f0,
       transparent: true,
-      opacity: 0.84,
+      opacity: 0.68,
       depthWrite: false,
     });
     this.objectLine = new THREE.Line(objGeo, this.objectMat);
@@ -290,7 +215,7 @@ export class CueStick {
     this.objectContrastMat = new THREE.LineBasicMaterial({
       color: 0xe2e8f0,
       transparent: true,
-      opacity: 0.36,
+      opacity: 0.42,
       depthWrite: false,
     });
     this.objectContrastLine = new THREE.Line(objContrastGeo, this.objectContrastMat);
@@ -299,17 +224,17 @@ export class CueStick {
     this.objectContrastLine.visible = false;
     this.group.add(this.objectContrastLine);
 
-    // 3. Cue ball short post-impact deflection cue (AI Master mode only)
+    // 3. Cue ball post-impact deflection trajectory polyline (original cool sky tint, full path)
     this.deflectLinePos = new Float32Array(MAX_DEFLECT_POINTS * 3);
     const defGeo = new THREE.BufferGeometry();
     defGeo.setAttribute('position', new THREE.BufferAttribute(this.deflectLinePos, 3));
     defGeo.setDrawRange(0, 0);
     this.deflectMat = new THREE.LineDashedMaterial({
-      color: 0xe2e8f0,
-      dashSize: 0.02,
-      gapSize: 0.015,
+      color: 0x7dd3fc,
+      dashSize: 0.022,
+      gapSize: 0.016,
       transparent: true,
-      opacity: 0.45,
+      opacity: 0.68,
       depthWrite: false,
     });
     this.deflectLine = new THREE.Line(defGeo, this.deflectMat);
@@ -318,7 +243,7 @@ export class CueStick {
     this.deflectLine.visible = false;
     this.group.add(this.deflectLine);
 
-    // 4. Ghost contact ring on felt + subtle translucent ghost cue sphere (AI Master mode only)
+    // 4. Ghost contact ring on felt + subtle translucent ghost cue sphere (original appearance)
     const ringGeo = new THREE.RingGeometry(
       BALL_SPECS.radius * 0.78,
       BALL_SPECS.radius * 1.0,
@@ -326,40 +251,22 @@ export class CueStick {
     );
     ringGeo.rotateX(-Math.PI / 2);
     this.ghostRingMat = new THREE.MeshBasicMaterial({
-      color: 0xf8fafc,
+      color: 0xfbbf24,
       transparent: true,
-      opacity: 0.8,
+      opacity: 0.76,
       depthWrite: false,
     });
     this.ghostRing = new THREE.Mesh(ringGeo, this.ghostRingMat);
     this.ghostRing.name = 'AimGuideGhostRing';
-    this.ghostRing.position.y = TABLE_DIMENSIONS.surfaceY + 0.0022;
+    this.ghostRing.position.y = TABLE_DIMENSIONS.surfaceY + 0.002;
     this.ghostRing.visible = false;
     this.group.add(this.ghostRing);
-
-    const contrastRingGeo = new THREE.RingGeometry(
-      BALL_SPECS.radius * 0.7,
-      BALL_SPECS.radius * 1.08,
-      36,
-    );
-    contrastRingGeo.rotateX(-Math.PI / 2);
-    const contrastRingMat = new THREE.MeshBasicMaterial({
-      color: 0xe2e8f0,
-      transparent: true,
-      opacity: 0.36,
-      depthWrite: false,
-    });
-    this.ghostContrastRing = new THREE.Mesh(contrastRingGeo, contrastRingMat);
-    this.ghostContrastRing.name = 'AimGuideGhostContrastRing';
-    this.ghostContrastRing.position.y = TABLE_DIMENSIONS.surfaceY + 0.0019;
-    this.ghostContrastRing.visible = false;
-    this.group.add(this.ghostContrastRing);
 
     const ghostSphereGeo = new THREE.SphereGeometry(BALL_SPECS.radius * 0.98, 24, 18);
     const ghostSphereMat = new THREE.MeshBasicMaterial({
       color: 0xf8fafc,
       transparent: true,
-      opacity: 0.2,
+      opacity: 0.22,
       depthWrite: false,
     });
     this.ghostBall = new THREE.Mesh(ghostSphereGeo, ghostSphereMat);
@@ -747,8 +654,6 @@ export class CueStick {
   private hideAllGuides() {
     this.aimLine.visible = false;
     this.aimLine.geometry.setDrawRange(0, 0);
-    this.aimContrastLine.visible = false;
-    this.aimContrastLine.geometry.setDrawRange(0, 0);
     this.objectLine.visible = false;
     this.objectLine.geometry.setDrawRange(0, 0);
     this.objectContrastLine.visible = false;
@@ -756,7 +661,6 @@ export class CueStick {
     this.deflectLine.visible = false;
     this.deflectLine.geometry.setDrawRange(0, 0);
     this.ghostRing.visible = false;
-    this.ghostContrastRing.visible = false;
     this.ghostBall.visible = false;
   }
 
@@ -767,7 +671,6 @@ export class CueStick {
     visible: boolean,
     guideMode: AimGuideVisualMode,
     trajectory: AimTrajectoryPrediction | null,
-    activeObjectBalls: readonly ActiveBallPos2D[],
     targetColor: THREE.Color | null,
     needsContrastHalo: boolean,
     spin: CueSpin,
@@ -807,73 +710,16 @@ export class CueStick {
       offsetZ,
     );
 
+    if (guideMode === 'none' || !trajectory) {
+      this.hideAllGuides();
+      return;
+    }
+
     const guideY = TABLE_DIMENSIONS.surfaceY + 0.0026;
     const ballCenterY = TABLE_DIMENSIONS.surfaceY + BALL_SPECS.radius;
 
-    if (guideMode === 'none') {
-      this.hideAllGuides();
-      return;
-    }
-
-    if (guideMode === 'short') {
-      // Normal aiming mode: short, subtle, rail-clamped guide near cue ball only
-      this.objectLine.visible = false;
-      this.objectLine.geometry.setDrawRange(0, 0);
-      this.objectContrastLine.visible = false;
-      this.objectContrastLine.geometry.setDrawRange(0, 0);
-      this.aimContrastLine.visible = false;
-      this.aimContrastLine.geometry.setDrawRange(0, 0);
-      this.deflectLine.visible = false;
-      this.deflectLine.geometry.setDrawRange(0, 0);
-      this.ghostRing.visible = false;
-      this.ghostContrastRing.visible = false;
-      this.ghostBall.visible = false;
-
-      const seg = computeClampedShortGuideSegment(
-        cueBallPos.x,
-        cueBallPos.z,
-        aimAngle,
-        activeObjectBalls,
-        this.shortSegScratch,
-      );
-      if (!seg.visible) {
-        this.aimLine.visible = false;
-        this.aimLine.geometry.setDrawRange(0, 0);
-        return;
-      }
-
-      this.aimMat.color.copy(_neutralGuideColor);
-      this.aimMat.opacity = 0.62;
-      _shortGuideArray[0].x = seg.startX;
-      _shortGuideArray[0].z = seg.startZ;
-      _shortGuideArray[1].x = seg.endX;
-      _shortGuideArray[1].z = seg.endZ;
-      this.setPolyline(
-        this.aimLine,
-        this.aimLinePos,
-        MAX_CUE_POINTS,
-        _shortGuideArray,
-        guideY,
-        true,
-        2,
-      );
-      return;
-    }
-
-    // AI Master difficulty ('pro') ONLY: extended trajectory preview matched to target ball color
-    if (!trajectory) {
-      this.hideAllGuides();
-      return;
-    }
-
-    const hasBallTarget = trajectory.targetBallNumber !== null && targetColor !== null;
-    const activeColor = hasBallTarget ? targetColor : _neutralGuideColor;
-    const useHalo = hasBallTarget && needsContrastHalo;
-
-    // 1. Primary cue trajectory polyline
-    this.aimMat.color.copy(activeColor);
-    this.aimMat.opacity = hasBallTarget ? (useHalo ? 0.9 : 0.78) : 0.56;
-    const aimShown = this.setPolyline(
+    // 1. CUE BALL TRAJECTORY — Restored exactly to original full-length white guide, ghost contact & deflection
+    this.setPolyline(
       this.aimLine,
       this.aimLinePos,
       MAX_CUE_POINTS,
@@ -881,38 +727,14 @@ export class CueStick {
       guideY,
       true,
     );
-    if (useHalo && aimShown) {
-      this.setPolyline(
-        this.aimContrastLine,
-        this.aimContrastPos,
-        MAX_CUE_POINTS,
-        trajectory.cuePath,
-        guideY - 0.00025,
-        false,
-      );
-    } else {
-      this.aimContrastLine.visible = false;
-      this.aimContrastLine.geometry.setDrawRange(0, 0);
-    }
 
-    // 2. Ghost contact ring & subtle ghost sphere
     if (trajectory.ghostBallX !== null && trajectory.ghostBallZ !== null) {
-      this.ghostRingMat.color.copy(activeColor);
-      this.ghostRingMat.opacity = hasBallTarget ? (useHalo ? 0.92 : 0.78) : 0.45;
       this.ghostRing.visible = true;
       this.ghostRing.position.set(
         trajectory.ghostBallX,
-        TABLE_DIMENSIONS.surfaceY + 0.0022,
+        TABLE_DIMENSIONS.surfaceY + 0.002,
         trajectory.ghostBallZ,
       );
-      this.ghostContrastRing.visible = useHalo;
-      if (useHalo) {
-        this.ghostContrastRing.position.set(
-          trajectory.ghostBallX,
-          TABLE_DIMENSIONS.surfaceY + 0.0019,
-          trajectory.ghostBallZ,
-        );
-      }
       this.ghostBall.visible = trajectory.hitType === 'ball';
       this.ghostBall.position.set(
         trajectory.ghostBallX,
@@ -921,14 +743,36 @@ export class CueStick {
       );
     } else {
       this.ghostRing.visible = false;
-      this.ghostContrastRing.visible = false;
       this.ghostBall.visible = false;
     }
 
-    // 3. Struck object ball trajectory polyline (target ball color, zero hardcoded orange)
-    if (hasBallTarget && trajectory.targetPath.length >= 2) {
+    this.setPolyline(
+      this.deflectLine,
+      this.deflectLinePos,
+      MAX_DEFLECT_POINTS,
+      trajectory.cuePostPath,
+      guideY + 0.0002,
+      true,
+    );
+
+    // 2. OBJECT BALL TRAJECTORY — Separate visualization:
+    //    - Normal modes ('short'): short subtle segment immediately after predicted collision
+    //    - AI Master ('master_preview'): full outgoing predicted path dynamically colored to target ball
+    if (trajectory.targetPath.length < 2) {
+      this.objectLine.visible = false;
+      this.objectLine.geometry.setDrawRange(0, 0);
+      this.objectContrastLine.visible = false;
+      this.objectContrastLine.geometry.setDrawRange(0, 0);
+      return;
+    }
+
+    if (guideMode === 'master_preview') {
+      const hasBallTarget = trajectory.targetBallNumber !== null && targetColor !== null;
+      const activeColor = hasBallTarget ? targetColor : _neutralObjectColor;
+      const useHalo = hasBallTarget && needsContrastHalo;
+
       this.objectMat.color.copy(activeColor);
-      this.objectMat.opacity = useHalo ? 0.92 : 0.84;
+      this.objectMat.opacity = useHalo ? 0.94 : 0.88;
       const objShown = this.setPolyline(
         this.objectLine,
         this.objectLinePos,
@@ -950,54 +794,34 @@ export class CueStick {
         this.objectContrastLine.visible = false;
         this.objectContrastLine.geometry.setDrawRange(0, 0);
       }
+      return;
+    }
+
+    // Normal gameplay ('short'): short, subtle outgoing segment only (never reveals full pocket route)
+    const shortCount = trimPolylineByMaxLength(
+      trajectory.targetPath,
+      SHORT_OBJECT_MAX_LEN,
+      MAX_TARGET_POINTS,
+      _trimmedObjectScratch,
+    );
+    this.objectContrastLine.visible = false;
+    this.objectContrastLine.geometry.setDrawRange(0, 0);
+
+    if (shortCount >= 2) {
+      this.objectMat.color.copy(_neutralObjectColor);
+      this.objectMat.opacity = 0.68;
+      this.setPolyline(
+        this.objectLine,
+        this.objectLinePos,
+        MAX_TARGET_POINTS,
+        _trimmedObjectScratch,
+        guideY + 0.0005,
+        false,
+        shortCount,
+      );
     } else {
       this.objectLine.visible = false;
       this.objectLine.geometry.setDrawRange(0, 0);
-      this.objectContrastLine.visible = false;
-      this.objectContrastLine.geometry.setDrawRange(0, 0);
-    }
-
-    // 4. Short post-impact cue deflection cue (trimmed so it stays clean without clutter)
-    if (hasBallTarget && trajectory.cuePostPath.length >= 2) {
-      let accumDist = 0;
-      let trimCount = 1;
-      _trimmedDeflectScratch[0].x = trajectory.cuePostPath[0].x;
-      _trimmedDeflectScratch[0].z = trajectory.cuePostPath[0].z;
-      for (
-        let i = 1;
-        i < trajectory.cuePostPath.length && trimCount < MAX_DEFLECT_POINTS;
-        i++
-      ) {
-        const prev = trajectory.cuePostPath[i - 1];
-        const cur = trajectory.cuePostPath[i];
-        const segLen = Math.hypot(cur.x - prev.x, cur.z - prev.z);
-        if (accumDist + segLen >= MASTER_DEFLECT_MAX_LEN) {
-          const remain = Math.max(0, MASTER_DEFLECT_MAX_LEN - accumDist);
-          const ratio = segLen > 1e-6 ? remain / segLen : 0;
-          _trimmedDeflectScratch[trimCount].x = prev.x + (cur.x - prev.x) * ratio;
-          _trimmedDeflectScratch[trimCount].z = prev.z + (cur.z - prev.z) * ratio;
-          trimCount++;
-          break;
-        }
-        accumDist += segLen;
-        _trimmedDeflectScratch[trimCount].x = cur.x;
-        _trimmedDeflectScratch[trimCount].z = cur.z;
-        trimCount++;
-      }
-      this.deflectMat.color.copy(_neutralGuideColor);
-      this.deflectMat.opacity = 0.42;
-      this.setPolyline(
-        this.deflectLine,
-        this.deflectLinePos,
-        MAX_DEFLECT_POINTS,
-        _trimmedDeflectScratch,
-        guideY + 0.0002,
-        true,
-        trimCount,
-      );
-    } else {
-      this.deflectLine.visible = false;
-      this.deflectLine.geometry.setDrawRange(0, 0);
     }
   }
 }

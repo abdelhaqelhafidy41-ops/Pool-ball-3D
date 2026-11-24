@@ -11,7 +11,6 @@ import { BilliardBalls } from '../objects/BilliardBalls';
 import {
   CueStick,
   resolveAimGuideVisualMode,
-  type ActiveBallPos2D,
 } from '../objects/CueStick';
 import { PoolTable } from '../objects/PoolTable';
 import { TableVfxSystem } from '../objects/TableVfxSystem';
@@ -50,8 +49,6 @@ import {
 import { soundEngine } from '../utils/SoundEngine';
 
 const _onlineFrames: OnlineBallFrame[] = [];
-const _ballPosPool: ActiveBallPos2D[] = Array.from({ length: 16 }, () => ({ x: 0, z: 0 }));
-const _activeObjectBalls: ActiveBallPos2D[] = [];
 const _targetAimColor = new THREE.Color();
 
 const _cueBallPos = new THREE.Vector3();
@@ -2215,7 +2212,6 @@ export class PoolScene {
         false,
         'none',
         null,
-        _activeObjectBalls,
         null,
         false,
         { x: 0, y: 0 },
@@ -2497,31 +2493,8 @@ export class PoolScene {
       onlineSpectating: latestStore.onlineSpectating,
     });
 
-    _activeObjectBalls.length = 0;
-    if (guideMode === 'short') {
-      if (isOnlinePlaying && _onlineFrames.length > 0) {
-        let poolIdx = 0;
-        for (let i = 0; i < _onlineFrames.length; i++) {
-          const b = _onlineFrames[i];
-          if (b.number === 0 || b.pocketed) continue;
-          const slot = _ballPosPool[poolIdx++];
-          slot.x = b.x;
-          slot.z = b.z;
-          _activeObjectBalls.push(slot);
-        }
-      } else {
-        let poolIdx = 0;
-        this.physics.forEachActiveObjectBallPosition((_num, bx, bz) => {
-          const slot = _ballPosPool[poolIdx++];
-          slot.x = bx;
-          slot.z = bz;
-          _activeObjectBalls.push(slot);
-        });
-      }
-    }
-
     const trajectory =
-      guideMode === 'master_preview'
+      guideMode !== 'none'
         ? this.physics.predictAimTrajectory(
             latestStore.cueAngle,
             latestStore.cueSpin,
@@ -2556,7 +2529,6 @@ export class PoolScene {
       canDisplayCue,
       guideMode,
       trajectory,
-      _activeObjectBalls,
       resolvedTargetColor,
       needsContrastHalo,
       activeSpin,
