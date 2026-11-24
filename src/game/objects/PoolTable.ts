@@ -160,8 +160,10 @@ export class PoolTable {
 
   private buildPlayingSurface(slateMaterial: THREE.Material) {
     const D = TABLE_DIMENSIONS;
-    const outerHalfL = D.halfLength + D.cushionDepth + 0.024;
-    const outerHalfW = D.halfWidth + D.cushionDepth + 0.024;
+    // Keep outer perimeter strictly outside all 6 pocket holes (max |x|=1.350, max |z|=0.728)
+    // while staying inside the cabinet footprint (1.380 x 0.745) and buried beneath wooden rails.
+    const outerHalfL = D.halfLength + D.cushionDepth + 0.06; // 1.378
+    const outerHalfW = D.halfWidth + D.cushionDepth + 0.06;  // 0.743
 
     // 2D shape in XY (rotated -PI/2 around X so shapeY -> -worldZ)
     const clothShape = new THREE.Shape();
@@ -178,7 +180,7 @@ export class PoolTable {
       clothShape.holes.push(hole);
     }
 
-    const feltGeo = new THREE.ShapeGeometry(clothShape, 32);
+    const feltGeo = new THREE.ShapeGeometry(clothShape, 40);
     feltGeo.rotateX(-Math.PI / 2);
 
     // Map UVs cleanly across the inner playing surface
@@ -203,12 +205,13 @@ export class PoolTable {
     const slateGeo = new THREE.ExtrudeGeometry(clothShape, {
       depth: D.slateThickness,
       bevelEnabled: false,
-      curveSegments: 28,
+      curveSegments: 36,
     });
     slateGeo.rotateX(-Math.PI / 2);
     const slateMesh = new THREE.Mesh(slateGeo, slateMaterial);
     slateMesh.position.y = D.surfaceY - D.slateThickness - 0.0006;
     slateMesh.receiveShadow = true;
+    slateMesh.name = 'SlateBed';
     this.group.add(slateMesh);
   }
 
@@ -511,19 +514,19 @@ export class PoolTable {
     const rHole = pocket.radius;
     const rBay = rHole + 0.011;
 
-    // 1. Continuous 360-degree turned drop-well cup & beveled slate-edge lip (below playing surface)
-    // Lathe profile: bottom floor -> tapered drop wall -> flush beveled lip at cloth surface (y = 0)
+    // 1. Continuous 360-degree turned drop-well cup (flush beneath cloth hole edge)
+    // Lathe profile: bottom floor -> tapered drop wall -> flush lip just under cloth surface (y = -0.0004)
     const wellPoints = [
       new THREE.Vector2(0.0, -wellDepth),
       new THREE.Vector2(rHole * 0.78, -wellDepth),
-      new THREE.Vector2(rHole * 0.84, -wellDepth + 0.025),
-      new THREE.Vector2(rHole * 0.99, -0.006),
-      new THREE.Vector2(rHole * 1.045, 0.0005),
-      new THREE.Vector2(rHole * 1.075, -0.003),
+      new THREE.Vector2(rHole * 0.86, -wellDepth + 0.025),
+      new THREE.Vector2(rHole * 0.985, -0.006),
+      new THREE.Vector2(rHole * 1.015, -0.0004),
     ];
-    const wellGeo = new THREE.LatheGeometry(wellPoints, 36);
+    const wellGeo = new THREE.LatheGeometry(wellPoints, 40);
     wellGeo.computeVertexNormals();
     const wellMesh = new THREE.Mesh(wellGeo, wellMat);
+    wellMesh.name = `PocketWell_${pocket.id}`;
     wellMesh.receiveShadow = true;
     g.add(wellMesh);
 
@@ -586,13 +589,46 @@ export class PoolTable {
     const D = TABLE_DIMENSIONS;
     const cabinetL = D.playLength + 0.22;
     const cabinetW = D.playWidth + 0.22;
+    const cabinetHalfL = cabinetL * 0.5;
+    const cabinetHalfW = cabinetW * 0.5;
     const cabinetTopY = D.surfaceY - D.slateThickness;
 
-    const apronGeo = new THREE.BoxGeometry(cabinetL, D.apronHeight, cabinetW);
+    // Punch pocket well clearances through the cabinet block so top-down views never hit wood inside pockets
+    const apronShape = new THREE.Shape();
+    apronShape.moveTo(-cabinetHalfL, -cabinetHalfW);
+    apronShape.lineTo(cabinetHalfL, -cabinetHalfW);
+    apronShape.lineTo(cabinetHalfL, cabinetHalfW);
+    apronShape.lineTo(-cabinetHalfL, cabinetHalfW);
+    apronShape.closePath();
+
+    for (const p of POCKET_POSITIONS) {
+      const hole = new THREE.Path();
+      hole.absarc(p.x, -p.z, p.radius + 0.004, 0, Math.PI * 2, true);
+      apronShape.holes.push(hole);
+    }
+
+    const apronGeo = new THREE.ExtrudeGeometry(apronShape, {
+      depth: D.apronHeight,
+      bevelEnabled: false,
+      curveSegments: 24,
+    });
+    apronGeo.rotateX(-Math.PI / 2);
+    const apronPos = apronGeo.attributes.position;
+    const apronUv = apronGeo.attributes.uv;
+    for (let i = 0; i < apronPos.count; i++) {
+      apronUv.setXY(
+        i,
+        (apronPos.getX(i) + apronPos.getZ(i)) * 0.45,
+        apronPos.getY(i) * 2.2,
+      );
+    }
+    apronUv.needsUpdate = true;
+
     const apronMesh = new THREE.Mesh(apronGeo, woodMat);
-    apronMesh.position.y = cabinetTopY - D.apronHeight * 0.5;
+    apronMesh.position.y = cabinetTopY - D.apronHeight;
     apronMesh.castShadow = true;
     apronMesh.receiveShadow = true;
+    apronMesh.name = 'CabinetApron';
     this.group.add(apronMesh);
 
     const trimGeo = new THREE.BoxGeometry(cabinetL + 0.016, 0.014, cabinetW + 0.016);

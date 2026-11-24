@@ -54,10 +54,65 @@ export function computeInitialBallPositions(): Array<{ number: number; x: number
 }
 
 const _auroraEmissiveColor = new THREE.Color();
+const _clothColorScratch = new THREE.Color();
+const _hslBallScratch = { h: 0, s: 0, l: 0 };
+const _hslClothScratch = { h: 0, s: 0, l: 0 };
 const _shadowMatrix = new THREE.Matrix4();
 const _shadowPos = new THREE.Vector3();
 const _shadowQuat = new THREE.Quaternion();
 const _shadowScale = new THREE.Vector3();
+
+/**
+ * Resolves the display color for an object ball's aiming trajectory (never cue ball #0),
+ * reading from BALL_DEFINITIONS and active ball skin while preserving readability against
+ * the current table cloth color.
+ */
+export function resolveObjectBallAimColor(
+  ballNumber: number,
+  ballSkinId: string,
+  clothHex: string,
+  outColor: THREE.Color,
+): { needsContrastHalo: boolean } {
+  const def = BALL_DEFINITIONS.find((b) => b.number === ballNumber && b.number !== 0);
+  if (!def) {
+    outColor.setHex(0xe2e8f0);
+    return { needsContrastHalo: false };
+  }
+
+  let baseHex = def.color;
+  if (ballSkinId === 'ball_golden' && ballNumber === 8) {
+    baseHex = '#1c1710';
+  }
+
+  outColor.set(baseHex);
+  _clothColorScratch.set(clothHex || '#124e78');
+
+  outColor.getHSL(_hslBallScratch);
+  _clothColorScratch.getHSL(_hslClothScratch);
+
+  // 8-ball (black): preserve genuine dark black hue and signal subtle light contrast halo
+  if (ballNumber === 8 || _hslBallScratch.l < 0.12) {
+    outColor.setHex(0x111318);
+    return { needsContrastHalo: true };
+  }
+
+  // Boost luminance gently if ball hue is close to cloth hue (e.g. #2/#10 blue on blue cloth,
+  // #6/#14 green on green cloth, #7/#15 maroon on crimson/dark cloth)
+  let hueDiff = Math.abs(_hslBallScratch.h - _hslClothScratch.h);
+  if (hueDiff > 0.5) hueDiff = 1 - hueDiff;
+
+  if (hueDiff < 0.11) {
+    const targetL = Math.max(_hslBallScratch.l, 0.62);
+    outColor.setHSL(_hslBallScratch.h, Math.min(1, _hslBallScratch.s * 1.05), targetL);
+    return { needsContrastHalo: true };
+  }
+
+  if (_hslBallScratch.l < 0.38) {
+    outColor.setHSL(_hslBallScratch.h, Math.min(1, _hslBallScratch.s * 1.05), 0.52);
+  }
+
+  return { needsContrastHalo: false };
+}
 
 export class BilliardBalls {
   public readonly group = new THREE.Group();
@@ -379,6 +434,14 @@ export class BilliardBalls {
 
   public getShadowInstancedMesh(): THREE.InstancedMesh {
     return this.shadowInstancedMesh;
+  }
+
+  public getObjectBallAimColor(
+    ballNumber: number,
+    clothHex: string,
+    outColor: THREE.Color,
+  ): { needsContrastHalo: boolean } {
+    return resolveObjectBallAimColor(ballNumber, this.currentSkinId, clothHex, outColor);
   }
 
   public getGeometrySegmentCounts(): { widthSegments: number; heightSegments: number } {

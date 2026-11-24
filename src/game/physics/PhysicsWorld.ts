@@ -74,6 +74,7 @@ export interface AimTrajectoryPrediction {
   cuePostPath: Array<{ x: number; z: number }>;
   targetPath: Array<{ x: number; z: number }>;
   hitType: 'ball' | 'cushion' | 'pocket' | 'none';
+  targetBallNumber: number | null;
   ghostBallX: number | null;
   ghostBallZ: number | null;
   targetPocketed: boolean;
@@ -343,6 +344,17 @@ export class PhysicsWorld {
         v.z,
         entry.pocketed,
       );
+    }
+  }
+
+  public forEachActiveObjectBallPosition(
+    cb: (number: number, x: number, z: number) => void,
+  ) {
+    if (!this.initialized) return;
+    for (const entry of this.balls.values()) {
+      if (entry.number === 0 || entry.pocketed || entry.dropping) continue;
+      const t = entry.body.translation();
+      cb(entry.number, t.x, t.z);
     }
   }
 
@@ -1281,6 +1293,7 @@ export class PhysicsWorld {
       cuePostPath,
       targetPath,
       hitType,
+      targetBallNumber: firstTargetNum,
       ghostBallX,
       ghostBallZ,
       targetPocketed,

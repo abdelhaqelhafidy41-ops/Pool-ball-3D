@@ -8,7 +8,11 @@ import type { OnlineBallFrame } from '../../multiplayer/shared/protocol';
 import { CameraController } from '../camera/CameraController';
 import { InputManager } from '../controls/InputManager';
 import { BilliardBalls } from '../objects/BilliardBalls';
-import { CueStick } from '../objects/CueStick';
+import {
+  CueStick,
+  resolveAimGuideVisualMode,
+  type ActiveBallPos2D,
+} from '../objects/CueStick';
 import { PoolTable } from '../objects/PoolTable';
 import { TableVfxSystem } from '../objects/TableVfxSystem';
 import { VictoryEffects } from '../objects/VictoryEffects';
@@ -39,10 +43,16 @@ import type { MatchConfig, PocketId } from '../rules/types';
 import { BALL_SPECS, CUE_SPECS, POCKET_POSITIONS, TABLE_DIMENSIONS } from '../utils/constants';
 import { disposeObject3D } from '../utils/dispose';
 import { getGraphicsProfile, type GraphicsQuality } from '../utils/graphicsQuality';
-import { createStudioFloorTexture } from '../utils/ProceduralTextures';
+import {
+  createStudioFloorTexture,
+  getTableSkinVisualSpec,
+} from '../utils/ProceduralTextures';
 import { soundEngine } from '../utils/SoundEngine';
 
 const _onlineFrames: OnlineBallFrame[] = [];
+const _ballPosPool: ActiveBallPos2D[] = Array.from({ length: 16 }, () => ({ x: 0, z: 0 }));
+const _activeObjectBalls: ActiveBallPos2D[] = [];
+const _targetAimColor = new THREE.Color();
 
 const _cueBallPos = new THREE.Vector3();
 const _snapshots: BallPhysicsSnapshot[] = [];
@@ -2198,7 +2208,20 @@ export class PoolScene {
 
       this.placementGroup.visible = false;
       this.calledPocketRing.visible = false;
-      this.cueStick.update(_cueBallPos, 0, 0, false, false, null, { x: 0, y: 0 }, dt, false);
+      this.cueStick.update(
+        _cueBallPos,
+        0,
+        0,
+        false,
+        'none',
+        null,
+        _activeObjectBalls,
+        null,
+        false,
+        { x: 0, y: 0 },
+        dt,
+        false,
+      );
       const activeShot = this.replayController.getShot();
       this.cameraController.updateReplayCamera(
         this.replayCameraMode,
@@ -2457,36 +2480,85 @@ export class PoolScene {
         ? Math.max(0.22, latestStore.aiPullbackPower)
         : 0.58;
 
-    const showAiGuideNow =
-      latestStore.isAiThinking &&
-      latestStore.matchConfig.showAiAimGuide &&
-      (latestStore.aiStatus.phase === 'aiming' || latestStore.aiStatus.phase === 'pullback');
-    const showPlayerGuideNow =
-      !latestStore.isAiThinking &&
-      latestStore.settings.showAimGuide &&
-      (!isOnlinePlaying || canLocalPlayerAct(latestStore));
-    const shouldShowGuide =
-      canDisplayCue &&
-      !this.strikeAnim.active &&
-      latestStore.screen === 'playing' &&
-      !movingNow &&
-      (showPlayerGuideNow || showAiGuideNow);
+    const guideMode = resolveAimGuideVisualMode({
+      screen: latestStore.screen,
+      gameMode: latestStore.matchConfig.gameMode,
+      opponentType: latestStore.matchConfig.opponentType,
+      aiDifficulty: latestStore.matchConfig.aiDifficulty,
+      showAimGuideSetting: latestStore.settings.showAimGuide,
+      showAiAimGuideSetting: latestStore.matchConfig.showAiAimGuide,
+      isAiThinking: latestStore.isAiThinking,
+      aiPhase: latestStore.aiStatus.phase,
+      canLocalAct: canLocalPlayerAct(latestStore),
+      canDisplayCue,
+      isStrikeAnimating: this.strikeAnim.active,
+      ballsMoving: movingNow,
+      replayActive: latestStore.replayActive,
+      onlineSpectating: latestStore.onlineSpectating,
+    });
 
-    const trajectory = shouldShowGuide
-      ? this.physics.predictAimTrajectory(
-          latestStore.cueAngle,
-          latestStore.cueSpin,
-          previewPower,
-        )
-      : null;
+    _activeObjectBalls.length = 0;
+    if (guideMode === 'short') {
+      if (isOnlinePlaying && _onlineFrames.length > 0) {
+        let poolIdx = 0;
+        for (let i = 0; i < _onlineFrames.length; i++) {
+          const b = _onlineFrames[i];
+          if (b.number === 0 || b.pocketed) continue;
+          const slot = _ballPosPool[poolIdx++];
+          slot.x = b.x;
+          slot.z = b.z;
+          _activeObjectBalls.push(slot);
+        }
+      } else {
+        let poolIdx = 0;
+        this.physics.forEachActiveObjectBallPosition((_num, bx, bz) => {
+          const slot = _ballPosPool[poolIdx++];
+          slot.x = bx;
+          slot.z = bz;
+          _activeObjectBalls.push(slot);
+        });
+      }
+    }
+
+    const trajectory =
+      guideMode === 'master_preview'
+        ? this.physics.predictAimTrajectory(
+            latestStore.cueAngle,
+            latestStore.cueSpin,
+            previewPower,
+          )
+        : null;
+
+    let resolvedTargetColor: THREE.Color | null = null;
+    let needsContrastHalo = false;
+    if (
+      guideMode === 'master_preview' &&
+      trajectory &&
+      trajectory.targetBallNumber !== null
+    ) {
+      const clothSpec = getTableSkinVisualSpec(
+        this.lastAppliedTableId,
+        latestStore.settings.feltTheme,
+      );
+      const contrast = this.billiardBalls.getObjectBallAimColor(
+        trajectory.targetBallNumber,
+        clothSpec.clothBase,
+        _targetAimColor,
+      );
+      resolvedTargetColor = _targetAimColor;
+      needsContrastHalo = contrast.needsContrastHalo;
+    }
 
     this.cueStick.update(
       _cueBallPos,
       this.strikeAnim.active ? this.strikeAnim.angle : latestStore.cueAngle,
       tipDist,
       canDisplayCue,
-      shouldShowGuide,
+      guideMode,
       trajectory,
+      _activeObjectBalls,
+      resolvedTargetColor,
+      needsContrastHalo,
       activeSpin,
       dt,
       this.strikeAnim.active,
